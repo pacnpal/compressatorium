@@ -1,93 +1,71 @@
-"""ConvertPanel cancels its Auto run when it unmounts (Codex 4576827983).
+"""The Convert panel (restructure 2/6, plan item 4): Auto is the way to convert.
 
-If the panel unmounts while the Auto plan request is loading, the run must not
-stay suspended at a confirmation no mounted modal can answer: that left the
-store's ``autoInFlight`` true and Start disabled until a reload. The panel
-hands ``runAuto`` an AbortSignal and aborts it in ``onDestroy``.
-
-Evaluated with Node: the conversion store (as ``test_frontend_conversion_store``
-reduces it) and the panel's ``<script>`` (as ``test_frontend_romm_views``
-reduces it), sibling stores stubbed, ``onDestroy`` recorded so the test can
-unmount.
+The panel plans the selection as it changes and queues that plan through
+``/api/jobs/auto``; there is no tool picker, no Auto checkbox and no free-text
+output folder. Its moving parts are tested where they live (the store in
+``test_frontend_conversion_store``, the listing in
+``test_frontend_game_rows_5``); these read the panel for the wiring between
+them, which a Node run of a component's script can't follow reactively.
 """
 from __future__ import annotations
 
-import json
-import subprocess
 from pathlib import Path
 
-import pytest
-
-from .test_frontend_conversion_store import _STUBS, _find_node, _plain_js
-from .test_frontend_romm_views import _script_of
-
-_PANEL = (
-    Path(__file__).resolve().parents[1]
-    / "src" / "lib" / "components" / "panels" / "ConvertPanel.svelte"
-)
-
-_PANEL_STUBS = """
-const __teardown = [];
-const onDestroy = (fn) => { __teardown.push(fn); };
-const __cleared = [];
-const fileBrowser = {
-  selectedFiles: new Set(['/v/a.iso']),
-  convertibleSelection: [{ path: '/v/a.iso' }],
-  rommPlatformId: null,
-  searchMode: false,
-  clearSelection() { __cleared.push(true); },
-};
-const romm = { setPendingRepins() {} };
-const ui = {};
-"""
-
-_UNMOUNT_MID_PLAN = """
-let answerPlan;
-autoPlanAnswer = (paths) => new Promise((resolve) => {
-  answerPlan = () => resolve(paths.map((p) => ({ file_path: p, mode: 'createdvd' })));
-});
-const submitted = handleAutoSubmit();
-await new Promise((resolve) => setTimeout(resolve, 0));   // the plan is loading
-const during = conversion.autoInFlight;
-for (const fn of __teardown) fn();                        // the panel unmounts
-await submitted;
-const afterUnmount = conversion.autoInFlight;
-answerPlan();                                             // the plan lands late
-await new Promise((resolve) => setTimeout(resolve, 0));
-process.stdout.write(JSON.stringify({
-  during,
-  afterUnmount,
-  teardowns: __teardown.length,
-  modalOpened: autoPlanPrompt !== null,
-  queued: calls.auto.length,
-  cleared: __cleared.length,
-  // What the remounted panel's Start button is gated on.
-  startDisabled: selectedPaths.length === 0 || conversion.converting
-    || conversion.autoInFlight,
-}));
-"""
+_LIB = Path(__file__).resolve().parents[1] / "src" / "lib"
+_PANEL = (_LIB / "components" / "panels" / "ConvertPanel.svelte").read_text(encoding="utf-8")
+_PLAN = (_LIB / "components" / "panels" / "ConvertPlan.svelte").read_text(encoding="utf-8")
 
 
-def test_unmounting_mid_plan_cancels_the_run_and_frees_start(tmp_path):
-    node = _find_node()
-    if node is None:
-        pytest.skip("node not available to evaluate ConvertPanel")
-    script = tmp_path / "convert_panel_eval.mjs"
-    script.write_text(
-        _STUBS + _PANEL_STUBS + _plain_js() + _script_of(_PANEL) + _UNMOUNT_MID_PLAN,
-        encoding="utf-8",
-    )
-    proc = subprocess.run(
-        [node, str(script)], capture_output=True, text=True, timeout=30, check=False,
-    )
-    if proc.returncode != 0:
-        pytest.fail(f"Could not evaluate ConvertPanel via node:\n{proc.stderr}")
-    data = json.loads(proc.stdout)
+def test_the_old_pickers_are_gone():
+    for gone in ("ModeSelect", "AutoPlanModal", "DuplicateModal", "conversion.auto",
+                 "Output directory", "runAuto", "conversion.submit("):
+        assert gone not in _PANEL, gone
+    for name in ("panels/ModeSelect.svelte", "modals/AutoPlanModal.svelte"):
+        assert not (_LIB / "components" / name).exists(), name
 
-    assert data["during"] is True, data
-    assert data["teardowns"] >= 1, data          # the panel registers a teardown
-    assert data["afterUnmount"] is False, data
-    assert data["modalOpened"] is False, data    # no modal after the abort
-    assert data["queued"] == 0, data
-    assert data["cleared"] == 0, data            # nothing queued, selection kept
-    assert data["startDisabled"] is False, data
+
+def test_convert_to_lists_the_formats_a_ready_tool_makes_from_the_selection():
+    assert "convertTargets({" in _PANEL
+    assert "entries: selected.length ? selected : null" in _PANEL
+    assert "ui.visibleTools.map((t) => t.id)" in _PANEL
+    # Best is the default, and comes back once nothing is selected.
+    assert "if (count === 0) untrack(() => conversion.chooseTarget(''));" in _PANEL
+
+
+def test_the_plan_follows_the_selection_and_stops_above_the_live_limit():
+    assert "conversion.keyFor(now)" in _PANEL
+    assert "now.length > PLAN_LIVE_LIMIT" in _PANEL
+    assert "conversion.requestPlan(now)" in _PANEL
+    assert "The plan shows when you press Convert." in _PANEL
+    # Unmounting stops a plan on its way and a submit waiting on RomM.
+    assert "conversion.cancelPlan();" in _PANEL
+    assert "submitAbort?.abort();" in _PANEL
+
+
+def test_safety_starts_from_the_defaults_and_reaches_the_submit():
+    assert "conversion.seedSafety(defaults.values)" in _PANEL
+    assert "<SafetyOptions" in _PANEL
+    for sent in ("verifyAfter:", "deleteOnVerify:", "containerOnly:", "split:"):
+        assert sent in _PANEL, sent
+    assert "conversion.submitAuto(snapshot, {" in _PANEL
+
+
+def test_delete_previews_only_the_groups_that_can_delete():
+    assert "registry.specFor(row.mode)?.supportsDeleteOnVerify" in _PANEL
+    assert "conversion.fetchDeletePlan(groups)" in _PANEL
+    assert "<DeletePlanModal" in _PANEL
+
+
+def test_the_new_files_go_next_to_the_original_or_to_a_picked_folder():
+    assert "Next to the original" in _PANEL
+    assert "In another folder…" in _PANEL
+    assert "<FolderPickerModal" in _PANEL
+    assert 'type="text"' not in _PANEL
+
+
+def test_the_plan_groups_by_console_and_format_and_offers_pick_console():
+    assert "go|${row.platform ?? ''}|${format}" in _PLAN
+    assert "Pick console" in _PLAN
+    assert "Working out the best format…" in _PLAN
+    assert "Couldn't plan this: {error}" in _PLAN
+    assert "None of these can be converted here." in _PLAN

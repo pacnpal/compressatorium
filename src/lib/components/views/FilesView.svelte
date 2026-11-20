@@ -151,7 +151,9 @@
       onreset={() => layout.resetPanel('right')}
     />
 
-    <article class="right">
+    <!-- Under 900px the Convert panel is a sheet pinned to the bottom of the
+         screen while games are selected. -->
+    <article class="right" class:sheet={fileBrowser.selectedFiles.size > 0}>
       <ConvertPanel />
     </article>
   </div>
@@ -259,4 +261,16 @@
     min-width: 0;
   }
   .right { display: flex; flex-direction: column; gap: var(--space-4); }
+  @media (max-width: 899px) {
+    .right.sheet {
+      position: sticky;
+      bottom: 0;
+      z-index: var(--z-sticky);
+      max-height: 70dvh;
+      overflow-y: auto;
+      box-shadow: var(--elev-2);
+      border-bottom-left-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+  }
 </style>

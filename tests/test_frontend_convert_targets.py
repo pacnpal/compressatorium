@@ -126,7 +126,7 @@ process.stdout.write(JSON.stringify({
     assert got["off"] == {"checkAfter": True, "deleteOriginal": False, "quickCheck": False}
 
 
-def test_mode_select_lists_every_ready_tools_formats():
-    src = (_SRC / "components" / "panels" / "ModeSelect.svelte").read_text(encoding="utf-8")
-    assert "convertTargets({" in src and "perMode: true" in src
+def test_the_convert_panel_lists_every_ready_tools_formats():
+    src = (_SRC / "components" / "panels" / "ConvertPanel.svelte").read_text(encoding="utf-8")
+    assert "convertTargets({" in src and "ready," in src
     assert "conversion.chooseTarget(" in src

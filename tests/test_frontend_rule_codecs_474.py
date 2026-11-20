@@ -86,7 +86,10 @@ def test_the_rule_editor_says_which_codecs_were_dropped():
     assert "rule.dropped_codecs?.length" in src
 
 
-def test_the_convert_store_reads_the_same_narrowing():
-    src = _STORE.read_text(encoding="utf-8")
+def test_the_convert_panel_reads_the_same_narrowing():
+    """The panel's compression goes through the shared wire format, which
+    sends and toggles only the codecs the mode takes."""
+    src = (_SRC / "tools" / "compression.js").read_text(encoding="utf-8")
 
-    assert src.count("registry.offeredCodecs(this.mode") == 2
+    assert src.count("registry.offeredCodecs(mode") == 2
+    assert "formatCompression(mode, value)" in _STORE.read_text(encoding="utf-8")

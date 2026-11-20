@@ -28,10 +28,10 @@
 # their shots, so each one rewrites only its own.
 
 # === PR 2: Files ===
-# --- Workspace: CHDMAN (default tool, Arcade CHD volume) -------------------
+# --- Files on first run: the get-started banner (no Library, no RomM yet).
 # These two shots also define the shared theme-flip anchors.
-- url: http://127.0.0.1:8099/?s=workspace-chdman-light#/files
-  output: docs/screenshots/workspace-chdman-light.png
+- url: http://127.0.0.1:8099/?s=files-first-run-light#/files
+  output: docs/screenshots/files-first-run-light.png
   width: 1280
   height: 900
   wait: 1800
@@ -41,8 +41,8 @@
       window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
       await new Promise(r => setTimeout(r, 500));
     })()
-- url: http://127.0.0.1:8099/?s=workspace-chdman-dark#/files
-  output: docs/screenshots/workspace-chdman-dark.png
+- url: http://127.0.0.1:8099/?s=files-first-run-dark#/files
+  output: docs/screenshots/files-first-run-dark.png
   width: 1280
   height: 900
   wait: 1800
@@ -53,172 +53,999 @@
       await new Promise(r => setTimeout(r, 500));
     })()
 
-# --- Compression picker: Compatible with... (#429) -------------------------
-# Picks NetherSX2 (zlib only), then adds zstd so the advisory warning shows.
-- url: http://127.0.0.1:8099/?s=compat-picker-light#/files
-  output: docs/screenshots/compat-picker-light.png
+# --- A PlayStation drive: every multi-file game is one row; the Final Quest
+# playlist is opened to show its discs.
+- url: http://127.0.0.1:8099/?s=files-light#/files
+  output: docs/screenshots/files-light.png
   width: 1280
   height: 900
   wait: 1800
-  javascript: |
+  javascript: &js_files |
     (async () => {
-      localStorage.setItem('theme-preference', 'light');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
-      await new Promise(r => setTimeout(r, 400));
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await sleep(400);
+      const drive = async (name) => {
+        const b = [...document.querySelectorAll('button.item')].find(x => x.textContent.trim() === name);
+        if (!b) throw new Error(name + ' drive not found');
+        b.click();
+        await sleep(900);
+      };
+      const waitPlan = async () => {
+        for (let i = 0; i < 60 && !document.querySelector('.convert-plan .lines'); i++) await sleep(150);
+        await sleep(300);
+      };
+      const selectAll = async () => {
+        const all = document.querySelector('thead input[type="checkbox"]');
+        if (all && !all.checked) all.click();
+        await waitPlan();
+      };
+      const tickRow = async (text) => {
+        const row = [...document.querySelectorAll('tbody tr.row:not(.part)')].find(tr => tr.textContent.includes(text));
+        const box = row?.querySelector('input[type="checkbox"]');
+        if (!box) throw new Error(text + ' row not found');
+        if (!box.checked) box.click();
+        await waitPlan();
+      };
+      const convertTo = async (match) => {
+        const sel = document.querySelector('section.panel .field select');
+        const opt = sel && [...sel.options].find(o => o.value === match || o.textContent.startsWith(match));
+        if (!opt) throw new Error('Convert to ' + match + ' not offered');
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await sleep(700);
+        await waitPlan();
+      };
+      const options = async () => {
+        const d = document.querySelector('details.options');
+        if (!d) throw new Error('Options not shown');
+        d.open = true;
+        await sleep(300);
+      };
+      const tick = async (text) => {
+        const label = [...document.querySelectorAll('label.checkbox')].find(l => l.textContent.includes(text));
+        const box = label?.querySelector('input');
+        if (!box) throw new Error(text + ' not shown');
+        if (!box.checked) box.click();
+        await sleep(400);
+      };
+      const expand = async (text) => {
+        const b = [...document.querySelectorAll('button.chevron')]
+          .find(x => (x.getAttribute('aria-label') || '').includes(text));
+        if (!b) throw new Error(text + ' is not one row');
+        b.click();
+        await sleep(400);
+      };
+      const press = async (text) => {
+        const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim().startsWith(text));
+        if (!b) throw new Error(text + ' button not found');
+        b.click();
+        await sleep(1200);
+      };
+      await drive('PlayStation');
+      await expand('Final Quest');
+    })()
+- url: http://127.0.0.1:8099/?s=files-dark#/files
+  output: docs/screenshots/files-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_files
+
+# --- Everything on the PlayStation drive selected: the plan, one line per
+# console and format, before anything runs.
+- url: http://127.0.0.1:8099/?s=files-plan-light#/files
+  output: docs/screenshots/files-plan-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: &js_files_plan |
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await sleep(400);
+      const drive = async (name) => {
+        const b = [...document.querySelectorAll('button.item')].find(x => x.textContent.trim() === name);
+        if (!b) throw new Error(name + ' drive not found');
+        b.click();
+        await sleep(900);
+      };
+      const waitPlan = async () => {
+        for (let i = 0; i < 60 && !document.querySelector('.convert-plan .lines'); i++) await sleep(150);
+        await sleep(300);
+      };
+      const selectAll = async () => {
+        const all = document.querySelector('thead input[type="checkbox"]');
+        if (all && !all.checked) all.click();
+        await waitPlan();
+      };
+      const tickRow = async (text) => {
+        const row = [...document.querySelectorAll('tbody tr.row:not(.part)')].find(tr => tr.textContent.includes(text));
+        const box = row?.querySelector('input[type="checkbox"]');
+        if (!box) throw new Error(text + ' row not found');
+        if (!box.checked) box.click();
+        await waitPlan();
+      };
+      const convertTo = async (match) => {
+        const sel = document.querySelector('section.panel .field select');
+        const opt = sel && [...sel.options].find(o => o.value === match || o.textContent.startsWith(match));
+        if (!opt) throw new Error('Convert to ' + match + ' not offered');
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await sleep(700);
+        await waitPlan();
+      };
+      const options = async () => {
+        const d = document.querySelector('details.options');
+        if (!d) throw new Error('Options not shown');
+        d.open = true;
+        await sleep(300);
+      };
+      const tick = async (text) => {
+        const label = [...document.querySelectorAll('label.checkbox')].find(l => l.textContent.includes(text));
+        const box = label?.querySelector('input');
+        if (!box) throw new Error(text + ' not shown');
+        if (!box.checked) box.click();
+        await sleep(400);
+      };
+      const expand = async (text) => {
+        const b = [...document.querySelectorAll('button.chevron')]
+          .find(x => (x.getAttribute('aria-label') || '').includes(text));
+        if (!b) throw new Error(text + ' is not one row');
+        b.click();
+        await sleep(400);
+      };
+      const press = async (text) => {
+        const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim().startsWith(text));
+        if (!b) throw new Error(text + ' button not found');
+        b.click();
+        await sleep(1200);
+      };
+      await drive('PlayStation');
+      await selectAll();
+    })()
+- url: http://127.0.0.1:8099/?s=files-plan-dark#/files
+  output: docs/screenshots/files-plan-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_files_plan
+
+# --- The plan's Options open: Compatible with NetherSX2, then zstd added so the
+# advisory warning shows (#429).
+- url: http://127.0.0.1:8099/?s=files-options-light#/files
+  output: docs/screenshots/files-options-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: &js_files_options |
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await sleep(400);
+      const drive = async (name) => {
+        const b = [...document.querySelectorAll('button.item')].find(x => x.textContent.trim() === name);
+        if (!b) throw new Error(name + ' drive not found');
+        b.click();
+        await sleep(900);
+      };
+      const waitPlan = async () => {
+        for (let i = 0; i < 60 && !document.querySelector('.convert-plan .lines'); i++) await sleep(150);
+        await sleep(300);
+      };
+      const selectAll = async () => {
+        const all = document.querySelector('thead input[type="checkbox"]');
+        if (all && !all.checked) all.click();
+        await waitPlan();
+      };
+      const tickRow = async (text) => {
+        const row = [...document.querySelectorAll('tbody tr.row:not(.part)')].find(tr => tr.textContent.includes(text));
+        const box = row?.querySelector('input[type="checkbox"]');
+        if (!box) throw new Error(text + ' row not found');
+        if (!box.checked) box.click();
+        await waitPlan();
+      };
+      const convertTo = async (match) => {
+        const sel = document.querySelector('section.panel .field select');
+        const opt = sel && [...sel.options].find(o => o.value === match || o.textContent.startsWith(match));
+        if (!opt) throw new Error('Convert to ' + match + ' not offered');
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await sleep(700);
+        await waitPlan();
+      };
+      const options = async () => {
+        const d = document.querySelector('details.options');
+        if (!d) throw new Error('Options not shown');
+        d.open = true;
+        await sleep(300);
+      };
+      const tick = async (text) => {
+        const label = [...document.querySelectorAll('label.checkbox')].find(l => l.textContent.includes(text));
+        const box = label?.querySelector('input');
+        if (!box) throw new Error(text + ' not shown');
+        if (!box.checked) box.click();
+        await sleep(400);
+      };
+      const expand = async (text) => {
+        const b = [...document.querySelectorAll('button.chevron')]
+          .find(x => (x.getAttribute('aria-label') || '').includes(text));
+        if (!b) throw new Error(text + ' is not one row');
+        b.click();
+        await sleep(400);
+      };
+      const press = async (text) => {
+        const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim().startsWith(text));
+        if (!b) throw new Error(text + ' button not found');
+        b.click();
+        await sleep(1200);
+      };
+      await drive('PlayStation');
+      await selectAll();
+      await options();
       const sel = document.querySelector('select[aria-label="Compatible with"]');
       if (sel) {
         sel.value = 'nethersx2';
         sel.dispatchEvent(new Event('change', { bubbles: true }));
-        await new Promise(r => setTimeout(r, 300));
+        await sleep(300);
+        const more = document.querySelector('details.options details');
+        if (more) more.open = true;
         const zstd = [...document.querySelectorAll('button.chip')].find(b => b.textContent.trim() === 'zstd');
         if (zstd) zstd.click();
-        await new Promise(r => setTimeout(r, 400));
+        await sleep(400);
       }
     })()
+- url: http://127.0.0.1:8099/?s=files-options-dark#/files
+  output: docs/screenshots/files-options-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_files_options
 
-# --- Workspace: batch selection (all files ticked, convert panel armed) ----
-- url: http://127.0.0.1:8099/?s=workspace-batch-light#/files
-  output: docs/screenshots/workspace-batch-light.png
+# --- Convert to = CHD: games CHD can't take are listed as skipped, with why.
+- url: http://127.0.0.1:8099/?s=files-convert-to-light#/files
+  output: docs/screenshots/files-convert-to-light.png
   width: 1280
   height: 900
   wait: 1800
-  javascript: |
+  javascript: &js_files_convert_to |
     (async () => {
-      localStorage.setItem('theme-preference', 'light');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
-      await new Promise(r => setTimeout(r, 400));
-      // Header select-all box. Matched structurally rather than by aria-label:
-      // the label is state-dependent ("Select all on this page" /
-      // "Deselect all on this page"), so a literal-text selector silently
-      // stops matching whenever that wording changes.
-      const all = document.querySelector('thead input[type="checkbox"]');
-      if (all && !all.checked) all.click();
-      await new Promise(r => setTimeout(r, 400));
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await sleep(400);
+      const drive = async (name) => {
+        const b = [...document.querySelectorAll('button.item')].find(x => x.textContent.trim() === name);
+        if (!b) throw new Error(name + ' drive not found');
+        b.click();
+        await sleep(900);
+      };
+      const waitPlan = async () => {
+        for (let i = 0; i < 60 && !document.querySelector('.convert-plan .lines'); i++) await sleep(150);
+        await sleep(300);
+      };
+      const selectAll = async () => {
+        const all = document.querySelector('thead input[type="checkbox"]');
+        if (all && !all.checked) all.click();
+        await waitPlan();
+      };
+      const tickRow = async (text) => {
+        const row = [...document.querySelectorAll('tbody tr.row:not(.part)')].find(tr => tr.textContent.includes(text));
+        const box = row?.querySelector('input[type="checkbox"]');
+        if (!box) throw new Error(text + ' row not found');
+        if (!box.checked) box.click();
+        await waitPlan();
+      };
+      const convertTo = async (match) => {
+        const sel = document.querySelector('section.panel .field select');
+        const opt = sel && [...sel.options].find(o => o.value === match || o.textContent.startsWith(match));
+        if (!opt) throw new Error('Convert to ' + match + ' not offered');
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await sleep(700);
+        await waitPlan();
+      };
+      const options = async () => {
+        const d = document.querySelector('details.options');
+        if (!d) throw new Error('Options not shown');
+        d.open = true;
+        await sleep(300);
+      };
+      const tick = async (text) => {
+        const label = [...document.querySelectorAll('label.checkbox')].find(l => l.textContent.includes(text));
+        const box = label?.querySelector('input');
+        if (!box) throw new Error(text + ' not shown');
+        if (!box.checked) box.click();
+        await sleep(400);
+      };
+      const expand = async (text) => {
+        const b = [...document.querySelectorAll('button.chevron')]
+          .find(x => (x.getAttribute('aria-label') || '').includes(text));
+        if (!b) throw new Error(text + ' is not one row');
+        b.click();
+        await sleep(400);
+      };
+      const press = async (text) => {
+        const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim().startsWith(text));
+        if (!b) throw new Error(text + ' button not found');
+        b.click();
+        await sleep(1200);
+      };
+      await drive('PlayStation');
+      await selectAll();
+      await convertTo('.chd');
     })()
-- url: http://127.0.0.1:8099/?s=workspace-batch-dark#/files
-  output: docs/screenshots/workspace-batch-dark.png
+- url: http://127.0.0.1:8099/?s=files-convert-to-dark#/files
+  output: docs/screenshots/files-convert-to-dark.png
   width: 1280
   height: 900
   wait: 1800
-  javascript: |
-    (async () => {
-      localStorage.setItem('theme-preference', 'dark');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
-      await new Promise(r => setTimeout(r, 400));
-      // Header select-all box. Matched structurally rather than by aria-label:
-      // the label is state-dependent ("Select all on this page" /
-      // "Deselect all on this page"), so a literal-text selector silently
-      // stops matching whenever that wording changes.
-      const all = document.querySelector('thead input[type="checkbox"]');
-      if (all && !all.checked) all.click();
-      await new Promise(r => setTimeout(r, 400));
-    })()
+  javascript: *js_files_convert_to
 
-# --- Workspace: Auto plan (Auto ticked, all files selected, plan open) -----
-# Auto is read from localStorage only at boot, so the shot ticks the convert
-# panel's Auto box instead. "Start conversion" then opens the plan preview,
-# which only reads the files (POST /api/jobs/auto-plan queues nothing).
-- url: http://127.0.0.1:8099/?s=workspace-auto-plan-light#/files
-  output: docs/screenshots/workspace-auto-plan-light.png
+# --- A GameCube drive with Delete on: the quick check shows under More.
+- url: http://127.0.0.1:8099/?s=files-gamecube-light#/files
+  output: docs/screenshots/files-gamecube-light.png
   width: 1280
   height: 900
   wait: 1800
-  javascript: |
+  javascript: &js_files_gamecube |
     (async () => {
-      localStorage.setItem('theme-preference', 'light');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
-      await new Promise(r => setTimeout(r, 400));
-      const autoBox = [...document.querySelectorAll('label.checkbox')]
-        .find(l => l.textContent.includes('Auto:'))?.querySelector('input');
-      if (autoBox && !autoBox.checked) autoBox.click();
-      await new Promise(r => setTimeout(r, 300));
-      const all = document.querySelector('thead input[type="checkbox"]');
-      if (all && !all.checked) all.click();
-      await new Promise(r => setTimeout(r, 300));
-      const start = [...document.querySelectorAll('button')]
-        .find(b => b.textContent.trim() === 'Start conversion');
-      if (start) start.click();
-      await new Promise(r => setTimeout(r, 900));
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await sleep(400);
+      const drive = async (name) => {
+        const b = [...document.querySelectorAll('button.item')].find(x => x.textContent.trim() === name);
+        if (!b) throw new Error(name + ' drive not found');
+        b.click();
+        await sleep(900);
+      };
+      const waitPlan = async () => {
+        for (let i = 0; i < 60 && !document.querySelector('.convert-plan .lines'); i++) await sleep(150);
+        await sleep(300);
+      };
+      const selectAll = async () => {
+        const all = document.querySelector('thead input[type="checkbox"]');
+        if (all && !all.checked) all.click();
+        await waitPlan();
+      };
+      const tickRow = async (text) => {
+        const row = [...document.querySelectorAll('tbody tr.row:not(.part)')].find(tr => tr.textContent.includes(text));
+        const box = row?.querySelector('input[type="checkbox"]');
+        if (!box) throw new Error(text + ' row not found');
+        if (!box.checked) box.click();
+        await waitPlan();
+      };
+      const convertTo = async (match) => {
+        const sel = document.querySelector('section.panel .field select');
+        const opt = sel && [...sel.options].find(o => o.value === match || o.textContent.startsWith(match));
+        if (!opt) throw new Error('Convert to ' + match + ' not offered');
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await sleep(700);
+        await waitPlan();
+      };
+      const options = async () => {
+        const d = document.querySelector('details.options');
+        if (!d) throw new Error('Options not shown');
+        d.open = true;
+        await sleep(300);
+      };
+      const tick = async (text) => {
+        const label = [...document.querySelectorAll('label.checkbox')].find(l => l.textContent.includes(text));
+        const box = label?.querySelector('input');
+        if (!box) throw new Error(text + ' not shown');
+        if (!box.checked) box.click();
+        await sleep(400);
+      };
+      const expand = async (text) => {
+        const b = [...document.querySelectorAll('button.chevron')]
+          .find(x => (x.getAttribute('aria-label') || '').includes(text));
+        if (!b) throw new Error(text + ' is not one row');
+        b.click();
+        await sleep(400);
+      };
+      const press = async (text) => {
+        const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim().startsWith(text));
+        if (!b) throw new Error(text + ' button not found');
+        b.click();
+        await sleep(1200);
+      };
+      await drive('GameCube');
+      await selectAll();
+      await options();
+      await tick('Delete the original');
+      const more = document.querySelector('.safety details.more');
+      if (more) more.open = true;
+      await sleep(300);
     })()
-- url: http://127.0.0.1:8099/?s=workspace-auto-plan-dark#/files
-  output: docs/screenshots/workspace-auto-plan-dark.png
+- url: http://127.0.0.1:8099/?s=files-gamecube-dark#/files
+  output: docs/screenshots/files-gamecube-dark.png
   width: 1280
   height: 900
   wait: 1800
-  javascript: |
-    (async () => {
-      localStorage.setItem('theme-preference', 'dark');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
-      await new Promise(r => setTimeout(r, 400));
-      const autoBox = [...document.querySelectorAll('label.checkbox')]
-        .find(l => l.textContent.includes('Auto:'))?.querySelector('input');
-      if (autoBox && !autoBox.checked) autoBox.click();
-      await new Promise(r => setTimeout(r, 300));
-      const all = document.querySelector('thead input[type="checkbox"]');
-      if (all && !all.checked) all.click();
-      await new Promise(r => setTimeout(r, 300));
-      const start = [...document.querySelectorAll('button')]
-        .find(b => b.textContent.trim() === 'Start conversion');
-      if (start) start.click();
-      await new Promise(r => setTimeout(r, 900));
-    })()
+  javascript: *js_files_gamecube
 
-# --- Delete-on-verify confirmation (disc 1 of a two-disc set + its .m3u) ---
-# Selects one disc on the PlayStation volume, ticks delete-on-verify and
-# presses Start conversion, which only opens the confirmation (no job is
-# queued). The modal lists the files to delete and the planned .m3u edit.
+# --- A Nintendo 3DS drive, everything selected.
+- url: http://127.0.0.1:8099/?s=files-3ds-light#/files
+  output: docs/screenshots/files-3ds-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: &js_files_3ds |
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await sleep(400);
+      const drive = async (name) => {
+        const b = [...document.querySelectorAll('button.item')].find(x => x.textContent.trim() === name);
+        if (!b) throw new Error(name + ' drive not found');
+        b.click();
+        await sleep(900);
+      };
+      const waitPlan = async () => {
+        for (let i = 0; i < 60 && !document.querySelector('.convert-plan .lines'); i++) await sleep(150);
+        await sleep(300);
+      };
+      const selectAll = async () => {
+        const all = document.querySelector('thead input[type="checkbox"]');
+        if (all && !all.checked) all.click();
+        await waitPlan();
+      };
+      const tickRow = async (text) => {
+        const row = [...document.querySelectorAll('tbody tr.row:not(.part)')].find(tr => tr.textContent.includes(text));
+        const box = row?.querySelector('input[type="checkbox"]');
+        if (!box) throw new Error(text + ' row not found');
+        if (!box.checked) box.click();
+        await waitPlan();
+      };
+      const convertTo = async (match) => {
+        const sel = document.querySelector('section.panel .field select');
+        const opt = sel && [...sel.options].find(o => o.value === match || o.textContent.startsWith(match));
+        if (!opt) throw new Error('Convert to ' + match + ' not offered');
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await sleep(700);
+        await waitPlan();
+      };
+      const options = async () => {
+        const d = document.querySelector('details.options');
+        if (!d) throw new Error('Options not shown');
+        d.open = true;
+        await sleep(300);
+      };
+      const tick = async (text) => {
+        const label = [...document.querySelectorAll('label.checkbox')].find(l => l.textContent.includes(text));
+        const box = label?.querySelector('input');
+        if (!box) throw new Error(text + ' not shown');
+        if (!box.checked) box.click();
+        await sleep(400);
+      };
+      const expand = async (text) => {
+        const b = [...document.querySelectorAll('button.chevron')]
+          .find(x => (x.getAttribute('aria-label') || '').includes(text));
+        if (!b) throw new Error(text + ' is not one row');
+        b.click();
+        await sleep(400);
+      };
+      const press = async (text) => {
+        const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim().startsWith(text));
+        if (!b) throw new Error(text + ' button not found');
+        b.click();
+        await sleep(1200);
+      };
+      await drive('Nintendo 3DS');
+      await selectAll();
+    })()
+- url: http://127.0.0.1:8099/?s=files-3ds-dark#/files
+  output: docs/screenshots/files-3ds-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_files_3ds
+
+# --- A Wii U drive, everything selected: a split dump is one row.
+- url: http://127.0.0.1:8099/?s=files-wiiu-light#/files
+  output: docs/screenshots/files-wiiu-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: &js_files_wiiu |
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await sleep(400);
+      const drive = async (name) => {
+        const b = [...document.querySelectorAll('button.item')].find(x => x.textContent.trim() === name);
+        if (!b) throw new Error(name + ' drive not found');
+        b.click();
+        await sleep(900);
+      };
+      const waitPlan = async () => {
+        for (let i = 0; i < 60 && !document.querySelector('.convert-plan .lines'); i++) await sleep(150);
+        await sleep(300);
+      };
+      const selectAll = async () => {
+        const all = document.querySelector('thead input[type="checkbox"]');
+        if (all && !all.checked) all.click();
+        await waitPlan();
+      };
+      const tickRow = async (text) => {
+        const row = [...document.querySelectorAll('tbody tr.row:not(.part)')].find(tr => tr.textContent.includes(text));
+        const box = row?.querySelector('input[type="checkbox"]');
+        if (!box) throw new Error(text + ' row not found');
+        if (!box.checked) box.click();
+        await waitPlan();
+      };
+      const convertTo = async (match) => {
+        const sel = document.querySelector('section.panel .field select');
+        const opt = sel && [...sel.options].find(o => o.value === match || o.textContent.startsWith(match));
+        if (!opt) throw new Error('Convert to ' + match + ' not offered');
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await sleep(700);
+        await waitPlan();
+      };
+      const options = async () => {
+        const d = document.querySelector('details.options');
+        if (!d) throw new Error('Options not shown');
+        d.open = true;
+        await sleep(300);
+      };
+      const tick = async (text) => {
+        const label = [...document.querySelectorAll('label.checkbox')].find(l => l.textContent.includes(text));
+        const box = label?.querySelector('input');
+        if (!box) throw new Error(text + ' not shown');
+        if (!box.checked) box.click();
+        await sleep(400);
+      };
+      const expand = async (text) => {
+        const b = [...document.querySelectorAll('button.chevron')]
+          .find(x => (x.getAttribute('aria-label') || '').includes(text));
+        if (!b) throw new Error(text + ' is not one row');
+        b.click();
+        await sleep(400);
+      };
+      const press = async (text) => {
+        const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim().startsWith(text));
+        if (!b) throw new Error(text + ' button not found');
+        b.click();
+        await sleep(1200);
+      };
+      await drive('Wii U');
+      await selectAll();
+    })()
+- url: http://127.0.0.1:8099/?s=files-wiiu-dark#/files
+  output: docs/screenshots/files-wiiu-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_files_wiiu
+
+# --- An eXoDOS drive, everything selected.
+- url: http://127.0.0.1:8099/?s=files-exodos-light#/files
+  output: docs/screenshots/files-exodos-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: &js_files_exodos |
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await sleep(400);
+      const drive = async (name) => {
+        const b = [...document.querySelectorAll('button.item')].find(x => x.textContent.trim() === name);
+        if (!b) throw new Error(name + ' drive not found');
+        b.click();
+        await sleep(900);
+      };
+      const waitPlan = async () => {
+        for (let i = 0; i < 60 && !document.querySelector('.convert-plan .lines'); i++) await sleep(150);
+        await sleep(300);
+      };
+      const selectAll = async () => {
+        const all = document.querySelector('thead input[type="checkbox"]');
+        if (all && !all.checked) all.click();
+        await waitPlan();
+      };
+      const tickRow = async (text) => {
+        const row = [...document.querySelectorAll('tbody tr.row:not(.part)')].find(tr => tr.textContent.includes(text));
+        const box = row?.querySelector('input[type="checkbox"]');
+        if (!box) throw new Error(text + ' row not found');
+        if (!box.checked) box.click();
+        await waitPlan();
+      };
+      const convertTo = async (match) => {
+        const sel = document.querySelector('section.panel .field select');
+        const opt = sel && [...sel.options].find(o => o.value === match || o.textContent.startsWith(match));
+        if (!opt) throw new Error('Convert to ' + match + ' not offered');
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await sleep(700);
+        await waitPlan();
+      };
+      const options = async () => {
+        const d = document.querySelector('details.options');
+        if (!d) throw new Error('Options not shown');
+        d.open = true;
+        await sleep(300);
+      };
+      const tick = async (text) => {
+        const label = [...document.querySelectorAll('label.checkbox')].find(l => l.textContent.includes(text));
+        const box = label?.querySelector('input');
+        if (!box) throw new Error(text + ' not shown');
+        if (!box.checked) box.click();
+        await sleep(400);
+      };
+      const expand = async (text) => {
+        const b = [...document.querySelectorAll('button.chevron')]
+          .find(x => (x.getAttribute('aria-label') || '').includes(text));
+        if (!b) throw new Error(text + ' is not one row');
+        b.click();
+        await sleep(400);
+      };
+      const press = async (text) => {
+        const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim().startsWith(text));
+        if (!b) throw new Error(text + ' button not found');
+        b.click();
+        await sleep(1200);
+      };
+      await drive('eXoDOS');
+      await selectAll();
+    })()
+- url: http://127.0.0.1:8099/?s=files-exodos-dark#/files
+  output: docs/screenshots/files-exodos-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_files_exodos
+
+# --- A Usenet drive: a RAR set is one row, its volumes nested under it.
+- url: http://127.0.0.1:8099/?s=files-rar-light#/files
+  output: docs/screenshots/files-rar-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: &js_files_rar |
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await sleep(400);
+      const drive = async (name) => {
+        const b = [...document.querySelectorAll('button.item')].find(x => x.textContent.trim() === name);
+        if (!b) throw new Error(name + ' drive not found');
+        b.click();
+        await sleep(900);
+      };
+      const waitPlan = async () => {
+        for (let i = 0; i < 60 && !document.querySelector('.convert-plan .lines'); i++) await sleep(150);
+        await sleep(300);
+      };
+      const selectAll = async () => {
+        const all = document.querySelector('thead input[type="checkbox"]');
+        if (all && !all.checked) all.click();
+        await waitPlan();
+      };
+      const tickRow = async (text) => {
+        const row = [...document.querySelectorAll('tbody tr.row:not(.part)')].find(tr => tr.textContent.includes(text));
+        const box = row?.querySelector('input[type="checkbox"]');
+        if (!box) throw new Error(text + ' row not found');
+        if (!box.checked) box.click();
+        await waitPlan();
+      };
+      const convertTo = async (match) => {
+        const sel = document.querySelector('section.panel .field select');
+        const opt = sel && [...sel.options].find(o => o.value === match || o.textContent.startsWith(match));
+        if (!opt) throw new Error('Convert to ' + match + ' not offered');
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await sleep(700);
+        await waitPlan();
+      };
+      const options = async () => {
+        const d = document.querySelector('details.options');
+        if (!d) throw new Error('Options not shown');
+        d.open = true;
+        await sleep(300);
+      };
+      const tick = async (text) => {
+        const label = [...document.querySelectorAll('label.checkbox')].find(l => l.textContent.includes(text));
+        const box = label?.querySelector('input');
+        if (!box) throw new Error(text + ' not shown');
+        if (!box.checked) box.click();
+        await sleep(400);
+      };
+      const expand = async (text) => {
+        const b = [...document.querySelectorAll('button.chevron')]
+          .find(x => (x.getAttribute('aria-label') || '').includes(text));
+        if (!b) throw new Error(text + ' is not one row');
+        b.click();
+        await sleep(400);
+      };
+      const press = async (text) => {
+        const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim().startsWith(text));
+        if (!b) throw new Error(text + ' button not found');
+        b.click();
+        await sleep(1200);
+      };
+      await drive('Usenet');
+      const set = document.querySelector('button.chevron');
+      if (!set) throw new Error('RAR set is not one row');
+      set.click();
+      await sleep(400);
+    })()
+- url: http://127.0.0.1:8099/?s=files-rar-dark#/files
+  output: docs/screenshots/files-rar-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_files_rar
+
+# --- An Xbox 360 drive, Convert to = ZAR (#422).
+- url: http://127.0.0.1:8099/?s=files-xbox360-light#/files
+  output: docs/screenshots/files-xbox360-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: &js_files_xbox360 |
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await sleep(400);
+      const drive = async (name) => {
+        const b = [...document.querySelectorAll('button.item')].find(x => x.textContent.trim() === name);
+        if (!b) throw new Error(name + ' drive not found');
+        b.click();
+        await sleep(900);
+      };
+      const waitPlan = async () => {
+        for (let i = 0; i < 60 && !document.querySelector('.convert-plan .lines'); i++) await sleep(150);
+        await sleep(300);
+      };
+      const selectAll = async () => {
+        const all = document.querySelector('thead input[type="checkbox"]');
+        if (all && !all.checked) all.click();
+        await waitPlan();
+      };
+      const tickRow = async (text) => {
+        const row = [...document.querySelectorAll('tbody tr.row:not(.part)')].find(tr => tr.textContent.includes(text));
+        const box = row?.querySelector('input[type="checkbox"]');
+        if (!box) throw new Error(text + ' row not found');
+        if (!box.checked) box.click();
+        await waitPlan();
+      };
+      const convertTo = async (match) => {
+        const sel = document.querySelector('section.panel .field select');
+        const opt = sel && [...sel.options].find(o => o.value === match || o.textContent.startsWith(match));
+        if (!opt) throw new Error('Convert to ' + match + ' not offered');
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await sleep(700);
+        await waitPlan();
+      };
+      const options = async () => {
+        const d = document.querySelector('details.options');
+        if (!d) throw new Error('Options not shown');
+        d.open = true;
+        await sleep(300);
+      };
+      const tick = async (text) => {
+        const label = [...document.querySelectorAll('label.checkbox')].find(l => l.textContent.includes(text));
+        const box = label?.querySelector('input');
+        if (!box) throw new Error(text + ' not shown');
+        if (!box.checked) box.click();
+        await sleep(400);
+      };
+      const expand = async (text) => {
+        const b = [...document.querySelectorAll('button.chevron')]
+          .find(x => (x.getAttribute('aria-label') || '').includes(text));
+        if (!b) throw new Error(text + ' is not one row');
+        b.click();
+        await sleep(400);
+      };
+      const press = async (text) => {
+        const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim().startsWith(text));
+        if (!b) throw new Error(text + ' button not found');
+        b.click();
+        await sleep(1200);
+      };
+      await drive('Xbox 360');
+      await selectAll();
+      await convertTo('ZAR');
+    })()
+- url: http://127.0.0.1:8099/?s=files-xbox360-dark#/files
+  output: docs/screenshots/files-xbox360-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_files_xbox360
+
+# --- A 3DS CIA to CCI with Delete on: the delete preview says the new file must
+# be a known good dump (#423). Nothing is queued.
+- url: http://127.0.0.1:8099/?s=files-known-dump-light#/files
+  output: docs/screenshots/files-known-dump-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: &js_files_known_dump |
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await sleep(400);
+      const drive = async (name) => {
+        const b = [...document.querySelectorAll('button.item')].find(x => x.textContent.trim() === name);
+        if (!b) throw new Error(name + ' drive not found');
+        b.click();
+        await sleep(900);
+      };
+      const waitPlan = async () => {
+        for (let i = 0; i < 60 && !document.querySelector('.convert-plan .lines'); i++) await sleep(150);
+        await sleep(300);
+      };
+      const selectAll = async () => {
+        const all = document.querySelector('thead input[type="checkbox"]');
+        if (all && !all.checked) all.click();
+        await waitPlan();
+      };
+      const tickRow = async (text) => {
+        const row = [...document.querySelectorAll('tbody tr.row:not(.part)')].find(tr => tr.textContent.includes(text));
+        const box = row?.querySelector('input[type="checkbox"]');
+        if (!box) throw new Error(text + ' row not found');
+        if (!box.checked) box.click();
+        await waitPlan();
+      };
+      const convertTo = async (match) => {
+        const sel = document.querySelector('section.panel .field select');
+        const opt = sel && [...sel.options].find(o => o.value === match || o.textContent.startsWith(match));
+        if (!opt) throw new Error('Convert to ' + match + ' not offered');
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await sleep(700);
+        await waitPlan();
+      };
+      const options = async () => {
+        const d = document.querySelector('details.options');
+        if (!d) throw new Error('Options not shown');
+        d.open = true;
+        await sleep(300);
+      };
+      const tick = async (text) => {
+        const label = [...document.querySelectorAll('label.checkbox')].find(l => l.textContent.includes(text));
+        const box = label?.querySelector('input');
+        if (!box) throw new Error(text + ' not shown');
+        if (!box.checked) box.click();
+        await sleep(400);
+      };
+      const expand = async (text) => {
+        const b = [...document.querySelectorAll('button.chevron')]
+          .find(x => (x.getAttribute('aria-label') || '').includes(text));
+        if (!b) throw new Error(text + ' is not one row');
+        b.click();
+        await sleep(400);
+      };
+      const press = async (text) => {
+        const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim().startsWith(text));
+        if (!b) throw new Error(text + ' button not found');
+        b.click();
+        await sleep(1200);
+      };
+      await drive('Nintendo 3DS');
+      await tickRow('.cia');
+      await convertTo('cia_to_cci');
+      await options();
+      await tick('Delete the original');
+      await press('Convert ');
+    })()
+- url: http://127.0.0.1:8099/?s=files-known-dump-dark#/files
+  output: docs/screenshots/files-known-dump-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_files_known_dump
+
+# --- The Final Quest playlist ticked (both discs), Delete on, Convert pressed: the
+# delete preview lists the files and the playlist edit. Nothing is queued.
 - url: http://127.0.0.1:8099/?s=delete-plan-light#/files
   output: docs/screenshots/delete-plan-light.png
   width: 1280
   height: 900
   wait: 1800
-  javascript: |
+  javascript: &js_delete_plan |
     (async () => {
       const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-      localStorage.setItem('theme-preference', 'light');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
       await sleep(400);
-      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'PlayStation');
-      if (vol) vol.click();
-      await sleep(800);
-      const row = [...document.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes('Final Quest (Disc 1).cue'));
-      const pick = row?.querySelector('input[type="checkbox"]');
-      if (pick && !pick.checked) pick.click();
-      await sleep(400);
-      const del = [...document.querySelectorAll('label')]
-        .find(l => l.textContent.includes('Delete sources after successful verification'))
-        ?.querySelector('input[type="checkbox"]');
-      if (del && !del.checked) del.click();
-      await sleep(300);
-      [...document.querySelectorAll('button')].find(b => b.textContent.includes('Start conversion'))?.click();
-      await sleep(1200);
+      const drive = async (name) => {
+        const b = [...document.querySelectorAll('button.item')].find(x => x.textContent.trim() === name);
+        if (!b) throw new Error(name + ' drive not found');
+        b.click();
+        await sleep(900);
+      };
+      const waitPlan = async () => {
+        for (let i = 0; i < 60 && !document.querySelector('.convert-plan .lines'); i++) await sleep(150);
+        await sleep(300);
+      };
+      const selectAll = async () => {
+        const all = document.querySelector('thead input[type="checkbox"]');
+        if (all && !all.checked) all.click();
+        await waitPlan();
+      };
+      const tickRow = async (text) => {
+        const row = [...document.querySelectorAll('tbody tr.row:not(.part)')].find(tr => tr.textContent.includes(text));
+        const box = row?.querySelector('input[type="checkbox"]');
+        if (!box) throw new Error(text + ' row not found');
+        if (!box.checked) box.click();
+        await waitPlan();
+      };
+      const convertTo = async (match) => {
+        const sel = document.querySelector('section.panel .field select');
+        const opt = sel && [...sel.options].find(o => o.value === match || o.textContent.startsWith(match));
+        if (!opt) throw new Error('Convert to ' + match + ' not offered');
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await sleep(700);
+        await waitPlan();
+      };
+      const options = async () => {
+        const d = document.querySelector('details.options');
+        if (!d) throw new Error('Options not shown');
+        d.open = true;
+        await sleep(300);
+      };
+      const tick = async (text) => {
+        const label = [...document.querySelectorAll('label.checkbox')].find(l => l.textContent.includes(text));
+        const box = label?.querySelector('input');
+        if (!box) throw new Error(text + ' not shown');
+        if (!box.checked) box.click();
+        await sleep(400);
+      };
+      const expand = async (text) => {
+        const b = [...document.querySelectorAll('button.chevron')]
+          .find(x => (x.getAttribute('aria-label') || '').includes(text));
+        if (!b) throw new Error(text + ' is not one row');
+        b.click();
+        await sleep(400);
+      };
+      const press = async (text) => {
+        const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim().startsWith(text));
+        if (!b) throw new Error(text + ' button not found');
+        b.click();
+        await sleep(1200);
+      };
+      await drive('PlayStation');
+      await tickRow('Final Quest');
+      await options();
+      await tick('Delete the original');
+      await press('Convert ');
     })()
 - url: http://127.0.0.1:8099/?s=delete-plan-dark#/files
   output: docs/screenshots/delete-plan-dark.png
   width: 1280
   height: 900
   wait: 1800
-  javascript: |
-    (async () => {
-      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-      localStorage.setItem('theme-preference', 'dark');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
-      await sleep(400);
-      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'PlayStation');
-      if (vol) vol.click();
-      await sleep(800);
-      const row = [...document.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes('Final Quest (Disc 1).cue'));
-      const pick = row?.querySelector('input[type="checkbox"]');
-      if (pick && !pick.checked) pick.click();
-      await sleep(400);
-      const del = [...document.querySelectorAll('label')]
-        .find(l => l.textContent.includes('Delete sources after successful verification'))
-        ?.querySelector('input[type="checkbox"]');
-      if (del && !del.checked) del.click();
-      await sleep(300);
-      [...document.querySelectorAll('button')].find(b => b.textContent.includes('Start conversion'))?.click();
-      await sleep(1200);
-    })()
+  javascript: *js_delete_plan
 
 # === PR 3: Libraries ===
 # --- Delete-on-verify confirmation with the RomM swap (#391) ----------------
@@ -333,313 +1160,6 @@
       await sleep(300);
       [...document.querySelectorAll('button')].find(b => b.textContent.includes('Create .m3u'))?.click();
       await sleep(1200);
-    })()
-
-# --- Workspace: Dolphin (GameCube volume selected) -------------------------
-- url: http://127.0.0.1:8099/?s=workspace-dolphin-light#/files
-  output: docs/screenshots/workspace-dolphin-light.png
-  width: 1280
-  height: 900
-  wait: 1800
-  javascript: |
-    (async () => {
-      localStorage.setItem('theme-preference', 'light');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
-      await new Promise(r => setTimeout(r, 400));
-      // The Convert panel's tool comes from its Convert-to list now, not the URL.
-      const pick = document.querySelector('select[aria-label="Convert to"]');
-      if (pick) { pick.value = 'dolphin_rvz'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
-      await new Promise(r => setTimeout(r, 300));
-      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'GameCube');
-      if (vol) vol.click();
-      await new Promise(r => setTimeout(r, 500));
-    })()
-- url: http://127.0.0.1:8099/?s=workspace-dolphin-dark#/files
-  output: docs/screenshots/workspace-dolphin-dark.png
-  width: 1280
-  height: 900
-  wait: 1800
-  javascript: |
-    (async () => {
-      localStorage.setItem('theme-preference', 'dark');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
-      await new Promise(r => setTimeout(r, 400));
-      // The Convert panel's tool comes from its Convert-to list now, not the URL.
-      const pick = document.querySelector('select[aria-label="Convert to"]');
-      if (pick) { pick.value = 'dolphin_rvz'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
-      await new Promise(r => setTimeout(r, 300));
-      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'GameCube');
-      if (vol) vol.click();
-      await new Promise(r => setTimeout(r, 500));
-    })()
-
-# --- Workspace: Dolphin delete-source (Round-trip, container-only opt-out) --
-# Selects every GameCube file and ticks delete-source so the convert panel
-# shows the Round-trip wording and the "Container check only" opt-out (#298).
-# The checkbox is found by its label text, the only stable hook it has.
-- url: http://127.0.0.1:8099/?s=workspace-dolphin-delete-light#/files
-  output: docs/screenshots/workspace-dolphin-delete-light.png
-  width: 1280
-  height: 900
-  wait: 1800
-  javascript: &js_dolphin_delete |
-    (async () => {
-      const theme = new URLSearchParams(location.search).get('s').endsWith('dark')
-        ? 'dark' : 'light';
-      localStorage.setItem('theme-preference', theme);
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
-      await new Promise(r => setTimeout(r, 400));
-      // The Convert panel's tool comes from its Convert-to list now, not the URL.
-      const pick = document.querySelector('select[aria-label="Convert to"]');
-      if (pick) { pick.value = 'dolphin_rvz'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
-      await new Promise(r => setTimeout(r, 300));
-      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'GameCube');
-      if (vol) vol.click();
-      await new Promise(r => setTimeout(r, 500));
-      const all = document.querySelector('thead input[type="checkbox"]');
-      if (all && !all.checked) all.click();
-      await new Promise(r => setTimeout(r, 400));
-      const box = [...document.querySelectorAll('label.checkbox')]
-        .find(l => l.textContent.includes('Delete sources'));
-      const input = box && box.querySelector('input');
-      if (input && !input.checked) input.click();
-      await new Promise(r => setTimeout(r, 400));
-    })()
-- url: http://127.0.0.1:8099/?s=workspace-dolphin-delete-dark#/files
-  output: docs/screenshots/workspace-dolphin-delete-dark.png
-  width: 1280
-  height: 900
-  wait: 1800
-  javascript: *js_dolphin_delete
-
-# --- Workspace: rom-converto, Xbox 360 ISO -> ZAR (#422) ------------------
-# Selects the Xbox 360 image so the convert panel shows the ZAR mode, and in
-# place of the delete option the line saying why the Source is always kept.
-- url: http://127.0.0.1:8099/?s=workspace-rom-converto-light#/files
-  output: docs/screenshots/workspace-rom-converto-light.png
-  width: 1280
-  height: 900
-  wait: 1800
-  javascript: &js_rom_converto |
-    (async () => {
-      const theme = new URLSearchParams(location.search).get('s').endsWith('dark')
-        ? 'dark' : 'light';
-      localStorage.setItem('theme-preference', theme);
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
-      await new Promise(r => setTimeout(r, 400));
-      // The Convert panel's tool comes from its Convert-to list now, not the URL.
-      const pick = document.querySelector('select[aria-label="Convert to"]');
-      if (pick) { pick.value = 'zar_compress'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
-      await new Promise(r => setTimeout(r, 300));
-      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Xbox 360');
-      if (!vol) throw new Error('Xbox 360 volume not found');
-      vol.click();
-      await new Promise(r => setTimeout(r, 800));
-      const all = document.querySelector('thead input[type="checkbox"]');
-      if (all && !all.checked) all.click();
-      await new Promise(r => setTimeout(r, 500));
-      if (!document.querySelector('.source-kept')) throw new Error('source-kept line not shown');
-    })()
-- url: http://127.0.0.1:8099/?s=workspace-rom-converto-dark#/files
-  output: docs/screenshots/workspace-rom-converto-dark.png
-  width: 1280
-  height: 900
-  wait: 1800
-  javascript: *js_rom_converto
-
-# --- Workspace: rom-converto, 3DS CIA -> CCI with the Recognized proof (#423)
-# Picks the CIA -> CCI mode, selects the fixture's synthetic CIA and ticks
-# delete-source, so the panel says the output must be Recognized and offers no
-# container-only box.
-- url: http://127.0.0.1:8099/?s=workspace-rom-converto-recognized-light#/files
-  output: docs/screenshots/workspace-rom-converto-recognized-light.png
-  width: 1280
-  height: 900
-  wait: 1800
-  javascript: &js_rom_converto_recognized |
-    (async () => {
-      const theme = new URLSearchParams(location.search).get('s').endsWith('dark')
-        ? 'dark' : 'light';
-      localStorage.setItem('theme-preference', theme);
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
-      await new Promise(r => setTimeout(r, 400));
-      const sel = document.querySelector('select[aria-label="Convert to"]');
-      if (!sel) throw new Error('mode select not found');
-      sel.value = 'cia_to_cci';
-      sel.dispatchEvent(new Event('change', { bubbles: true }));
-      await new Promise(r => setTimeout(r, 400));
-      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Nintendo 3DS');
-      if (!vol) throw new Error('Nintendo 3DS volume not found');
-      vol.click();
-      await new Promise(r => setTimeout(r, 800));
-      const all = document.querySelector('thead input[type="checkbox"]');
-      if (all && !all.checked) all.click();
-      await new Promise(r => setTimeout(r, 500));
-      const box = [...document.querySelectorAll('label.checkbox')]
-        .find(l => l.textContent.includes('Delete sources'));
-      const input = box && box.querySelector('input');
-      if (!input) throw new Error('delete option not shown');
-      if (!input.checked) input.click();
-      await new Promise(r => setTimeout(r, 400));
-      if (!box.textContent.includes('Recognized')) throw new Error('Recognized hint not shown');
-    })()
-- url: http://127.0.0.1:8099/?s=workspace-rom-converto-recognized-dark#/files
-  output: docs/screenshots/workspace-rom-converto-recognized-dark.png
-  width: 1280
-  height: 900
-  wait: 1800
-  javascript: *js_rom_converto_recognized
-
-# --- Workspace: 3DS (Nintendo 3DS volume selected) ------------------------
-- url: http://127.0.0.1:8099/?s=workspace-3ds-light#/files
-  output: docs/screenshots/workspace-3ds-light.png
-  width: 1280
-  height: 900
-  wait: 1800
-  javascript: |
-    (async () => {
-      localStorage.setItem('theme-preference', 'light');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
-      await new Promise(r => setTimeout(r, 400));
-      // The Convert panel's tool comes from its Convert-to list now, not the URL.
-      const pick = document.querySelector('select[aria-label="Convert to"]');
-      if (pick) { pick.value = 'z3ds_compress'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
-      await new Promise(r => setTimeout(r, 300));
-      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Nintendo 3DS');
-      if (vol) vol.click();
-      await new Promise(r => setTimeout(r, 500));
-    })()
-- url: http://127.0.0.1:8099/?s=workspace-3ds-dark#/files
-  output: docs/screenshots/workspace-3ds-dark.png
-  width: 1280
-  height: 900
-  wait: 1800
-  javascript: |
-    (async () => {
-      localStorage.setItem('theme-preference', 'dark');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
-      await new Promise(r => setTimeout(r, 400));
-      // The Convert panel's tool comes from its Convert-to list now, not the URL.
-      const pick = document.querySelector('select[aria-label="Convert to"]');
-      if (pick) { pick.value = 'z3ds_compress'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
-      await new Promise(r => setTimeout(r, 300));
-      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Nintendo 3DS');
-      if (vol) vol.click();
-      await new Promise(r => setTimeout(r, 500));
-    })()
-
-# --- Workspace: Wii U (Wii U volume selected) -----------------------------
-- url: http://127.0.0.1:8099/?s=workspace-wiiu-light#/files
-  output: docs/screenshots/workspace-wiiu-light.png
-  width: 1280
-  height: 900
-  wait: 1800
-  javascript: |
-    (async () => {
-      localStorage.setItem('theme-preference', 'light');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
-      await new Promise(r => setTimeout(r, 400));
-      // The Convert panel's tool comes from its Convert-to list now, not the URL.
-      const pick = document.querySelector('select[aria-label="Convert to"]');
-      if (pick) { pick.value = 'jwud_compress'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
-      await new Promise(r => setTimeout(r, 300));
-      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Wii U');
-      if (vol) vol.click();
-      await new Promise(r => setTimeout(r, 500));
-    })()
-- url: http://127.0.0.1:8099/?s=workspace-wiiu-dark#/files
-  output: docs/screenshots/workspace-wiiu-dark.png
-  width: 1280
-  height: 900
-  wait: 1800
-  javascript: |
-    (async () => {
-      localStorage.setItem('theme-preference', 'dark');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
-      await new Promise(r => setTimeout(r, 400));
-      // The Convert panel's tool comes from its Convert-to list now, not the URL.
-      const pick = document.querySelector('select[aria-label="Convert to"]');
-      if (pick) { pick.value = 'jwud_compress'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
-      await new Promise(r => setTimeout(r, 300));
-      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Wii U');
-      if (vol) vol.click();
-      await new Promise(r => setTimeout(r, 500));
-    })()
-
-# --- Workspace: eXoDOS (eXoDOS volume selected) ---------------------------
-- url: http://127.0.0.1:8099/?s=workspace-exodos-light#/files
-  output: docs/screenshots/workspace-exodos-light.png
-  width: 1280
-  height: 900
-  wait: 1800
-  javascript: |
-    (async () => {
-      localStorage.setItem('theme-preference', 'light');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
-      await new Promise(r => setTimeout(r, 400));
-      // The Convert panel's tool comes from its Convert-to list now, not the URL.
-      const pick = document.querySelector('select[aria-label="Convert to"]');
-      if (pick) { pick.value = 'exodos_repack'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
-      await new Promise(r => setTimeout(r, 300));
-      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'eXoDOS');
-      if (vol) vol.click();
-      await new Promise(r => setTimeout(r, 500));
-    })()
-- url: http://127.0.0.1:8099/?s=workspace-exodos-dark#/files
-  output: docs/screenshots/workspace-exodos-dark.png
-  width: 1280
-  height: 900
-  wait: 1800
-  javascript: |
-    (async () => {
-      localStorage.setItem('theme-preference', 'dark');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
-      await new Promise(r => setTimeout(r, 400));
-      // The Convert panel's tool comes from its Convert-to list now, not the URL.
-      const pick = document.querySelector('select[aria-label="Convert to"]');
-      if (pick) { pick.value = 'exodos_repack'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
-      await new Promise(r => setTimeout(r, 300));
-      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'eXoDOS');
-      if (vol) vol.click();
-      await new Promise(r => setTimeout(r, 500));
-    })()
-
-# --- Workspace: RAR sets (Usenet volume selected) ------------------------
-- url: http://127.0.0.1:8099/?s=workspace-rar-light#/files
-  output: docs/screenshots/workspace-rar-light.png
-  width: 1280
-  height: 900
-  wait: 1800
-  javascript: |
-    (async () => {
-      localStorage.setItem('theme-preference', 'light');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
-      await new Promise(r => setTimeout(r, 400));
-      // The Convert panel's tool comes from its Convert-to list now, not the URL.
-      const pick = document.querySelector('select[aria-label="Convert to"]');
-      if (pick) { pick.value = 'rar_extract'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
-      await new Promise(r => setTimeout(r, 300));
-      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Usenet');
-      if (vol) vol.click();
-      await new Promise(r => setTimeout(r, 500));
-    })()
-- url: http://127.0.0.1:8099/?s=workspace-rar-dark#/files
-  output: docs/screenshots/workspace-rar-dark.png
-  width: 1280
-  height: 900
-  wait: 1800
-  javascript: |
-    (async () => {
-      localStorage.setItem('theme-preference', 'dark');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
-      await new Promise(r => setTimeout(r, 400));
-      // The Convert panel's tool comes from its Convert-to list now, not the URL.
-      const pick = document.querySelector('select[aria-label="Convert to"]');
-      if (pick) { pick.value = 'rar_extract'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
-      await new Promise(r => setTimeout(r, 300));
-      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Usenet');
-      if (vol) vol.click();
-      await new Promise(r => setTimeout(r, 500));
     })()
 
 # === PR 4: Activity ===
@@ -1721,37 +2241,99 @@
   javascript: *js_theme_dark
 
 # === PR 2: Files ===
-# --- Responsive layouts (workspace at desktop / tablet / mobile widths) ----
+# --- Responsive layouts: Files at desktop / laptop / tablet / phone widths
+# Everything on the PlayStation drive selected; on a phone the Convert panel
+# is the sheet pinned to the bottom.
 - url: http://127.0.0.1:8099/?s=docs-desktop-view#/files
   output: docs/screenshots/docs-desktop-view.png
-  width: 1280
+  width: 1440
   height: 900
   wait: 1800
-  javascript: *js_theme_light
-# Laptop width sits in the 900-1279px band: two-column grid, volumes rail +
-# file list on top, convert/jobs panel stacked full-width below. Kept in the
-# set because this band had no coverage when its layout regressed (the
-# convert panel collapsed into the 220px rail column, unseen by the 1280px
-# and 768px shots).
+  javascript: &js_docs_views |
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await sleep(400);
+      const drive = async (name) => {
+        const b = [...document.querySelectorAll('button.item')].find(x => x.textContent.trim() === name);
+        if (!b) throw new Error(name + ' drive not found');
+        b.click();
+        await sleep(900);
+      };
+      const waitPlan = async () => {
+        for (let i = 0; i < 60 && !document.querySelector('.convert-plan .lines'); i++) await sleep(150);
+        await sleep(300);
+      };
+      const selectAll = async () => {
+        const all = document.querySelector('thead input[type="checkbox"]');
+        if (all && !all.checked) all.click();
+        await waitPlan();
+      };
+      const tickRow = async (text) => {
+        const row = [...document.querySelectorAll('tbody tr.row:not(.part)')].find(tr => tr.textContent.includes(text));
+        const box = row?.querySelector('input[type="checkbox"]');
+        if (!box) throw new Error(text + ' row not found');
+        if (!box.checked) box.click();
+        await waitPlan();
+      };
+      const convertTo = async (match) => {
+        const sel = document.querySelector('section.panel .field select');
+        const opt = sel && [...sel.options].find(o => o.value === match || o.textContent.startsWith(match));
+        if (!opt) throw new Error('Convert to ' + match + ' not offered');
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await sleep(700);
+        await waitPlan();
+      };
+      const options = async () => {
+        const d = document.querySelector('details.options');
+        if (!d) throw new Error('Options not shown');
+        d.open = true;
+        await sleep(300);
+      };
+      const tick = async (text) => {
+        const label = [...document.querySelectorAll('label.checkbox')].find(l => l.textContent.includes(text));
+        const box = label?.querySelector('input');
+        if (!box) throw new Error(text + ' not shown');
+        if (!box.checked) box.click();
+        await sleep(400);
+      };
+      const expand = async (text) => {
+        const b = [...document.querySelectorAll('button.chevron')]
+          .find(x => (x.getAttribute('aria-label') || '').includes(text));
+        if (!b) throw new Error(text + ' is not one row');
+        b.click();
+        await sleep(400);
+      };
+      const press = async (text) => {
+        const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim().startsWith(text));
+        if (!b) throw new Error(text + ' button not found');
+        b.click();
+        await sleep(1200);
+      };
+      await drive('PlayStation');
+      await selectAll();
+    })()
 - url: http://127.0.0.1:8099/?s=docs-laptop-view#/files
   output: docs/screenshots/docs-laptop-view.png
-  width: 1100
-  height: 900
+  width: 1280
+  height: 800
   wait: 1800
-  javascript: *js_theme_light
+  javascript: *js_docs_views
 - url: http://127.0.0.1:8099/?s=docs-tablet-view#/files
   output: docs/screenshots/docs-tablet-view.png
-  width: 768
-  height: 1024
+  width: 820
+  height: 1180
   wait: 1800
-  javascript: *js_theme_light
+  javascript: *js_docs_views
 - url: http://127.0.0.1:8099/?s=docs-mobile-view#/files
   output: docs/screenshots/docs-mobile-view.png
-  width: 375
-  height: 812
+  width: 390
+  height: 844
   wait: 1800
-  javascript: *js_theme_light
-
+  javascript: *js_docs_views
 # === PR 3: Libraries ===
 # --- Keep the ROM id when converting (#390) --------------------------------
 # The Settings tab's switch card with the switch on and RomM saying the token

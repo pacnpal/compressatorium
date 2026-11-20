@@ -81,15 +81,8 @@
     return out;
   });
 
-  /** Switch the workspace to a chosen target format, tool included.
-   *
-   * `setPrimaryTool` resets the mode to that tool's default, so it has to run
-   * first — and it has to run at all, because the Convert panel and the
-   * sidebar both key off the primary tool, not the mode.
-   */
+  /** The Convert panel's "Convert to", set to the picked mode. */
   function chooseMode(mode) {
-    const tool = registry.toolForMode(mode);
-    if (tool && tool.id !== conversion.primaryTool) conversion.setPrimaryTool(tool.id);
     conversion.chooseTarget(mode);
   }
 

@@ -69,11 +69,13 @@ process.stdout.write(JSON.stringify({
     assert "/v/x.part2.rar" not in data["afterAll"], data
 
 
-def test_a_companion_row_names_the_source_it_belongs_to():
+def test_a_companion_row_folds_under_the_source_it_belongs_to():
+    """Restructure 2/6: the set is one row; its parts nest under it."""
     row = (_LIB / "components" / "panels" / "FileRow.svelte").read_text(encoding="utf-8")
 
-    assert "entry?.companion_of" in row
-    assert "part of" in row
+    assert "entry?.parts" in row
+    assert "aria-expanded={expanded}" in row
+    assert "part of" not in row
 
 
 _SKIPS = """
@@ -81,26 +83,26 @@ const seen = [];
 toast.warning = (m, o) => seen.push(['warning', m, o?.description ?? null]);
 toast.success = (m, o) => seen.push(['success', m, o?.description ?? null]);
 const store = new ConversionStore();
-store.mode = 'rar_extract';
+const planned = (paths) => paths.map((p) => ({ file_path: p, mode: 'createcd' }));
 """
 
 
 def test_the_toast_says_why_each_item_was_skipped(tmp_path):
     data = _run_conversion(tmp_path, _SKIPS + """
-jobs.createBatch = async () => ({
-  jobs: [],
+autoAnswer = () => ({
+  plan: [], jobs: [],
   skipped: [{
     path: '/v/x.part2.rar', code: 'rar_set_not_extractable',
     reason: 'x.part2.rar is a later volume of a RAR set; select its first volume, x.part1.rar',
   }],
 });
-await store.submit(['/v/x.part2.rar']);
+await store.submitAuto(['/v/x.part2.rar'], { plan: planned(['/v/x.part2.rar']) });
 process.stdout.write(JSON.stringify({ seen }));
 """)
 
     [(kind, title, description)] = data["seen"]
     assert kind == "warning", data
-    assert title == "No jobs queued (all 1 skipped)", data
+    assert title == "Nothing converted: all 1 skipped", data
     assert "later volume of a RAR set" in description, data
     assert "x.part1.rar" in description, data
 
@@ -108,19 +110,20 @@ process.stdout.write(JSON.stringify({ seen }));
 def test_the_toast_names_the_first_few_reasons_and_counts_the_rest(tmp_path):
     data = _run_conversion(tmp_path, _SKIPS + """
 const paths = ['/v/a.iso', '/v/b.iso', '/v/c.iso', '/v/d.iso', '/v/e.iso', '/v/k.iso'];
-jobs.createBatch = async () => ({
+autoAnswer = () => ({
+  plan: [],
   jobs: [{ id: 'j', file_path: '/v/k.iso', output_path: '/v/k.chd' }],
   skipped: paths.slice(0, 5).map((p) => ({
     path: p, code: 'file_not_found', reason: 'File not found',
   })),
 });
-await store.submit(paths);
+await store.submitAuto(paths, { plan: planned(paths) });
 process.stdout.write(JSON.stringify({ seen }));
 """)
 
     [(kind, title, description)] = data["seen"]
     assert kind == "success", data
-    assert title == "Queued 1 of 6 job(s); 5 skipped", data
+    assert title == "Converting 1. 5 skipped: File not found", data
     assert description.count("File not found") == 3, data
     assert "a.iso" in description and "c.iso" in description, data
     assert "d.iso" not in description, data
@@ -129,14 +132,14 @@ process.stdout.write(JSON.stringify({ seen }));
 
 def test_a_batch_with_nothing_skipped_has_no_reasons(tmp_path):
     data = _run_conversion(tmp_path, _SKIPS + """
-jobs.createBatch = async () => ({
-  jobs: [{ id: 'j', file_path: '/v/a.iso', output_path: '/v/a.chd' }], skipped: [],
+autoAnswer = () => ({
+  plan: [], jobs: [{ id: 'j', file_path: '/v/a.iso', output_path: '/v/a.chd' }], skipped: [],
 });
-await store.submit(['/v/a.iso']);
+await store.submitAuto(['/v/a.iso'], { plan: planned(['/v/a.iso']) });
 process.stdout.write(JSON.stringify({ seen }));
 """)
 
-    assert data["seen"] == [["success", "Queued 1 job(s)", None]], data
+    assert data["seen"] == [["success", "Converting 1 game", None]], data
 
 
 def test_the_jobs_store_asks_for_the_skips_and_returns_them(tmp_path):

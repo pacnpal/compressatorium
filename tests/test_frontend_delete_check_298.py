@@ -84,8 +84,10 @@ def test_a_recognized_mode_promises_the_recognized_check(tmp_path):
 
 def test_the_panel_and_the_rule_editor_say_which_proof_each_mode_uses():
     src = Path(__file__).resolve().parents[1] / "src" / "lib" / "components"
-    panel = (src / "panels" / "ConvertPanel.svelte").read_text(encoding="utf-8")
-    assert "DELETE_CHECK_HINTS[conversion.deleteCheck]" in panel
+    # The panel's delete copy is SafetyOptions'; the check it rests on is
+    # named in the delete preview, over every group the plan deletes.
+    store = (src.parent / "stores" / "conversion.svelte.js").read_text(encoding="utf-8")
+    assert "CHECK_STRENGTH.find((c) => checks.includes(c))" in store
     editor = (src / "views" / "RuleEditor.svelte").read_text(encoding="utf-8")
     assert "DELETE_CHECK_HINTS[ruleDeleteCheck(spec, rule)]" in editor
     modal = (src / "modals" / "DeletePlanModal.svelte").read_text(encoding="utf-8")

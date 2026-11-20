@@ -126,6 +126,45 @@ export function convertTargets({
   return groups.filter((g) => g.options.length > 0);
 }
 
+/**
+ * The mode specs a Convert-to value names: a mode id is that mode, a format
+ * (`.chd`) every Make-smaller mode that writes it, and '' (Best) none.
+ */
+export function specsForTarget(value) {
+  if (!value) return [];
+  if (!value.startsWith('.')) {
+    const spec = registry.specFor(value);
+    return spec ? [spec] : [];
+  }
+  const found = [];
+  for (const tool of registry.all()) {
+    for (const spec of tool.modes ?? []) {
+      if (groupOf(spec) === 'Make smaller' && spec.outputExt === value) found.push(spec);
+    }
+  }
+  return found;
+}
+
+/** A file's format by its name ('Game.chd' -> 'CHD'), or null with no extension. */
+export function formatOfPath(path) {
+  const name = String(path ?? '').split('::').pop().split(/[\\/]/).pop().toLowerCase();
+  const compound = Object.keys(FORMAT_LABELS).find((ext) => name.endsWith(ext));
+  if (compound) return FORMAT_LABELS[compound];
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? formatLabel(name.slice(dot)) : null;
+}
+
+/**
+ * The format a row would most likely become: the first Make-smaller option
+ * that reads it, or null when nothing here makes it smaller. For the row's
+ * "→ CHD" hint; the plan is what decides.
+ */
+export function likelyFormat(entry, ready = null) {
+  const smaller = convertTargets({ entries: [entry], ready })
+    .find((g) => g.group === 'Make smaller');
+  return smaller?.options[0]?.label ?? null;
+}
+
 /** The label of a Convert-to value: a format (`.chd`), a mode id, or '' (Best). */
 export function targetLabel(value) {
   if (!value) return BEST_FORMAT.label;
