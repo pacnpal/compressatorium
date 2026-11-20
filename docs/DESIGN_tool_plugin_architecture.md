@@ -307,8 +307,8 @@ class ToolPlugin(Protocol):
     # unavailable and the frontend hides it, instead of offering jobs that can
     # only fail. BaseTool answers it from `required_binaries` (the programs
     # the tool runs, through the shared probe, §3.4 "Declaring the programs a
-    # tool runs"); nsz and exodos override it (prod.keys, EXODOS_DOS_DIR), and
-    # so do rom_converto (its `--version` probe) and the chain (every step).
+    # tool runs"); nsz overrides it (prod.keys), exodos (always ready, #513),
+    # and so do rom_converto (its `--version` probe) and the chain (every step).
     # Async because the probe may touch disk. `not_ready_reason` / `verify_not_ready_reason` say
     # why it answered False; callers show them through `not_ready_message`
     # (§3.4) rather than formatting their own line.
@@ -7071,20 +7071,43 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   even when that worker is abandoned by the stall bound: its unlink is guarded
   by the folder descriptor, sidecar lock and inode checks the same thread
   holds while it unlinks, not by locks a caller could release.
-- **Gating.** `EXODOS_DOS_DIR` is the only source of the template tree. It must
-  be a directory inside a configured Volume; otherwise `is_ready` is false (run
-  through `run_detached`, since it stats a possibly dead mount) and the tool is
-  hidden. Checking a product reads only the `.dosz`, so `verify_is_ready` is
-  always true: `compressatorium verify` and Verify work without the install.
+- **No gating (#513).** `is_ready` and `verify_is_ready` are always true: the
+  tool runs no binary and needs no setting. The template tree is found per zip
+  by `ExodosService.candidates(path)`: the `EXODOS_DOS_DIR` override first, then
+  `<folder>/!dos` for the zip's real folder and each parent up to
+  `lock_boundary_root(path)`, nearest first. A candidate is used only when its
+  real path is a directory inside a Volume (`is_within_configured_volumes`), and
+  the template is read beneath that real path through `read_beneath`, so it
+  resolves inside the `!dos` folder it came from. The first candidate holding
+  `<game>/dosbox.conf` wins (`NoTemplate`, a missing file, moves on to the next).
+  A template that is there but refused (a link, not a regular file, too large)
+  or unreadable just now stops the search and fails the zip: it never becomes
+  a repack without a conf.
+- **No template.** A zip with no template found still repacks when its one game
+  folder holds a DOS program (`.exe`, `.com`, `.bat`, what DOSBox Pure's start
+  menu offers). That is the line between an eXoDOS game zip and any other zip
+  with one folder: the tool is manual only and writes a new `.dosz` beside a
+  Source it never changes, so a false yes costs one extra file, while a folder
+  with nothing to run is refused. Such a product gets no `dosbox.conf`: the
+  zip's own `<Game>/dosbox.conf` (in any case, `DOSBOX.CONF` too), never
+  rewritten, is left out too (PR #517), or DOSBox Pure would load it instead
+  of its start menu. The job's last update is a warning naming where it
+  looked (`RepackPlan.no_template_reason`, worked out during the bounded
+  inspection, so nothing is read on the event loop), and saying so when it
+  left the zip's own conf out. A candidate tree that is missing is skipped;
+  one whose stat fails just now (`EIO`) raises `TemplateUnreadable`, a
+  `ProbeUnavailable` the probe never caches. The repack's own
+  check requires the root conf only when it wrote one; Verify accepts a `.dosz`
+  with no root conf when it holds a DOS program.
 - **Content-refined source.** `.zip` is romz's archive extension too, so
   `converts_path` reads the zip's directory: every name passes
   `member_segments` and `enforce_archive_limits`, every member sits in one game
   folder (a loose root file refuses it), and `<tree>/<game>/dosbox.conf`
   is read through `read_beneath` (no symlink on any component, a regular
   file, one descriptor). The answer, a yes or a no, is cached per (path,
-  size, mtime) of the zip and kept only while the template tree is unchanged
-  (#331): the root's and the game folder's mtimes, and the template file's
-  own mtime, size and inode. That stamp is taken before the template is read
+  size, mtime) of the zip and its candidate list, and kept only while every
+  candidate tree is unchanged (#331, #513): each tree's, its game folder's
+  and its template file's mtime, size and inode. That stamp is taken before the template is read
   and checked again after; if the tree moved in between, the answer is not
   cached. Only a verdict is cached (not an eXoDOS layout, no template): any
   OSError reading the zip or the template (a permission or I/O error, an

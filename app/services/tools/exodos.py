@@ -6,11 +6,10 @@ why.
 
 * **Content, not extension, decides the source.** ``.zip`` is also romz's
   archive extension, so ``converts_path`` reads the zip's directory: one game
-  folder whose template is in ``EXODOS_DOS_DIR``. Cached per (path, size,
-  mtime).
-* **Gated like nsz.** No template tree, no tool: ``is_ready`` is false and the
-  sidebar hides it. Checking a product needs no tree, so ``verify_is_ready``
-  stays true.
+  folder that has a ``dosbox.conf`` template (found beside the zip or above
+  it) or holds a DOS program. Cached per (path, size, mtime).
+* **Always ready.** Nothing to install and nothing to set (#513): the
+  template tree is found per zip, and ``EXODOS_DOS_DIR`` is only an override.
 * **Verifiable, never deletable.** The product differs from its Source by
   design, so verify proves it reads back, not that it holds the Source; and the
   Source is the operator's eXoDOS install. ``supports_verify`` without
@@ -30,7 +29,6 @@ from services.exodos import (
     OUTPUT_EXTENSION,
     exodos_service,
 )
-from services.subprocess_runner import run_detached
 
 from .base import BaseTool
 from .spec import ModeKind, ModeSpec
@@ -76,14 +74,12 @@ class ExodosTool(BaseTool):
         self._service = exodos_service
 
     async def is_ready(self) -> bool:
-        # Detached, not pooled: the probe stats a directory that may sit on a
-        # mount that has stopped answering (see ToolPlugin.is_ready).
-        return bool(await run_detached(self._service.is_ready))
+        # Pure Python with no binary, and no setting to wait for: a game with
+        # no template found is still repacked, and says so (#513).
+        return True
 
     async def verify_is_ready(self) -> bool:
-        # Checking a .dosz reads only the .dosz (CRCs, names, the root conf),
-        # never the template tree, so a product stays checkable after the
-        # eXoDOS install is gone or EXODOS_DOS_DIR is unset.
+        # Checking a .dosz reads only the .dosz (CRCs, names, the root conf).
         return True
 
     def converts_path(self, path: str) -> bool:
