@@ -1,5 +1,9 @@
 # Value-add roadmap
 
+> **Status: mostly shipped.** A1 to A4, A6, A7 and N1 to N11 shipped in 4.6.0 (see
+> its entry in `docs/RELEASE_NOTES.md`). A5 and the A8 items are still open. The
+> rest of this doc is the plan as written on 2026-11-13.
+
 What Compressatorium can offer that RomM doesn't, and what to build for people
 who don't run RomM at all.
 
@@ -71,7 +75,8 @@ Rules, checks and reports.
 ## The short version
 
 RomM converts ROMs now. It's off by default, it covers the popular disc
-formats, and it keeps the ROM id in place, which we don't yet. So "RomM can't
+formats, and it keeps the ROM id in place, which we didn't yet (4.6.0's
+**Keep the ROM id** switch does). So "RomM can't
 convert" is no longer the pitch.
 
 The pitch that still holds, from reading the code:
@@ -91,7 +96,9 @@ For people without RomM the finding is less flattering to us. Our best
 features only work when RomM is connected: automation rules, platform-aware
 tool selection and the savings estimate all live under `services/romm`. The
 headless CLI still wraps chdman alone and only reads the top level of a
-volume. Fixing that is the biggest thing in this doc.
+volume. Fixing that is the biggest thing in this doc. (Fixed in 4.6.0: Rules
+run on folder Libraries, Platform detection reads the file, and the CLI reaches
+every tool.)
 
 ## What RomM does today
 

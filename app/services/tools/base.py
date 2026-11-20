@@ -238,7 +238,8 @@ class ToolPlugin(Protocol):
     # "this tool names no default" -- see BaseTool.default_compression.
     default_compression: str | None
     # What to tell the user when ``is_ready()`` is False: why this tool cannot
-    # run here. Auto shows it beside an Image it skipped for that reason.
+    # run here. Auto shows it beside an Image it skipped for that reason, and
+    # job planning answers it (through ``not_ready_message``, #505).
     not_ready_reason: str
     # The same for ``verify_is_ready()``.
     verify_not_ready_reason: str
@@ -626,7 +627,8 @@ class ToolPlugin(Protocol):
         user-supplied key file, an absent optional binary — reports ``False``
         so ``GET /api/tools`` lists it as unavailable and the frontend hides
         it entirely, rather than offering a converter that can only fail at
-        job time. Default ``True``: most tools ship with everything they need.
+        job time. Planning a job asks it too (#505): ``POST /api/jobs``
+        answers 503 and a batch skips the file with ``tool_not_ready``.
 
         Async because a readiness probe may touch the disk (nsz searches the
         configured volumes for ``prod.keys``); implementations that block
@@ -1081,8 +1083,9 @@ class BaseTool:
 
     async def is_ready(self) -> bool:
         # The declared programs, through the shared probe (#494); a tool that
-        # runs none is ready. Tools gated on something else (nsz's prod.keys)
-        # override this.
+        # runs none is ready. Tools gated on something else (nsz's prod.keys,
+        # exodos's EXODOS_DOS_DIR, rom-converto's --version run, the chain's
+        # steps) override this.
         return await self._binaries_ready(self.required_binaries, "convert")
 
     async def verify_is_ready(self) -> bool:
@@ -1135,8 +1138,9 @@ def not_ready_message(tool: ToolPlugin, *, purpose: str = "convert") -> str:
     own: ``verify_not_ready_reason`` for *purpose* ``"verify"`` (as
     :meth:`ToolRegistry.tool_is_ready` takes it), else ``not_ready_reason``
     (``"convert"``, and ``"info"``, which asks the same ``is_ready()``).
-    One place, so the CLI, Auto's plan, the Rules sweep and the File info
-    routes say the same thing.
+    One place, so the CLI, Auto's plan, the Rules sweep, job planning (the
+    503 from ``POST /api/jobs``, #505) and the File info routes say the same
+    thing.
 
     Read it after the readiness check that answered False: a plugin may learn
     its reason while it probes (rom-converto keeps the last probe's). Reading

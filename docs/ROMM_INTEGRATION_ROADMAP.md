@@ -1,5 +1,9 @@
 # RomM integration roadmap
 
+> **Status: partly shipped.** 4.6.0 shipped item 1 (keep the ROM id), item 2 for
+> Inbox passes only, item 8 (beside RomM's converter) and item 9 (the Ledger).
+> "Where we are today" below describes the integration before 4.6.0.
+
 Where the RomM integration stands, what RomM itself now offers, and what to build
 next, ordered by how much a user would feel it. Researched against RomM `master`
 at `273b85c` (2026-10-25), latest release **5.4.1** (2026-10-22). Version tags
@@ -11,9 +15,9 @@ a spike against a live instance before it is relied on.
 > where RomM's converter stops, and the work that helps people without RomM.
 > Its "Corrections" section applies to the items below.
 
-## Where we are today
+## Where we are today (before 4.6.0)
 
-Compressatorium talks to six RomM endpoints (`services/romm/client.py`):
+Compressatorium talked to six RomM endpoints (`services/romm/client.py`):
 
 | Endpoint | Used for |
 | --- | --- |
