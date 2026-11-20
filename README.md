@@ -1536,7 +1536,7 @@ selected tool understands.
   default format. Images it can't place are skipped and listed.
 * **The Switch tool is missing or jobs ask for prod.keys** — it needs your own
   keys; see [Nintendo Switch Support](#nintendo-switch-support). Without keys the
-  tool is hidden.
+  tool is listed on the dashboard under **Not ready here** with the fix.
 
 ---
 
@@ -1992,7 +1992,7 @@ in Tinfoil and DBI.
 > decompression rebuilds a byte-identical original. That decrypt step needs your
 > console's keys. **This app ships no keys and nsz ships no keys.** You supply
 > your own, dumped from a console you own, for games you own. Without keys, the
-> Switch tool is hidden from the UI entirely. See the legal note at the bottom
+> Switch tool is listed on the dashboard under **Not ready here** with the fix. See the legal note at the bottom
 > of this section.
 
 ### How to Use
@@ -2511,8 +2511,8 @@ the release and checked against its SHA-256 for amd64 and arm64.
   or in a Rule.
 - **Off the network.** Every call passes `--no-update-check`, so rom-converto
   never looks for a newer release.
-- If the binary is missing or won't run, the tool is hidden and the reason is
-  logged; the rest of the app keeps working.
+- If the binary is missing or won't run, the tool is listed on the dashboard under **Not ready here** with the fix;
+  the rest of the app keeps working.
 
 Whether a ZAR made here boots in a current Xenia build has not been checked yet
 (it needs a disc the owner dumped).
@@ -2731,7 +2731,7 @@ From the command line:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `UNAR_PATH` | `unar` | Path to the `unar` binary. Ships in the image; outside it, the tool is hidden until `unar` is there. |
+| `UNAR_PATH` | `unar` | Path to the `unar` binary. Ships in the image; outside it, the tool is listed as not ready until `unar` is on `PATH`. |
 
 ## Command line (`compressatorium`)
 
@@ -3319,6 +3319,7 @@ no info route.
 | `CHD_VERIFICATION_STORE` | *(deprecated)* | Legacy JSON path. Ignored at runtime; auto-migrated into the SQLite DB on first startup (custom path honored if set) and renamed to `verified_chds.json.migrated.bak` |
 | `CHD_DAT_STORE` / `CHD_DAT_SYNC_STORE` | *(deprecated)* | Legacy JSON paths for `dat_store.json` and `dat_sync.json`, migrated the same way |
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` (CLI mode only) |
+| *(any `*_PATH` below)* | | **Found on its own** (#515): each fixed path is where the image installs the program. When it isn't there and the variable is unset, the program is looked up on `PATH` by name (a Homebrew or distro install works with nothing set). A path you set is used as is. A program found nowhere leaves its tool listed as not ready on the dashboard, with what to install or set |
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary (for custom builds) |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
@@ -3327,7 +3328,7 @@ no info route.
 | `NKIT2ISO_PATH` | `/usr/local/bin/nkit2iso` | Path to the nkit2iso binary (NKit → ISO) |
 | `NKIT2ISO_RECOVERY` | `none` | What nkit2iso does with a Wii image whose update partition was removed: `none` zero-fills it (offline; playable but not redump-verifiable), `download` fetches the archived recovery partition for a bit-exact restore. `download` is the only path on which the tool uses the network. |
 | `NSZ_PATH` | `nsz` | Path to the nsz binary (Nintendo Switch); resolved on PATH by default |
-| `SEVENZIP_PATH` | `7z` | Path to the 7z binary (handheld ROM archives); resolved on PATH by default (set an absolute path or `7zz` if your distro ships the newer `7zip` package) |
+| `SEVENZIP_PATH` | `7z` | Path to the 7z binary (handheld ROM archives); resolved on PATH by default; when there is no `7z` but there is a `7zz` (the newer `7zip` package, Homebrew's `sevenzip`), that is used on its own |
 | `JWUDTOOL_PATH` | `/usr/local/bin/jwudtool` | Path to the JWUDTool launcher (Wii U WUD ↔ WUX); the image ships a launcher that execs the bundled jar with a headless JRE |
 | `EXTRACT_XISO_PATH` | `/usr/local/bin/extract-xiso` | Path to the extract-xiso binary (Xbox / Xbox 360 XISO trim) |
 | `ROM_CONVERTO_PATH` | `/usr/local/bin/rom-converto` | Path to the rom-converto binary (Xbox 360 ZAR, PBP, CIA/CCI) |

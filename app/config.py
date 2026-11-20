@@ -1,6 +1,7 @@
 """Application configuration settings for the CHD converter."""
 
 import os
+import shutil
 from pathlib import Path
 
 from pydantic import AliasChoices, Field, PrivateAttr
@@ -45,6 +46,28 @@ def _default_lock_dir(data_dir: str, *, configured: bool) -> str:
             "every process shares.",
         )
     return lock_dir
+
+
+def detected_binary(default: str) -> str:
+    """*default* when a program is there, else the same name found on PATH (#515).
+
+    The image installs each tool program at a fixed path. Outside it (a
+    Homebrew or distro install, a dev checkout) that path is usually missing
+    while the program is on PATH, so the tool works with no ``*_PATH`` set.
+    Found nowhere, the default stays and the tool says what to set.
+    """
+    if os.path.exists(default):
+        return default
+    return shutil.which(os.path.basename(default)) or default
+
+
+# Programs the image installs at a fixed path: looked up on PATH by name when
+# that path is missing and the operator set none (#515).
+_IMAGE_BINARIES = (
+    "chdman_path", "dolphin_tool_path", "z3ds_compressor_path", "maxcso_path",
+    "makeps3iso_path", "jwudtool_path", "nkit2iso_path", "extract_xiso_path",
+    "rom_converto_path",
+)
 
 
 class Settings(BaseSettings):
@@ -652,6 +675,12 @@ class Settings(BaseSettings):
         """Set default paths after model initialization."""
         if self.temp_dir is None:
             self.temp_dir = str(Path(self.data_dir) / "temp")
+        for name in _IMAGE_BINARIES:
+            if name not in self.model_fields_set:
+                setattr(self, name, detected_binary(getattr(self, name)))
+        # The newer 7-Zip package names its program 7zz (Homebrew, recent distros).
+        if "sevenzip_path" not in self.model_fields_set and not shutil.which(self.sevenzip_path):
+            self.sevenzip_path = shutil.which("7zz") or self.sevenzip_path
         if self.concurrency_lock_dir is None:
             # "Configured" means named by CHD_DATA_DIR or the constructor; the
             # image sets CHD_DATA_DIR=/config, so a container always is.

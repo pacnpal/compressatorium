@@ -60,7 +60,7 @@ import os
 import stat
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from collections.abc import Iterable, Sequence
@@ -188,6 +188,17 @@ def _image_extensions() -> tuple[str, ...]:
     return tuple(sorted(
         set(registry.convertible_extensions()) | set(registry.output_extensions())
     ))
+
+
+def _image_count(folder: str) -> int:
+    """How many Image files are under *folder*. Blocking; an unreadable one is 0."""
+    extensions = _image_extensions()
+    # ponytail: walks the folder each time; read the last Scan if placement gets hot.
+    return sum(
+        name.lower().endswith(extensions)
+        for _dir, _subdirs, names in os.walk(folder)
+        for name in names
+    )
 
 
 def _recognized(paths: list[str]) -> dict[str, bool | None]:
@@ -336,7 +347,8 @@ class FolderLibrary(LibraryDefaults):
         style) or under ``roms`` (RomM style) that already names the Platform,
         by the user's mapping or a name detection reads, spelled as listed;
         else a new one named as ES-DE (or RomM) names it. Two folders that
-        both name it refuse. Blocking (lists one folder).
+        both name it: the one holding the most Images, marked ``guessed``
+        (#515). Blocking (lists one folder, or walks the candidates).
         """
         slug = platform_detect.known_slug(platform)
         if slug is None:
@@ -353,8 +365,10 @@ class FolderLibrary(LibraryDefaults):
         except OSError as exc:
             raise PlacementUnknown(f"{parent} can't be listed ({exc})") from exc
         if len(found) > 1:
-            names = ", ".join(os.path.basename(f) for f in found)
-            raise PlacementUnknown(f"more than one folder is {slug} ({names})")
+            # A best guess, not a refusal (#515): the folder already holding
+            # the most Images, ties by name. Marked so the UI says it guessed.
+            folder = max(sorted(found), key=_image_count)
+            return replace(placed_in(folder, slug, mapped=mapped), guessed=True)
         if found:
             folder = found[0]
         else:
