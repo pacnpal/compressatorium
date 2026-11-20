@@ -2269,6 +2269,7 @@ async def _sweep_locked(
             continue
 
         listed_at = _walk_generation(library)
+        owned_at = _ownership_generation()
         images = await _list_images(library, platform_id, result, stopping)
         if images is None:
             if _sweep_ends(result):
@@ -2524,6 +2525,12 @@ async def _sweep_locked(
                     # this batch, and leave the Platform's clock alone.
                     result["stopped_reason"] = "stopped"
                     break
+                if _ownership_moved(owned_at, platform_ref, result):
+                    # The listing may hold a new inner Library's files: queue
+                    # none of them under these Rules; the next run lists again.
+                    summary["libraries_changed"] = True
+                    result["platforms"].append(summary)
+                    continue
                 owner = notifications.sweep_owner()
                 jobs = await job_manager.create_batch_jobs(
                     batch,
@@ -2794,6 +2801,23 @@ def forget_checks_locked(library: Library) -> None:
     library_records.forget(library.id)
 
 
+def _ownership_generation() -> int:
+    from services import libraries
+
+    return libraries.ownership_generation()
+
+
+def _ownership_moved(owned_at: int, platform_ref: Any, result: dict) -> bool:
+    """Whether a Library was registered or removed, or RomM's folder moved,
+    since the listing read *owned_at* (Codex PR #518): the listing may then
+    hold files another Library now owns, so nothing of it is queued. Says so
+    in *result*'s errors."""
+    if _ownership_generation() == owned_at:
+        return False
+    result["errors"].append({"platform_id": platform_ref, "error": "libraries_changed"})
+    return True
+
+
 def _walk_generation(library: Library) -> int:
     """*library*'s ``walk_generation()``; 0 for one without the optional hook.
 
@@ -2902,6 +2926,7 @@ async def _sweep_check(
     """
     platform_ref = library.platform_value(platform_id)
     listed_at = _walk_generation(library)
+    owned_at = _ownership_generation()
     images = await _list_images(library, platform_id, result, stopping)
     if images is None:
         return _sweep_ends(result)
@@ -3013,6 +3038,11 @@ async def _sweep_check(
     }
     if unresponsive:
         summary["library_unresponsive"] = True
+    if not dry_run and _ownership_moved(owned_at, platform_ref, result):
+        # As for a conversion Rule: nothing of a stale listing is checked.
+        summary["libraries_changed"] = True
+        result["platforms"].append(summary)
+        return False
     result["platforms"].append(summary)
     if not dry_run:
         picked.extend(chosen)

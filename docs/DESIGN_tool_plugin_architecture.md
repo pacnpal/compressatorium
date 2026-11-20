@@ -3471,11 +3471,18 @@ in one (it works the paths out only when there is an inner Library). A root
 that can't be resolved there raises `LibraryUnreadable`: the listing fails
 rather than take an inner Library's files. Registering, removing a Library
 and saving RomM's root drop every folder Library's kept walk, so an outer
-Library re-lists. Hidden staging (#398) asks `libraries.hidden_staging(path)`,
+Library re-lists, and move `libraries.ownership_generation()`. A sweep reads
+it when it lists a Platform and again before it queues (a conversion batch,
+a check pick): when it moved, the listing may hold a new inner Library's
+files, so nothing of it is queued, the run is not recorded, and the Platform
+reports `libraries_changed` (Codex PR #518). Hidden staging (#398) asks `libraries.hidden_staging(path)`,
 any Library holding the path with `HIDDEN_STAGING`, not only its owner: RomM
 scans its whole folder, an inner folder Library included. Folder Platform
 mappings belong to the nearest folder Library (`set_mapping`), and where two
-Libraries mapped one folder the nearer root's mapping wins in the index. The
+Libraries mapped one folder the nearer root's mapping wins in the index.
+Setting or clearing a folder's mapping also deletes the rows the outer
+Libraries holding it keep for that folder (a mapping made before the folder
+became a nearer Library's), so a clear always clears (Codex PR #518). The
 Libraries API adds `within` (the nearest Library around this one, or null)
 and `contains` (the Libraries inside it), worked out from the stored and
 already-resolved roots without touching the disk; the Rules view shows them.

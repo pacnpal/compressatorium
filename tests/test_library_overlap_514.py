@@ -204,3 +204,51 @@ async def test_a_folder_mapping_belongs_to_the_nearest_library(tree: Path) -> No
     with SessionLocal() as session:
         rows = [(r.library_id, r.folder) for r in session.query(PlatformMappingRecord).all()]
     assert rows == [(inner["id"], "")]
+
+
+@pytest.mark.asyncio
+async def test_clearing_a_mapping_made_before_the_folder_became_a_library(tree: Path) -> None:
+    """Codex PR #518: the mapping stays stored against the outer Library;
+    clearing it through the inner one must still remove it."""
+    from services import platform_mappings
+    from services.db import PlatformMappingRecord, SessionLocal
+
+    await _register(tree)
+    platform_mappings.set_mapping(str(tree / "gc"), "ngc")
+    await _register(tree / "gc")
+
+    platform_mappings.set_mapping(str(tree / "gc"), None)
+
+    with SessionLocal() as session:
+        assert session.query(PlatformMappingRecord).count() == 0
+    assert str((tree / "gc").resolve()) not in platform_mappings.mapped_folders()
+
+
+@pytest.mark.asyncio
+async def test_an_inner_library_registered_mid_sweep_stops_the_outer_queueing(
+    tree: Path, ready, queue,
+) -> None:
+    """Codex PR #518: the outer sweep listed GameCube before ``gc`` became a
+    Library; it must not queue those files under the outer Rules."""
+    from routes import libraries as routes
+    from services import libraries
+
+    outer = await _register(tree)
+    await routes.put_library_rules(outer["id"], {"rules": _RULES})
+    library = libraries.get(outer["id"])
+    listed = library.images
+
+    def images_then_nest(platform_id):
+        out = listed(platform_id)
+        if platform_id == "ngc" and not any(
+            lib.root == str((tree / "gc").resolve()) for lib in libraries.folder_libraries()
+        ):
+            libraries.register(str(tree / "gc"))
+        return out
+
+    library.images = images_then_nest
+
+    result = await routes.run_library(outer["id"])
+
+    assert not {"Melee.iso", "Sunshine.iso"} & {Path(p).name for p in queue}
+    assert any(e["error"] == "libraries_changed" for e in result["errors"])

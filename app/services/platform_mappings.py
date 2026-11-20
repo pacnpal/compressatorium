@@ -134,15 +134,21 @@ def mapped_folders() -> dict[str, str]:
     return _loaded()
 
 
-def _folder_library_for(folder: Path):
-    """The folder Library with the nearest root holding *folder* (#514)."""
+def _holding_libraries(folder: Path) -> list:
+    """Every folder Library whose root holds *folder*, nearest first (#514)."""
     from services import libraries
 
     holding = [
         library for library in libraries.folder_libraries()
         if folder.is_relative_to(Path(library.root))
     ]
-    return max(holding, key=lambda library: len(Path(library.root).parts), default=None)
+    return sorted(holding, key=lambda library: len(Path(library.root).parts), reverse=True)
+
+
+def _folder_library_for(folder: Path):
+    """The folder Library with the nearest root holding *folder* (#514)."""
+    holding = _holding_libraries(folder)
+    return holding[0] if holding else None
 
 
 def set_mapping(path: str, platform: str | None) -> dict[str, Any]:
@@ -159,9 +165,10 @@ def set_mapping(path: str, platform: str | None) -> dict[str, Any]:
         raise MappingError(403, "Access denied: path outside configured volumes") from None
     if not folder.is_dir():
         raise MappingError(404, "Folder not found")
-    library = _folder_library_for(folder)
-    if library is None:
+    holding = _holding_libraries(folder)
+    if not holding:
         raise MappingError(404, "This folder is not inside a Library")
+    library, outer = holding[0], holding[1:]
     slug = None
     if platform:
         slug = known_slug(platform)
@@ -169,6 +176,13 @@ def set_mapping(path: str, platform: str | None) -> dict[str, Any]:
             raise MappingError(422, f"Unknown Platform: {platform}")
     rel = _rel(folder, library.root)
     with _db.SessionLocal() as session:
+        # A mapping set before the folder became (part of) a nearer Library is
+        # still stored against the outer one, and detection still reads it:
+        # setting or clearing the folder replaces it (Codex PR #518).
+        for other in outer:
+            session.query(_db.PlatformMappingRecord).filter_by(
+                library_id=other.id, folder=_rel(folder, other.root),
+            ).delete()
         row = session.query(_db.PlatformMappingRecord).filter_by(
             library_id=library.id, folder=rel,
         ).one_or_none()
@@ -184,8 +198,9 @@ def set_mapping(path: str, platform: str | None) -> dict[str, Any]:
             row.updated_at = _now()
         session.commit()
     invalidate()
-    # The Library's last walk was taken under the old mapping.
-    library.invalidate()
+    # The Libraries' last walks were taken under the old mapping.
+    for each in holding:
+        each.invalidate()
     return {
         "library_id": library.id,
         "folder": rel,

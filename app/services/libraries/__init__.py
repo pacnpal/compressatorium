@@ -58,6 +58,7 @@ __all__ = [
     "get",
     "hidden_staging",
     "inner_folders",
+    "ownership_generation",
     "library_for",
     "register",
     "remove",
@@ -371,10 +372,24 @@ def is_inner(rel: str, inner: list[str]) -> bool:
     return any(rel == folder or rel.startswith(folder + os.sep) for folder in inner)
 
 
+# Moves whenever which Libraries sit inside which may have changed (#514). A
+# sweep reads it when it lists and again before it queues: a listing taken
+# before an inner Library was registered may hold that Library's files.
+_ownership_generation = 0
+
+
+def ownership_generation() -> int:
+    """The counter :func:`_forget_walks` moves. Never waits on the disk."""
+    with _lock:
+        return _ownership_generation
+
+
 def _forget_walks() -> None:
     """Every folder Library's kept walk is out of date: which Libraries sit
     inside which changed (#514). Never waits."""
+    global _ownership_generation
     with _lock:
+        _ownership_generation += 1
         folders = list(_cache.values()) if _cache is not None else []
     for library in folders:
         library.invalidate()
