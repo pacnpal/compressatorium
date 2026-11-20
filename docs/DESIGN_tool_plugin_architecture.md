@@ -7089,10 +7089,14 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   with one folder: the tool is manual only and writes a new `.dosz` beside a
   Source it never changes, so a false yes costs one extra file, while a folder
   with nothing to run is refused. Such a product gets no `dosbox.conf`: the
-  zip's own `<Game>/dosbox.conf`, never rewritten, is left out too (Codex PR
-  #517), or DOSBox Pure would load it instead of its start menu. The job's
-  last update is a warning naming where it looked, and saying so when it left
-  the zip's own conf out. The repack's own
+  zip's own `<Game>/dosbox.conf` (in any case, `DOSBOX.CONF` too), never
+  rewritten, is left out too (PR #517), or DOSBox Pure would load it instead
+  of its start menu. The job's last update is a warning naming where it
+  looked (`RepackPlan.no_template_reason`, worked out during the bounded
+  inspection, so nothing is read on the event loop), and saying so when it
+  left the zip's own conf out. A candidate tree that is missing is skipped;
+  one whose stat fails just now (`EIO`) raises `TemplateUnreadable`, a
+  `ProbeUnavailable` the probe never caches. The repack's own
   check requires the root conf only when it wrote one; Verify accepts a `.dosz`
   with no root conf when it holds a DOS program.
 - **Content-refined source.** `.zip` is romz's archive extension too, so

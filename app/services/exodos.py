@@ -33,6 +33,7 @@ import asyncio
 import errno
 import os
 import re
+import stat
 import threading
 import zipfile
 import zlib
@@ -267,6 +268,9 @@ class RepackPlan:
     template: str | None     # its template's path, for messages; None: none found
     total_size: int          # uncompressed bytes of every member
     root: str | None = None  # the tree's real path; reads go through read_beneath
+    # Why no template was found, worked out during the bounded inspection so
+    # the last update reads nothing on the event loop; None when one was.
+    no_template_reason: str | None = None
 
 
 class ExodosService:
@@ -289,10 +293,23 @@ class ExodosService:
 
     @staticmethod
     def _usable(candidate: str) -> str | None:
-        """``candidate``'s real path if it is a folder inside a Volume."""
+        """``candidate``'s real path if it is a folder inside a Volume.
+
+        A folder that is missing (or not a folder) is skipped; one that can't
+        be read just now raises :class:`TemplateUnreadable`, never a reason
+        to repack without its template (CodeRabbit PR #517)."""
         real = os.path.realpath(candidate)
-        if not os.path.isdir(real):
+        try:
+            if not stat.S_ISDIR(os.stat(real).st_mode):
+                return None
+        except (FileNotFoundError, NotADirectoryError):
             return None
+        except OSError as exc:
+            if exc.errno in _STRUCTURAL_ERRNOS:
+                return None
+            raise TemplateUnreadable(
+                f"The template folder {real} could not be read: {exc}",
+            ) from exc
         if not is_within_configured_volumes(real, treat_archives=False):
             return None
         return real
@@ -361,6 +378,7 @@ class ExodosService:
             template=os.path.join(root, top, self.profile.conf_name) if root else None,
             total_size=sum(info.file_size for info in infos),
             root=root,
+            no_template_reason=None if root else self._no_template_reason(top),
         )
 
     def _read_zip(self, path: str) -> tuple[list[zipfile.ZipInfo], str]:
@@ -501,13 +519,14 @@ class ExodosService:
         # With no template, the zip's own top-level conf is left out: it was
         # never rewritten, and DOSBox Pure would load it instead of offering
         # the start menu (Codex PR #517).
-        own_conf = f"{prefix}{self.profile.conf_name}"
+        own_conf = self.profile.conf_name.lower()
         left_out: list[str] = []
 
         def rename(name: str) -> str | None:
             if name == prefix:
                 return None
-            if rewrite is None and name == own_conf:
+            # Any case: DOSBox Pure reads C:\DOSBOX.CONF as dosbox.conf.
+            if rewrite is None and name[len(prefix):].lower() == own_conf:
                 left_out.append(name)
                 return None
             return name[len(prefix):]
@@ -561,7 +580,7 @@ class ExodosService:
                 "progress": 100,
                 "message": (
                     f"Repacked with no {self.profile.conf_name}: "
-                    f"{self._no_template_reason(plan.top)}.{own} DOSBox Pure's start "
+                    f"{plan.no_template_reason}.{own} DOSBox Pure's start "
                     "menu will offer the program to run."
                 ),
                 "warning": True,

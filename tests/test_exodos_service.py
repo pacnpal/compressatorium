@@ -1014,3 +1014,53 @@ def test_a_game_with_no_template_leaves_out_its_own_untouched_conf(bare):
     assert "no dosbox.conf" in updates[-1]["message"]
     assert "left out" in updates[-1]["message"]
     assert _verify(service, output)["valid"] is True
+
+
+def test_a_tree_that_cannot_be_statted_just_now_is_not_skipped(tree, monkeypatch):
+    """CodeRabbit PR #517: ``isdir`` hid an I/O error, so the tree was
+    skipped and the game planned (and cached) as one with no template."""
+    from services.exodos import ProbeUnavailable
+
+    real_stat = os.stat
+    dos = os.path.realpath(tree["dos"])
+
+    def flaky(path, *args, **kwargs):
+        if os.fspath(path) == dos:
+            raise OSError(errno.EIO, "Input/output error")
+        return real_stat(path, *args, **kwargs)
+
+    source = _game_zip(tree)
+    monkeypatch.setattr(os, "stat", flaky)
+
+    with pytest.raises(ProbeUnavailable):
+        ExodosService().inspect(source)
+
+
+def test_a_game_with_no_template_leaves_out_its_own_conf_in_any_case(bare):
+    service = ExodosService()
+    source = _game_zip(bare, ["Zork/", "Zork/ZORK.EXE", "Zork/DOSBOX.CONF"], name="Zork.zip")
+    output = service.get_output_path(source)
+
+    _convert(service, source, output)
+
+    assert set(_members(output)) == {"ZORK.EXE"}
+
+
+def test_the_last_update_reads_no_folder_on_the_event_loop(bare, monkeypatch):
+    """CodeRabbit PR #517: the no-template reason is worked out during the
+    bounded inspection, never by statting the override on the loop."""
+    service = ExodosService()
+    source = _game_zip(bare, ["Zork/", "Zork/ZORK.EXE"], name="Zork.zip")
+    monkeypatch.setattr(exodos_module.settings, "exodos_dos_dir", str(bare["games"] / "nope"))
+    main = threading.current_thread()
+    real = ExodosService.override
+
+    def watched(self):
+        assert threading.current_thread() is not main, "override() read on the loop"
+        return real(self)
+
+    monkeypatch.setattr(ExodosService, "override", watched)
+
+    updates = _convert(service, source, service.get_output_path(source))
+
+    assert "EXODOS_DOS_DIR is set but is not a folder" in updates[-1]["message"]
