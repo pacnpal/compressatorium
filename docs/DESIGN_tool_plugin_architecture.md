@@ -2285,8 +2285,8 @@ SHA1 on the wire in the clear. Extra fields ride in the existing
 `(hash, hash_type, dat_id)` (migration 0022), so a hash two DATs know keeps
 both rows; it used to be `(hash, hash_type)`, and the later import overwrote
 the earlier one. Both import paths (`/dat/import` and the MAMERedump sync's
-staged `persist()`) go through one `DATStore._insert_dat`. `lookup_sha1` /
-`lookup_md5` return every DAT's record under `matches` (each with `dat_id`,
+staged `persist()`) go through one `DATStore._insert_dat`. `lookup_sha1`
+returns every DAT's record under `matches` (each with `dat_id`,
 `dat_name`, `family`, `game_name`, `rom_name`), and `_local_dat_record` carries
 them into the match result, so the cached `dat_matches.payload` stores the
 facts, not a verdict. `_local_lookup_match` looks up **every** candidate hash
