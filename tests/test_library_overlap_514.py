@@ -267,3 +267,184 @@ async def test_an_inner_library_registered_mid_sweep_stops_the_outer_queueing(
 
     assert not {"Melee.iso", "Sunshine.iso"} & {Path(p).name for p in queue}
     assert any(e["error"] == "libraries_changed" for e in result["errors"])
+
+
+@pytest.mark.asyncio
+async def test_the_queue_admits_a_batch_inside_its_admission(tmp_path) -> None:
+    """CodeRabbit PR #518: the ownership check and the queueing are one step.
+    The admission is entered before any job is registered and left after all
+    are; one that refuses leaves nothing queued."""
+    import contextlib
+
+    from models import ConversionMode
+    from services.job_manager import JobManager
+    from services.rules.library import LibrariesChanged
+
+    mgr = JobManager(max_concurrent=1, max_job_history=10)
+    spec = [{"file_path": str(tmp_path / "a.iso"), "output_path": str(tmp_path / "a.chd")}]
+    seen: list[int] = []
+
+    @contextlib.contextmanager
+    def recording():
+        seen.append(len(mgr.jobs))
+        yield
+        seen.append(len(mgr.jobs))
+
+    await mgr.create_jobs_atomic(spec, ConversionMode.CREATEDVD, admission=recording)
+    assert seen == [0, 1]
+
+    def refusing():
+        raise LibrariesChanged
+
+    other = JobManager(max_concurrent=1, max_job_history=10)
+    with pytest.raises(LibrariesChanged):
+        await other.create_jobs_atomic(spec, ConversionMode.CREATEDVD, admission=refusing)
+    assert other.jobs == {}
+
+
+@pytest.mark.asyncio
+async def test_a_registration_waits_for_an_admission_in_progress(tree: Path) -> None:
+    import threading
+
+    from services import libraries
+    from services.rules.library import LibrariesChanged
+
+    await _register(tree)
+    owned_at = libraries.ownership_generation()
+    done = threading.Event()
+    worker = threading.Thread(
+        target=lambda: (libraries.register(str(tree / "gc")), done.set()),
+    )
+    with libraries.owned_as_listed(owned_at):
+        worker.start()
+        assert not done.wait(0.3)
+        assert libraries.ownership_generation() == owned_at
+    worker.join(10)
+
+    assert done.is_set()
+    with pytest.raises(LibrariesChanged), libraries.owned_as_listed(owned_at):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_registering_drops_every_cached_resolved_root(tree: Path) -> None:
+    """CodeRabbit PR #518: an ancestor relinked after its root was cached
+    must not hide a new inner Library from the outer walk."""
+    from services import libraries
+
+    with libraries._lock:
+        libraries._canonical_roots["/stale/root"] = Path("/elsewhere")
+    await _register(tree)
+
+    assert "/stale/root" not in libraries._canonical_roots
+
+
+@pytest.mark.asyncio
+async def test_a_folder_inside_a_linked_romm_folder_is_seen_inside_it(db: Path) -> None:
+    """CodeRabbit PR #518: RomM's root is a link; its resolved path is cached
+    when the root is saved and on registration, so nesting is right before
+    any scan."""
+    from routes import romm as romm_routes
+
+    real = db / "real"
+    (real / "roms" / "gc").mkdir(parents=True)
+    (db / "link").symlink_to(real)
+    await romm_routes.put_romm_settings(romm_routes.RommSettingsPatch(
+        url="http://romm:8080", library_root=str(db / "link"),
+    ))
+
+    created = await _register(real / "roms" / "gc")
+
+    assert created["within"] == {"id": "romm", "name": "RomM"}
+
+
+def test_the_catalogue_is_read_again_after_a_library_is_added_or_removed() -> None:
+    """CodeRabbit PR #518: the outer Library's ``contains`` must not keep
+    naming a removed Library."""
+    import re
+
+    root = Path(__file__).resolve().parents[1]
+    store = (root / "src/lib/stores/libraries.svelte.js").read_text()
+    for method in ("register", "remove"):
+        body = re.search(rf"async {method}\(.*?\n  \}}\n", store, re.DOTALL).group(0)
+        assert "this.load()" in body, method
+    # A read answering after a newer one was applied is dropped.
+    assert "if (sent < this.#loadApplied) return this.list;" in store
+    editor = (root / "src/lib/components/views/RuleEditor.svelte").read_text()
+    assert "nothing was '\n      + 'queued for this platform" in editor
+
+
+@pytest.mark.asyncio
+async def test_removing_a_library_keeps_a_linked_romm_folders_nesting(db: Path) -> None:
+    """Codex PR #551: removing any Library dropped RomM's resolved root, so
+    a Library under its real path lost its ``within`` until a scan. Saving
+    RomM's settings without a root did the same."""
+    from routes import libraries as routes
+    from routes import romm as romm_routes
+
+    real = db / "real"
+    (real / "roms" / "gc").mkdir(parents=True)
+    (db / "other").mkdir()
+    (db / "link").symlink_to(real)
+    await romm_routes.put_romm_settings(romm_routes.RommSettingsPatch(
+        url="http://romm:8080", library_root=str(db / "link"),
+    ))
+    inner = await _register(real / "roms" / "gc")
+    other = await _register(db / "other")
+
+    await routes.remove_library(other["id"])
+    listed = {lib["id"]: lib for lib in await routes.list_libraries()}
+    assert listed[inner["id"]]["within"] == {"id": "romm", "name": "RomM"}
+
+    await romm_routes.put_romm_settings(romm_routes.RommSettingsPatch(url="http://romm:8081"))
+    listed = {lib["id"]: lib for lib in await routes.list_libraries()}
+    assert listed[inner["id"]]["within"] == {"id": "romm", "name": "RomM"}
+
+
+@pytest.mark.asyncio
+async def test_a_dead_romm_mount_never_holds_up_a_removal(tree: Path, monkeypatch) -> None:
+    """Codex PR #551: reseeding RomM's root after a removal is bounded and
+    runs after the registration lock is let go."""
+    import threading
+    import time
+
+    from routes import libraries as routes
+    from services import libraries
+
+    lib = await _register(tree)
+    release = threading.Event()
+    seen_lock: list[bool] = []
+
+    def hung() -> None:
+        seen_lock.append(libraries._register_lock.locked())
+        release.wait(5)
+
+    monkeypatch.setattr(libraries, "_reseed_romm_root", hung)
+    monkeypatch.setattr(libraries, "ROOT_CHECK_SECONDS", 0.2)
+    started = time.monotonic()
+    try:
+        await routes.remove_library(lib["id"])
+        assert time.monotonic() - started < 3
+        assert seen_lock == [False]
+        assert not libraries._register_lock.locked()
+    finally:
+        release.set()
+
+
+def test_a_root_resolved_across_an_ownership_change_is_not_cached(tree: Path, monkeypatch) -> None:
+    """CodeRabbit PR #551: a resolve that began before the cache was cleared
+    must not put its answer back after the clear."""
+    from services import libraries
+
+    real_resolve = Path.resolve
+
+    def resolving_while_ownership_changes(self, *args, **kwargs):
+        libraries._forget_walks()
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolving_while_ownership_changes)
+    answer = libraries._canonical_root(str(tree))
+    monkeypatch.setattr(Path, "resolve", real_resolve)
+
+    assert answer == tree.resolve()
+    assert str(tree) not in libraries._canonical_roots
