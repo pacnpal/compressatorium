@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from .test_frontend_registry_derives_186 import _REGISTRY_JS, _find_node, _strip_imports
+from .test_frontend_registry_derives_186 import _find_node, loaded_registry_src
 
 _SRC = Path(__file__).resolve().parents[1] / "src" / "lib"
 
@@ -24,7 +24,7 @@ def _ranges(tmp_path: Path, cases: dict[str, tuple[str, str | None]]) -> dict:
     node = _find_node()
     if node is None:
         pytest.skip("node not available to evaluate the frontend registry")
-    registry_src = "const api = {};\n" + _strip_imports(_REGISTRY_JS.read_text(encoding="utf-8"))
+    registry_src = loaded_registry_src()
     script = tmp_path / "level_range_eval.mjs"
     script.write_text(
         registry_src

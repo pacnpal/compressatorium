@@ -44,6 +44,8 @@ async def test_dolphin_info_route_is_not_200_all_null_for_empty_header(
     bad.write_bytes(b"\x00junk" * 100)
     service = _fake_dolphin(tmp_path, "")
     monkeypatch.setattr(info_routes, "dolphin_tool_service", service)
+    # File info reads through the plugin.
+    monkeypatch.setattr(info_routes.registry.get("dolphin"), "_service", service)
 
     async def ready(_tool_id):
         return None

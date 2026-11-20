@@ -58,6 +58,8 @@ def mock_romz_service(monkeypatch):
     mock_service.verify_stream = fake_verify_stream
 
     monkeypatch.setattr(info_routes, "romz_service", mock_service)
+    # File info reads through the plugin.
+    monkeypatch.setattr(info_routes.registry.get("romz"), "_service", mock_service)
     return mock_service
 
 

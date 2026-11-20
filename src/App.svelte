@@ -12,6 +12,8 @@
   import HelpView from '$lib/components/views/HelpView.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import Button from '$lib/components/ui/Button.svelte';
+  import Spinner from '$lib/components/ui/Spinner.svelte';
+  import { registry } from '$lib/tools/registry.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
   import { jobToasts } from '$lib/stores/jobToasts.svelte.js';
   import { conversion } from '$lib/stores/conversion.svelte.js';
@@ -125,14 +127,25 @@
 
   onMount(() => {
     ui.loadVersion();
-    // Ask the backend which tools to show. Switch (nsz) is hidden until
-    // prod.keys are configured. The tool list stays empty until this answers;
-    // on failure every tool is shown rather than none.
-    api.getTools()
-      .then((t) => ui.applyToolAvailability(t?.available))
-      .catch(() => ui.applyToolAvailability(null));
-    // Load remembered per-tool compression settings from the server.
-    conversion.loadServerPrefs();
+    // The tools, their formats and modes come from the backend, and so does
+    // which of them can run (Switch needs prod.keys). The views wait for it;
+    // a failed fetch is retried, since nothing can be converted without it.
+    let toolsRetry;
+    const loadTools = (delay = 1000) => {
+      api.getTools()
+        .then((t) => {
+          registry.load(t);
+          if (!registry.loaded) throw new Error('The server named no tools');
+          conversion.adoptRegistry();
+          ui.applyToolAvailability(t?.available);
+          // Remembered per-tool compression settings, applied over the defaults.
+          conversion.loadServerPrefs();
+        })
+        .catch(() => {
+          toolsRetry = setTimeout(() => loadTools(Math.min(delay * 2, 10000)), delay);
+        });
+    };
+    loadTools();
     // The safety choices new conversions start with.
     defaults.load();
     // What needs attention, for the sidebar's Activity badge.
@@ -148,6 +161,7 @@
     jobs.connect();
     const stopRouter = startRouter();
     return () => {
+      clearTimeout(toolsRetry);
       datMatching.stopWatchingAvailability();
       stopRouter();
       jobs.dispose();
@@ -199,7 +213,9 @@
     <TopBar />
     <main id="main-content" bind:this={mainEl} class="main" tabindex="-1" aria-label="Main content">
       <svelte:boundary onerror={onBoundaryError}>
-        {#if ui.activeView === 'files'}<FilesView />
+        {#if !ui.toolsKnown}
+          <div class="tools-loading" role="status"><Spinner size="md" /> Loading the tools…</div>
+        {:else if ui.activeView === 'files'}<FilesView />
         {:else if ui.activeView === 'libraries'}<LibrariesView />
         {:else if ui.activeView === 'activity'}<ActivityView />
         {:else if ui.activeView === 'settings'}<SettingsView />
@@ -257,4 +273,8 @@
     box-shadow: var(--elev-3);
   }
   .error-frame { padding: var(--space-6); }
+  .tools-loading {
+    display: flex; align-items: center; gap: var(--space-2);
+    padding: var(--space-6); color: var(--text-2); font-size: var(--text-sm);
+  }
 </style>

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from config import settings
 from logging_setup import get_logger
 from models import CHDInfo, OutputStatus
 from services.chdman import CHDMAN_CONVERTIBLE_EXTENSIONS, chdman_service
@@ -23,6 +24,7 @@ from services.disc_id import (
     disc_platform,
     extract_from_source,
 )
+from services.disc_id import extract_from_chd as disc_id_extract_from_chd
 from services.disk import InsufficientDiskSpace, headroom_scratch_dir
 from services.file_hasher import compute_files_sha1_sync
 from services.lock_manager import lock_manager
@@ -224,6 +226,8 @@ def _build_modes() -> list[ModeSpec]:
             allows_archive_input=True,
             companion_exts=companions,
             platform_slugs=slugs,
+            no_compression_reason="Compression is only supported for CHD creation/copy",
+            bad_input_skip="extract_copy_requires_chd",
         )
         for mode, (label, ext, companions, slugs) in _EXTRACT_MODES.items()
     ]
@@ -241,6 +245,7 @@ def _build_modes() -> list[ModeSpec]:
             supports_delete_on_verify=True,
             # Source and output are both CHDs, digested the same way.
             supports_round_trip=True,
+            bad_input_skip="extract_copy_requires_chd",
         )
     )
     return modes
@@ -268,6 +273,9 @@ class ChdmanTool(BaseTool):
     # verify only applies to finished CHDs.
     output_extensions = frozenset({".chd", ".cue", ".bin", ".iso", ".raw", ".avi"})
     verify_extensions = frozenset({".chd"})
+    # File info describes the CHD itself; its sources are plain disc images
+    # the other tools describe.
+    info_extensions = verify_extensions
     # One disc each. A .bin is a track of a disc, never the disc itself.
     disc_extensions = frozenset({".cue", ".gdi", ".iso", ".chd"})
     # The data SHA1, and only for a DVD or hard-disk CHD (#388,
@@ -667,8 +675,80 @@ class ChdmanTool(BaseTool):
             title=raw.get("title"),
         )
 
+    async def describe(self, path: str) -> CHDInfo:
+        # The metadata store caches `chdman info` (mtime-invalidated) and the
+        # disc ID, so a refresh does not spawn chdman again.
+        from services.chd_metadata_store import chd_metadata_store
+
+        cached_info, media_type = None, None
+        if not await chd_metadata_store.is_stale(path):
+            cached_info, media_type = await chd_metadata_store.get_full_info(path)
+        if cached_info:
+            info = cached_info
+        else:
+            info, record = await chd_metadata_store.read_and_cache(
+                path, lambda: self._service.info(path),
+            )
+            # Changed while it was read: shown, not cached.
+            if record is None:
+                record = {"media_type": chd_metadata_store.extract_media_type(info)}
+            _flush_in_background(chd_metadata_store)
+            media_type = record.get("media_type")
+        disc_info = await _cached_disc_id(chd_metadata_store, path)
+        game_id = disc_info.get("game_id")
+        # A distinct human-readable title only: PS1/PS2 CHDs carry the serial
+        # as both tags.
+        raw_title = disc_info.get("title")
+        return self.info_model(
+            {
+                **info, "media_type": media_type, "game_id": game_id,
+                "title": raw_title if raw_title and raw_title != game_id else None,
+            },
+            path,
+        )
+
     def active_pids(self) -> list[int]:
         return self._service.active_pids()
+
+
+def _flush_in_background(store) -> None:
+    """Persist the metadata cache off the request, logging a failure."""
+    async def flush():
+        try:
+            await store.flush_async()
+        except Exception as e:
+            logger.warning(f"Background metadata flush failed: {e}")
+
+    asyncio.create_task(flush())
+
+
+async def _cached_disc_id(store, path: str) -> dict:
+    """The CHD's game ID / title: the store's, else read once and cached.
+
+    The outcome is cached even when nothing was found, so later reads skip
+    chdman. Not when the read never looked at the file: an abandoned chdman
+    child is a fact about the storage (#268), so it raises (a 503) and stays
+    retryable, and a read that could not run (chdman missing, crashed, timed
+    out, #490) answers without a disc ID and is retried next time.
+    """
+    game_id, title = await store.get_disc_id_info(path)
+    if game_id is not None:
+        return {"game_id": game_id, **({"title": title} if title is not None else {})}
+    if await store.is_disc_id_checked(path):
+        return {}
+    try:
+        disc_info = await disc_id_extract_from_chd(path, settings.chdman_path) or {}
+    except DiscIdStorageAbandoned as e:
+        logger.error("disc_id extraction abandoned for %s: %s", path, e)
+        raise DiscIdStorageAbandoned(
+            f"Reading the disc ID left a process stuck on unresponsive storage: {e}",
+        ) from None
+    except Exception as e:
+        logger.warning("disc_id extraction could not run for %s: %s", path, e)
+        return {}
+    await store.update_disc_id_info(path, disc_info.get("game_id"), disc_info.get("title"))
+    await store.mark_disc_id_checked(path)
+    return disc_info
 
 
 def _read_source_disc_id(

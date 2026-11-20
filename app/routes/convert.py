@@ -44,7 +44,6 @@ from services import libraries, referrers
 from services.referrers import ReferrerError
 from services.platform_detect import plan_auto
 from services.preferences_store import preferences_store
-from services.romz import romz_service
 from services.output_conflicts import (
     OutputPathExhausted,
     OutputPathLocked,
@@ -171,30 +170,18 @@ def _validate_request_compression(
 
     if not compression:
         return
-    if spec.tool_id == "chdman" and spec.kind == ModeKind.EXTRACT:
-        raise HTTPException(
-            status_code=400,
-            detail="Compression is only supported for CHD creation/copy",
-        )
+    # The mode's own words, from its spec: a mode that takes no compression
+    # and says so (chdman's extract modes, Dolphin's ISO and GCZ), a level for
+    # a mode without one, a codec list for a tool that takes one codec.
+    if spec.no_compression_reason:
+        raise HTTPException(status_code=400, detail=spec.no_compression_reason)
     if ":" in compression and not spec.supports_compression_level:
         raise HTTPException(
-            status_code=400,
-            detail="Compression levels are only supported for Dolphin and Switch formats",
+            status_code=400, detail=f"{spec.label} takes no compression level",
         )
-    if (
-        spec.tool_id == "dolphin"
-        and not (spec.supports_compression or spec.supports_compression_level)
-    ):
+    if spec.single_codec and "," in compression:
         raise HTTPException(
-            status_code=400,
-            detail=_NO_COMPRESSION_DETAIL.get(
-                mode, "Compression is not supported for this Dolphin mode"
-            ),
-        )
-    if spec.tool_id == "dolphin" and "," in compression:
-        raise HTTPException(
-            status_code=400,
-            detail="Dolphin compression supports only one codec at a time",
+            status_code=400, detail=f"{spec.label} takes one codec at a time",
         )
     # A codec the mode does not take (dolphin-tool refuses zstd in WIA), or a
     # level outside that codec's range (lzma2 takes 1-9). Never clamped.
@@ -623,18 +610,6 @@ def _not_convertible_reason(mode: str, tool_id: str) -> SkipReason:
     )
 
 
-# Dolphin modes that take no compression input, with their specific advisory
-# message. Collapsed from the former per-mode dolphin_iso / dolphin_gcz branches
-# via a data lookup (not a capability branch), so the exact wire detail is
-# preserved while the gate is driven by spec fields. Scoped to dolphin because
-# other tools that merely ignore compression (e.g. the cso_to_chd chain, whose
-# ChainTool drops a stale preset) historically queued rather than 400'd.
-_NO_COMPRESSION_DETAIL: dict[str, str] = {
-    "dolphin_iso": "Compression not applicable for ISO extraction",
-    "dolphin_gcz": "GCZ uses fixed internal compression",
-}
-
-
 async def _plan_directory_job(
     file_path: str,
     *,
@@ -832,10 +807,10 @@ async def plan_job(
     ):
         raise SkipFile(SkipReason.FILE_NOT_FOUND)
 
-    if (
-        spec.tool_id == "chdman" and spec.kind in (ModeKind.EXTRACT, ModeKind.COPY)
-    ) and not file_path.lower().endswith(".chd"):
-        raise SkipFile(SkipReason.EXTRACT_COPY_REQUIRES_CHD)
+    # A mode outside the per-tool gate below that still reads only its declared
+    # inputs names its own skip (chdman's extract and copy need a .chd).
+    if spec.bad_input_skip and not _declares_input(file_path, spec):
+        raise SkipFile(SkipReason(spec.bad_input_skip))
 
     if spec.kind == ModeKind.CREATE and file_path.lower().endswith(".chd"):
         raise SkipFile(SkipReason.CREATE_REQUIRES_NON_CHD)
@@ -885,25 +860,14 @@ async def plan_job(
     ):
         raise SkipFile(SkipReason.SOURCE_COMPANION_UNSAFE)
 
-    if mode == "romz_extract":
-        # romz-specific: validate the archive is a real single-ROM archive
-        # BEFORE planning an output / allowing overwrite. get_output_path_for_mode
-        # falls back to the suffix-stripped stem for unreadable/invalid archives,
-        # so without this an ordinary/corrupt/multi-ROM archive next to an
-        # existing same-stem file could drive duplicate_action=overwrite to
-        # delete that unrelated file before convert() ever validates.
-        try:
-            await off_loop_bounded(
-                romz_service._single_rom_member, file_path,
-            )
-        except Exception as exc:
-            # Broad by design: corrupt/multi-ROM archives surface as
-            # ValueError, zipfile.BadZipFile, py7zr errors, OSError, … and
-            # all map to the same skip. Log the cause for troubleshooting.
-            logger.debug(
-                "romz_extract validation failed for %s: %s", file_path, exc,
-            )
-            raise SkipFile(SkipReason.ROMZ_INVALID_ARCHIVE) from None
+    # A Source the mode can't name its output from is refused BEFORE an output
+    # is planned or an overwrite allowed (romz extract: an archive without
+    # exactly one ROM). The plugin says, off the event loop: it reads the file.
+    problem = await off_loop_bounded(
+        registry.for_mode(mode).plan_problem, file_path, mode,
+    )
+    if problem:
+        raise SkipFile(SkipReason(problem))
 
     # Calculate output path and handle duplicates
     # For archive files: use output_dir if specified, otherwise save next to archive

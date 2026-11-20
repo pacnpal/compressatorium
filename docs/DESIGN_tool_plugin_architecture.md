@@ -2958,8 +2958,8 @@ because that is where the source is unlinked and a job can arrive there without
 having passed either plan-time check.
 
 **A mode that keeps its Source on principle says why.** `ModeSpec.source_kept_reason`
-(mirrored on `ChainSpec`, and as `sourceKeptReason` on the frontend mode entry,
-which `tests/test_frontend_parity_186.py` compares) is the user-facing reason for
+(mirrored on `ChainSpec`, and served to the frontend as `sourceKeptReason` on
+the mode entry, §3.7) is the user-facing reason for
 a mode whose `supports_delete_on_verify` is False not for want of a check but
 because deleting would lose something nothing can rebuild. rom-converto's
 `zar_compress` (#422) is the first: a ZAR holds the disc's files, not the disc,
@@ -4024,8 +4024,8 @@ declares a different delete proof on the mode contract:
   delete (#329) whose Rule's level is `recognized` needs a `recognized` record
   and re-runs the proof on the output before removing anything
   (`_recheck_output`).
-- The frontend mirrors it as `deleteProof` on the mode entry (compared by
-  `tests/test_frontend_parity_186.py`); `deleteCheckFor` and
+- The frontend reads it as `deleteProof` on the mode entry (from
+  `/api/tools`, §3.7); `deleteCheckFor` and
   `DELETE_CHECK_HINTS` in `src/lib/util/deleteCheck.js` are what the convert
   panel, the delete confirmation and the Rule editor say.
 
@@ -4724,8 +4724,8 @@ Referrer reads and rewrites with. **Create an `.m3u` from selected discs** (#299
 or more files directly in one folder inside a Volume whose extension is in
 `registry.disc_extensions()`, the union of each tool's `disc_extensions` (chdman
 `.cue .gdi .iso .chd`, Dolphin `.iso .gcz .wia .rvz .wbfs`, maxcso `.cso .zso`; a
-tool with no standalone disc files declares nothing). `registry.js` mirrors it as
-`discExts` (checked by `tests/test_frontend_parity_186.py`), and the file list
+tool with no standalone disc files declares nothing). `registry.js` reads it as
+`discExts` (from `/api/tools`, §3.7), and the file list
 shows **Create .m3u** only for two or more such files in one folder. Order is by
 `(Disc N)` / `Disc N` / `CD N`, then name. A ticked `.bin` that a ticked `.cue` /
 `.gdi` names is dropped from the selection with a warning; two files for one disc
@@ -9188,9 +9188,8 @@ string true. And keep the two lists collision-free against other tools:
 `.bin` stays chdman's, because a Genesis dump sharing an extension with a CD
 track is not a collision worth creating.
 
-The frontend mirrors these lists in `src/lib/tools/registry.js`, and
-`tests/test_frontend_parity_186.py` fails when the two drift — so widening a
-tool's inputs is a two-file change by construction.
+The frontend reads these lists from `/api/tools` (§3.7), so widening a tool's
+inputs is a one-file change.
 
 #### What counts as a source (`registry.mode_input_kind`)
 
@@ -9296,7 +9295,7 @@ two checks (`base.compression_problem`). The frontend mirrors both per mode in `
 `levelRange` (`registry.levelRangeFor(mode, codec)`), so the pickers never
 offer or send a codec or level the mode refuses: the level control follows the
 selected codec, and switching codec resets a level the new codec does not take
-to its default. `test_frontend_parity_186` fails on drift.
+to its default. Both come from `/api/tools` (§3.7), so they cannot drift.
 
 chdman's create modes declare `codecs` the same way (#471), from chdman's own
 rules (MAME `src/tools/chdman.cpp` `parse_compression`, `src/lib/util/chdcodec.cpp`):
@@ -9403,9 +9402,9 @@ implements `convert` and receives the resolved value; nothing calls a tool's
 as it is; a Rule's delete decision (`_delete_decision_identity`) reads the
 Rule's own fields, so it is unaffected.
 
-The value mirrors `defaultCompression` in `src/lib/tools/registry.js`, which
-seeds the same choice in the manual picker — `tests/test_frontend_parity_186.py`
-fails on drift, and on a codec+level mode that declares no default at all.
+The frontend's `defaultCompression` is this value (from `/api/tools`, §3.7),
+so the manual picker seeds the same choice. A codec+level mode must declare a
+default (`tests/test_tools_payload_27.py`).
 
 #### Extension matching is a suffix match (`utils.path_utils.match_extension`)
 
@@ -9834,48 +9833,106 @@ understands the container first. This mirrors the backend's longest-match
 
 ### 3.7 Frontend descriptor (`src/lib/tools/registry.js`)
 
-> **Status: implemented and extended.** The original §3.7 sketched a minimal
-> descriptor on `static/js/tools.js`. The legacy Preact frontend was retired
-> in favor of a Svelte 5 + Vite SPA (see README §"Frontend Development"), and
-> the registry now owns every tool fact: verify URLs derive from
-> `verifyPrefix`, per-tool `groups` map carries group labels (no hardcoded
-> switch), `defaultMode` replaces the old chdman special-case, and optional
-> `glyph` / `accent` give the sidebar / dashboard a visual escape hatch.
-> See `src/lib/tools/registry.js` for the source of truth.
+> **Status: built from the backend (#539).** The frontend registry no longer
+> keeps a copy of the backend's tools. `GET /api/tools` serves them, and
+> `registry.load(payload)` builds the descriptors once at start (App.svelte),
+> before any view renders. What stays in `registry.js` is UI only.
 
-```js
-// src/lib/tools/registry.js (abridged, see file for full schema)
-export const TOOLS = [
-  { id: 'chdman', label: 'CHDMAN', hint: '…',
-    verifyPrefix: '',                                    // URL segment, '' → /api/verify
-    sourceExts: ['.gdi','.iso','.cue','.bin'], verifyExts: ['.chd'],
-    modeGroups: ['create','extract','copy'],
-    groups: { create: 'Create', extract: 'Extract', copy: 'Copy' },
-    defaultMode: 'createcd',
-    glyph: 'CD', accent: 'var(--badge-cd)',
-    modes: [/* ModeSpec rows mirroring app/services/tools/spec.py */],
-    getInfo: api.getCHDInfo, verify: api.verifyCHD, verifyBatch: api.verifyBatchCHDs,
-    productPath: (p) => p.replace(/\.[^.]+$/, '.chd') },
-  { id: 'dolphin', verifyPrefix: 'dolphin', /* … */ },
-  { id: 'z3ds',    verifyPrefix: 'z3ds',    /* … */ },
-];
+**The payload.** `GET /api/tools` keeps `available` / `unavailable` and adds
+`tools`, built by `routes.info.tool_catalog()`:
+
+```jsonc
+"tools": [{
+  "id": "chdman", "label": "CHDMAN",            // label = display_name
+  "input_extensions": [...], "output_extensions": [...],
+  "verify_extensions": [...], "disc_extensions": [...],
+  "default_compression": "zlib" | null,
+  "modes": [{ /* ModeSpec.as_json(): every field, frozensets as sorted lists,
+                 enums as their value, codec_levels as [{codec,min,max,default}],
+                 a chain's steps as dicts, and reads_extensions resolved by
+                 registry.mode_reads_extensions(mode) */ }]
+}]
 ```
 
-`getPrimaryToolLabel`/`getPrimaryToolHint`/`getFilterOptions`/`MODE_GROUPS`/
-`CHDInfoModal` routing/verify-batch routing (all in `app.js`) become lookups
-into `TOOLS` instead of `if (tool === 'dolphin') …` chains.
+`ModeSpec.as_json()` (and `ChainSpec.as_json()`) is `spec.spec_json`, generic
+over `dataclasses.fields`, so no field list is kept by hand: a new `ModeSpec`
+field reaches the UI the moment it is declared. `ChainSpec` declares every
+`ModeSpec` field for that reason (structural parity).
 
-**Parity guard (`tests/test_frontend_parity_186.py`).** `registry.js` is a
-hand-maintained mirror of the backend `ModeSpec`s, and there is no shared build
-step, so a drift in `allows_archive_input` / `supports_delete_on_verify` /
-`input_extensions` / `output_ext` / `kind` would silently make the UI offer a
-job `plan_job` rejects ("0 queued") or fail on submit. The test evaluates
-`registry.js` with Node and asserts its mode rows match `registry.mode_specs()`
-field-by-field (skipped when Node is unavailable). `tool_id` is excluded: the
-synthetic `cso_to_chd` chain mode is owned by the `chain` tool on the backend
-but grouped under `cso` in the UI. The deliberate `.iso`-not-in-Dolphin-verify
-divergence lives on `verifyExts` (a verify-routing fact), not on a `ModeSpec`
-field, so it is outside the guard's scope.
+**What `registry.load` builds.** One descriptor per payload tool, in the
+backend's order:
+
+- each mode is its `ModeSpec` fields camelCased (`outputExt`,
+  `inputExtensions`, `supportsDeleteOnVerify`, `deleteProof`, ...), with
+  `defaultCompression` as a one-item array and `compressionCodecs` as the
+  mode's `codecs` worded from its tool's catalog (and each one's
+  `levelRange` from `codec_levels`);
+- a chain mode (it has `steps`) is listed under the tool its first step runs
+  (`cso_to_chd` under CSO, `nkit_to_rvz` under NKit), and the chain shell itself
+  is not listed;
+- `sourceExts` / `verifyExts` / `discExts` / `defaultCompression` are the
+  tool's `input_extensions` / `verify_extensions` / `disc_extensions` /
+  `default_compression`;
+- `getInfo` is `api.getToolInfo(id, path)` (`GET /api/info/{tool_id}`, §3.7.1)
+  for every tool except one marked `noInfo`.
+
+**What stays in `registry.js`: `TOOL_UI`, keyed by tool id.** The hint text,
+`verifyPrefix` (the legacy verify URL), `glyph`, `accent`, the `groups` labels,
+`defaultMode`, `compressionStyle`, `maxCodecs`, `compressionLevelRange`, the
+codec catalog's `label` / `hint` words, `contentRefined`, the `verify` /
+`verifyBatch` bindings and `productPath`. Two UI decisions also live there:
+`verifyExts` where the Verify row action is deliberately narrower than the
+tool's `verify_extensions` (Dolphin leaves out `.iso`, so a CD ISO is not sent
+to `/api/dolphin-verify`; rom-converto keeps only `.zar`), and
+`defaultCompression` for a tool whose picker seeds a value the backend does not
+name (nsz's `solid` layout). A tool with no `TOOL_UI` entry still appears, with
+plain defaults (`verifyPrefix` = its id, no glyph, `compressionStyle: 'none'`).
+
+**The registry is empty until loaded.** Every method answers from what `load`
+built, so nothing may read the registry at module import. `fileIcon.js` builds
+its buckets on first use; the conversion store's construction-time defaults
+are placeholders that `conversion.adoptRegistry()` replaces right after
+`load` (App.svelte), before `loadServerPrefs()` applies the saved ones. App
+shows a spinner in place of every view until the payload arrives, and retries a
+failed fetch.
+
+**Guards.** `tests/test_tools_payload_27.py` calls the route in-test: every
+`ModeSpec` field is in every mode, and `registry.load(payload)` under Node
+answers `specFor`, `codecsForMode`, `levelRangeFor`, `toolsForSourcePath` and
+`displayExtension` from the backend for every mode. The Node harnesses
+(`tests/test_frontend_registry_derives_186.py`'s `loaded_registry_src()`,
+`tests/frontend_tools_harness.py`) load the same payload first. The old
+hand-mirror test (`test_frontend_parity_186.py`) is gone: there is nothing left
+to drift.
+
+#### 3.7.1 File info and verify routes, from the registry (#539)
+
+One `GET /api/info/{tool_id}?path=` answers for every tool (`routes.info._describe`):
+
+1. 403 outside the Volumes, 404 for a missing file;
+2. 400 for a file outside the plugin's `info_extensions` (default
+   `input_extensions | verify_extensions`; chdman narrows it to `.chd`,
+   rom-converto to `.zar`, the chain shell to nothing);
+3. 503 when the read needs a program that isn't there (`info_needs_tool`,
+   `_require_info_ready`);
+4. `await tool.describe(path)`, by default `info_model(await info(path), path)`.
+   chdman overrides it with the metadata-store cache and the disc ID. An
+   exception in the plugin's `info_file_errors` (NKit's header error, an `.iso`
+   that is not an Xbox image, a file rom-converto refuses) is a 422, a fact
+   about the file that lets the Info modal try the next tool; a
+   `StorageAbandoned` is a 503; anything else a 500.
+
+The old per-tool URLs (`/api/info`, `/api/dolphin-info`, ..., `/api/nsz-info`)
+are aliases of it, registered from `_LEGACY_INFO_ROUTES` with their handler
+names (OpenAPI operation ids) and typed response models (the plugin's
+`info_model` return annotation), so older web UIs and API clients keep
+working. A new tool needs no entry: `/api/info/<id>` answers for it.
+
+The verify trio is registered in one loop over `registry.all()`: every tool
+with `verify_extensions` gets `/api/<prefix>verify`, `/events` and
+`-batch/events`. `_VERIFY_CONFIG` keeps the legacy URL prefix, handler names
+and error words of the ten tools that had them; a tool without an entry gets
+`_default_verify_config(tool)` (`/api/<id>-verify`, read through the plugin).
 
 **Registry-derived frontend fact lists (issue #186, site 3).** Two presentation
 surfaces used to re-type extension/mode facts the registry already owns, so a
@@ -9952,11 +10009,13 @@ Before: ~20 files (see `ADDING_PLATFORMS_AND_TOOLS.md` §3). After:
    `_build_command`, `_parse_progress`, `verify_stream`, `info`, `info_model`.
 2. `app/services/tools/__init__.py`, one `registry.register(NszipTool(...))`.
 3. `app/config.py`, one `nszip_path` Field.
-4. `src/lib/tools/registry.js`, one entry in `TOOLS`.
+4. `src/lib/tools/registry.js`, optionally one `TOOL_UI` entry (glyph, words,
+   product path). Without it the tool still appears, from `/api/tools`.
 5. `Dockerfile`, install the binary (irreducible).
 6. tests + docs.
 
-Dispatch in `job_manager`, `convert`, `files`, `info`, **no edits**, because
+Dispatch in `job_manager`, `convert`, `files`, `info` (File info and verify
+routes included, §3.7.1), **no edits**, because
 they iterate the registry. That is the whole point.
 
 ---

@@ -27,6 +27,15 @@
   reference.
 - **Compression** keeps "Compatible with…" in view and folds the codec and
   level controls under **Choose codecs**.
+- **The web UI reads its formats from the server** (#539). `GET /api/tools`
+  now also lists every tool's extensions and every mode's settings, and the
+  UI builds its list of converters from it at start, so it can never offer a
+  format or option the server would refuse. The views show a short "Loading
+  the tools" spinner until it arrives.
+- **One File info route for every tool** (#539): `GET /api/info/{tool}?path=`.
+  The old addresses (`/api/info`, `/api/dolphin-info`, `/api/nsz-info`, …)
+  still work. A file a tool doesn't describe is answered "Not a file … describes
+  (…)", naming the extensions it takes.
 - New `GET`/`PUT /api/preferences/defaults` store the safety choices new
   conversions start with (check each new file on, delete the original off).
   The Settings screen that edits them comes next.

@@ -113,10 +113,14 @@ def test_a_hidden_convert_tool_falls_back_to_a_visible_one():
     assert "conversion.setPrimaryTool(tools[0].id)" in app
 
 
-def test_the_consumers_read_the_store_and_a_failed_fetch_marks_it_known():
+def test_the_consumers_read_the_store_and_a_failed_fetch_is_retried():
     for rel in ("components/panels/ModeSelect.svelte", "components/settings/Converters.svelte"):
         text = (_SRC / "lib" / rel).read_text(encoding="utf-8")
         assert "ui.visibleTools" in text or "ui.toolsKnown" in text, rel
         assert "hiddenTools" not in text, rel
+    # The registry itself comes from /api/tools (#539), so a failed fetch is
+    # retried rather than shown as "every tool": with no payload there is none.
     app = (_SRC / "App.svelte").read_text(encoding="utf-8")
-    assert "applyToolAvailability(null)" in app
+    assert "registry.load(t)" in app
+    assert "ui.applyToolAvailability(t?.available)" in app
+    assert "setTimeout(() => loadTools(" in app

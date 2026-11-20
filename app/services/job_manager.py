@@ -1471,16 +1471,9 @@ class JobManager:
             else self._derive_output(file_path, mode, output_dir)
         )
         # The HTTP routes validate inputs before passing an explicit
-        # output_path; direct service callers reach this fallback. Most
-        # tools' output_path() raises for an unsupported extension, but
-        # z3ds's does not, so keep its input-extension gate -- now read from
-        # the mode's declared input_extensions instead of the per-direction
-        # Z3DS_*_FORMATS constants.
+        # output_path; direct service callers reach this fallback, where each
+        # tool's output_path() raises for an extension its mode does not take.
         spec = registry.spec(mode.value)
-        if spec.tool_id == "z3ds":
-            ext = Path(file_path).suffix.lower()
-            if ext not in spec.input_extensions:
-                raise ValueError(f"Unsupported file extension: {ext}")
         # Generic same-path guard: a non-copy mode must never write over its
         # own source (chdman copy is an intentional in-place .chd recompress;
         # every other mode changes the extension so output != input).

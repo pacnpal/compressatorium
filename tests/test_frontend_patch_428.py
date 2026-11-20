@@ -3,7 +3,7 @@
 * `canPatch` (patchDialog.js): the row action is offered for a loose file, a
   .zip/.7z, or a member inside one, and never for a folder, a RAR or a disc
   Image (the registry's `discExts`, mirrored from the backend's
-  ``disc_extensions``; parity is asserted in test_frontend_parity_186.py).
+  ``disc_extensions``, which the registry loads from /api/tools).
 * `patchedName`: the name the dialog promises, the one the backend writes.
 * `patchRequest`: exactly one patch source in the request.
 
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from .test_frontend_parity_186 import _find_node
+from .test_frontend_registry_derives_186 import _find_node
 
 _SRC = Path(__file__).resolve().parents[1] / "src" / "lib"
 _DIALOG = _SRC / "util" / "patchDialog.js"
