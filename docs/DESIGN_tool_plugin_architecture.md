@@ -3474,11 +3474,22 @@ ROM onto the mount (Codex PR #518). A root
 that can't be resolved there raises `LibraryUnreadable`: the listing fails
 rather than take an inner Library's files. Registering, removing a Library
 and saving RomM's root drop every folder Library's kept walk, so an outer
-Library re-lists, and move `libraries.ownership_generation()`. A sweep reads
-it when it lists a Platform and again before it queues (a conversion batch,
-a check pick): when it moved, the listing may hold a new inner Library's
-files, so nothing of it is queued, the run is not recorded, and the Platform
-reports `libraries_changed` (Codex PR #518). Hidden staging (#398) asks `libraries.hidden_staging(path)`,
+Library re-lists, and move `libraries.ownership_generation()`, all as one
+step under `libraries._ownership_lock` (`_changing_ownership`, which also drops
+every cached resolved root; registration, removal and every RomM settings
+save then seed RomM's again, `_reseed_romm_root`, bounded through
+`run_admitted` and outside the registration lock, so the Rules view's nesting
+is right before any scan and a dead RomM mount holds nothing up). A sweep reads the counter when it lists a
+Platform and admits its work through `libraries.owned_as_listed(owned_at)`,
+which raises `rules.library.LibrariesChanged` when it moved and otherwise
+holds that lock while the work goes in: `JobManager.create_jobs_atomic(...,
+admission=...)` (and `create_batch_jobs`) enters it under the queue lock around
+the checks and the queueing, with no await inside, and the check job is
+started inside it against the counter read when the sweep began. So no
+registration lands between the check and the queueing: work from a stale
+listing is never queued, the run is not recorded, and the Platform reports
+`libraries_changed` (PR #518). The lock is taken before `libraries._lock`,
+never after, and never held across an await or a disk read. Hidden staging (#398) asks `libraries.hidden_staging(path)`,
 any Library holding the path with `HIDDEN_STAGING`, not only its owner: RomM
 scans its whole folder, an inner folder Library included. Folder Platform
 mappings belong to the nearest folder Library (`set_mapping`), and where two

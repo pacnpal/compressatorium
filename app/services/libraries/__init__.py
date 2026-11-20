@@ -24,7 +24,7 @@ import asyncio
 import os
 import threading
 import time
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -37,6 +37,7 @@ from services.libraries.folder import ID_PREFIX, LAYOUTS, FolderLibrary
 from services.rules.library import (
     ES_FRONTEND_REFERRER,
     GAMELISTS_FOLDER,
+    LibrariesChanged,
     Library,
     duplicate_actions,
 )
@@ -378,21 +379,54 @@ def is_inner(rel: str, inner: list[str]) -> bool:
 _ownership_generation = 0
 
 
+# Held while a Library is published or dropped and the counter moves, and by
+# :func:`owned_as_listed` while a sweep admits work, so no registration lands
+# between a sweep's check and its queueing (CodeRabbit PR #518). Never held
+# across an await or a disk read. Taken before ``_lock``, never after.
+_ownership_lock = threading.Lock()
+
+
 def ownership_generation() -> int:
     """The counter :func:`_forget_walks` moves. Never waits on the disk."""
     with _lock:
         return _ownership_generation
 
 
-def _forget_walks() -> None:
-    """Every folder Library's kept walk is out of date: which Libraries sit
-    inside which changed (#514). Never waits."""
+@contextmanager
+def owned_as_listed(owned_at: int):
+    """Hold ownership still while work from a listing is admitted.
+
+    Raises :class:`LibrariesChanged` when a Library was registered or removed,
+    or RomM's folder moved, since the listing read *owned_at*; else holds the
+    ownership lock until the block ends, so none can land mid-admission. The
+    block must not await. Never waits on the disk."""
+    with _ownership_lock:
+        if ownership_generation() != owned_at:
+            raise LibrariesChanged
+        yield
+
+
+@contextmanager
+def _changing_ownership():
+    """Publish or drop a Library and move the counter as one step: every
+    folder Library's walk and every cached resolved root are out of date
+    (#514; CodeRabbit PR #518: an ancestor of a root may have been relinked).
+    Never waits on the disk."""
     global _ownership_generation
-    with _lock:
-        _ownership_generation += 1
-        folders = list(_cache.values()) if _cache is not None else []
-    for library in folders:
-        library.invalidate()
+    with _ownership_lock:
+        yield
+        with _lock:
+            _ownership_generation += 1
+            _canonical_roots.clear()
+            folders = list(_cache.values()) if _cache is not None else []
+        for library in folders:
+            library.invalidate()
+
+
+def _forget_walks() -> None:
+    """:func:`_changing_ownership` with nothing to publish. Never waits."""
+    with _changing_ownership():
+        pass
 
 
 def _lexically_holds(root: str, listed: str) -> bool:
@@ -409,6 +443,23 @@ _canonical_roots: dict[str, Path] = {}
 _canonical_generation: int | None = None
 
 
+def _reseed_romm_root() -> None:
+    """Cache RomM's root resolved again, after an ownership change dropped
+    every cached root. Blocking (resolves it); best effort."""
+    from services.romm.library import romm_library
+
+    if romm_library.root:
+        with suppress(OSError, RuntimeError):
+            _canonical_root(romm_library.root)
+
+
+def _remember_root(root: str | None, canonical: Path) -> None:
+    """Cache *root*'s resolved path, already worked out. Never waits."""
+    if root:
+        with _lock:
+            _canonical_roots[root] = canonical
+
+
 def _canonical_root(root: str) -> Path:
     """*root* resolved, cached until RomM's settings are next saved. Blocking
     the first time; a root that can't be resolved raises and isn't cached."""
@@ -421,11 +472,15 @@ def _canonical_root(root: str) -> Path:
             _canonical_roots.clear()
             _canonical_generation = generation
         cached = _canonical_roots.get(root)
+        owned_at = _ownership_generation
     if cached is not None:
         return cached
     canonical = Path(root).resolve()
     with _lock:
-        if _canonical_generation == generation:
+        # Not cached when the cache was cleared while this resolved (a save,
+        # or an ownership change, CodeRabbit PR #551): the caller still gets
+        # it, but a later lookup resolves again.
+        if _canonical_generation == generation and _ownership_generation == owned_at:
             _canonical_roots[root] = canonical
     return canonical
 
@@ -609,6 +664,12 @@ async def romm_root_claim(path: str | None):
         yield
         # Which folder Libraries sit inside or around RomM's may have changed.
         _forget_walks()
+        # RomM's root (the one saved, or kept when the save didn't touch it)
+        # resolved again now, so the Rules view's nesting reads it before any
+        # scan (CodeRabbit PR #518, Codex PR #551). Best effort: a root that
+        # can't be resolved just now is resolved on first use, as before.
+        with suppress(Exception):
+            await run_admitted(_reseed_romm_root, timeout=ROOT_CHECK_SECONDS)
     finally:
         _register_lock.release()
 
@@ -660,11 +721,14 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
                 session.rollback()
                 raise LibraryPathError(409, "Already a Library") from None
             library = _from_row(row)
-        with _lock:
+        # A Library around this one must stop listing its files.
+        with _changing_ownership(), _lock:
             if _cache is not None:
                 _cache[library.record_id] = library
-        # A Library around this one must stop listing its files.
-        _forget_walks()
+        if romm_root is not None:
+            # Seeded again, so the Rules view's nesting reads RomM's root
+            # resolved before any scan (CodeRabbit PR #518).
+            _remember_root(romm_library.root, romm_root)
     finally:
         _register_lock.release()
     return library
@@ -817,15 +881,18 @@ async def _remove(library: FolderLibrary, library_id: str, record_id: int) -> No
                     if row is not None:
                         session.delete(row)
                         session.commit()
-                with _lock:
+                # A Library around this one lists its files again.
+                with _changing_ownership(), _lock:
                     if _cache is not None:
                         _cache.pop(record_id, None)
-                # A Library around this one lists its files again.
-                _forget_walks()
             finally:
                 _register_lock.release()
 
         await run_in_threadpool(_delete)
+        # After the registration lock is let go, and bounded: RomM's mount
+        # may not answer (Codex PR #551). Best effort, as on a settings save.
+        with suppress(Exception):
+            await run_admitted(_reseed_romm_root, timeout=ROOT_CHECK_SECONDS)
     finally:
         with guard:
             mine = not run["started"]
