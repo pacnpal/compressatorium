@@ -881,11 +881,14 @@ async def _remove(library: FolderLibrary, library_id: str, record_id: int) -> No
                 with _changing_ownership(), _lock:
                     if _cache is not None:
                         _cache.pop(record_id, None)
-                _reseed_romm_root()
             finally:
                 _register_lock.release()
 
         await run_in_threadpool(_delete)
+        # After the registration lock is let go, and bounded: RomM's mount
+        # may not answer (Codex PR #551). Best effort, as on a settings save.
+        with suppress(Exception):
+            await run_admitted(_reseed_romm_root, timeout=ROOT_CHECK_SECONDS)
     finally:
         with guard:
             mine = not run["started"]

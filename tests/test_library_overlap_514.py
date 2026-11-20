@@ -397,3 +397,33 @@ async def test_removing_a_library_keeps_a_linked_romm_folders_nesting(db: Path) 
     await romm_routes.put_romm_settings(romm_routes.RommSettingsPatch(url="http://romm:8081"))
     listed = {lib["id"]: lib for lib in await routes.list_libraries()}
     assert listed[inner["id"]]["within"] == {"id": "romm", "name": "RomM"}
+
+
+@pytest.mark.asyncio
+async def test_a_dead_romm_mount_never_holds_up_a_removal(tree: Path, monkeypatch) -> None:
+    """Codex PR #551: reseeding RomM's root after a removal is bounded and
+    runs after the registration lock is let go."""
+    import threading
+    import time
+
+    from routes import libraries as routes
+    from services import libraries
+
+    lib = await _register(tree)
+    release = threading.Event()
+    seen_lock: list[bool] = []
+
+    def hung() -> None:
+        seen_lock.append(libraries._register_lock.locked())
+        release.wait(5)
+
+    monkeypatch.setattr(libraries, "_reseed_romm_root", hung)
+    monkeypatch.setattr(libraries, "ROOT_CHECK_SECONDS", 0.2)
+    started = time.monotonic()
+    try:
+        await routes.remove_library(lib["id"])
+        assert time.monotonic() - started < 3
+        assert seen_lock == [False]
+        assert not libraries._register_lock.locked()
+    finally:
+        release.set()
