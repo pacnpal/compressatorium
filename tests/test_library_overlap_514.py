@@ -184,8 +184,23 @@ async def test_romm_skips_the_roms_a_folder_library_inside_it_owns(db: Path, mon
         {"id": 2, "fs_name": "Ico.iso", "full_path": "roms/ps2/Ico.iso"},
     ]
     monkeypatch.setattr(romm_client_module.romm_client, "roms", lambda _pid: roms)
+    real_local_path = romm_client_module.romm_client.local_path
+    mapped: list[str] = []
 
-    assert [i.name for i in romm_library.images("1")] == ["Ico.iso"]
+    def counting(rom):
+        mapped.append(rom["fs_name"])
+        return real_local_path(rom)
+
+    monkeypatch.setattr(romm_client_module.romm_client, "local_path", counting)
+
+    images = romm_library.images("1")
+
+    # Codex PR #518: no ROM's path is worked out while listing; it is, lazily,
+    # inside the bounded candidate probe, and the inner Library's is none.
+    assert mapped == []
+    paths = {i.name: i.path for i in images}
+    assert paths["Melee.iso"] is None
+    assert paths["Ico.iso"] == str((library / "roms" / "ps2" / "Ico.iso").resolve())
 
 
 # ---- Platform mappings -------------------------------------------------------

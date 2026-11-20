@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from types import MappingProxyType
 from typing import Any
@@ -203,7 +203,7 @@ def app_verdicts(paths: list[str]) -> dict[str, dict | None]:
         return dict.fromkeys(paths)
 
 
-def image_from_rom(rom: dict) -> Image:
+def image_from_rom(rom: dict, *, owned_elsewhere: Callable[[str], bool] | None = None) -> Image:
     """One RomM ROM record as an Image.
 
     ``title`` is RomM's display name (what the ``name`` order sorts by), and
@@ -220,6 +220,10 @@ def image_from_rom(rom: dict) -> Image:
     it only for a ROM its name and size filters kept, inside the bounded
     candidate probe, so a ROM those filters exclude costs no disk at all
     (Codex on PR #442). The path is lazy for the same reason.
+
+    *owned_elsewhere* answers, for the mapped path, whether another Library
+    owns it (#514); such a ROM has no path here, so RomM's Rules leave it
+    alone. Asked only when the path is read, so it stays lazy (Codex PR #518).
     """
     identified = rom_identified(rom)
 
@@ -242,10 +246,16 @@ def image_from_rom(rom: dict) -> Image:
         platform=rom.get("platform_slug"),
         # Mapping the record onto the mount stats it, so it waits until the
         # sweep reads `path` off the event loop.
-        resolve_path=lambda: romm_client.local_path(rom),
+        resolve_path=lambda: _owned_path(romm_client.local_path(rom), owned_elsewhere),
         record=rom,
     )
     return image
+
+
+def _owned_path(path: str | None, owned_elsewhere: Callable[[str], bool] | None) -> str | None:
+    if path and owned_elsewhere is not None and owned_elsewhere(path):
+        return None
+    return path
 
 
 def scan_refusal(exc: RommError) -> str:
@@ -324,19 +334,20 @@ class RommLibrary(LibraryDefaults):
             roms = romm_client.roms(int(platform_id))
         except RommError as exc:
             raise LibraryUnreadable(str(exc)) from exc
-        images = [image_from_rom(rom) for rom in roms]
         # A folder Library inside RomM's folder owns its files (#514), so
-        # RomM's Rules leave them alone. Only then is each path worked out
-        # here (it stats the mount); `local_path` answers it resolved.
+        # RomM's Rules leave them alone: such a ROM has no path here. Asked
+        # when its path is read, inside the bounded candidate probe, never
+        # for every ROM while listing (Codex PR #518); `local_path` answers it
+        # resolved.
         inner = libraries.inner_folders(self)
         if not inner:
-            return images
+            return [image_from_rom(rom) for rom in roms]
         real_root = os.path.realpath(self.root)
-        return [
-            image for image in images
-            if not image.path
-            or not libraries.is_inner(os.path.relpath(image.path, real_root), inner)
-        ]
+
+        def owned_elsewhere(path: str) -> bool:
+            return libraries.is_inner(os.path.relpath(path, real_root), inner)
+
+        return [image_from_rom(rom, owned_elsewhere=owned_elsewhere) for rom in roms]
 
     def rule_defaults(self) -> dict[str, Any]:
         cfg = romm_settings.effective()

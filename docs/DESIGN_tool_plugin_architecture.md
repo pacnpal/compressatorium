@@ -3466,8 +3466,10 @@ is swept twice: `libraries.inner_folders(library)` lists the roots of the
 other Libraries inside *library*'s (resolved, relative to its root), and each
 Library's listing leaves them out. A folder Library's walk prunes them (so its
 Rules, check Rules, Findings, find-duplicates and counts never see an inner
-Library's files), and `RommLibrary.images` drops the ROMs whose local path is
-in one (it works the paths out only when there is an inner Library). A root
+Library's files), and `RommLibrary.images` gives a ROM whose local path is in
+one no path (`image_from_rom(owned_elsewhere=...)`), asked only when the
+path is read, inside the bounded candidate probe, so listing never maps every
+ROM onto the mount (Codex PR #518). A root
 that can't be resolved there raises `LibraryUnreadable`: the listing fails
 rather than take an inner Library's files. Registering, removing a Library
 and saving RomM's root drop every folder Library's kept walk, so an outer
