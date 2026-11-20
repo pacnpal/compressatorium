@@ -169,9 +169,9 @@ async def test_removing_a_library_drops_its_rules_and_state_and_keeps_files(
     tree: Path,
 ) -> None:
     from routes import libraries as routes
-    from routes import romm as romm_routes
+    from routes import libraries as lib_routes
 
-    await romm_routes.put_romm_rules({"7": {"mode": "dolphin_rvz"}})
+    await lib_routes.put_library_rules("romm", {"7": {"mode": "dolphin_rvz"}})
     lib = await _register(tree)
     await routes.put_library_rules(lib["id"], {"rules": {"ngc": {"mode": "dolphin_rvz"}}})
     await preferences_store.put(
@@ -330,13 +330,13 @@ async def test_a_stored_overwrite_rule_reads_back_as_skip(tree: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_romm_rules_keep_every_policy(db: Path) -> None:
-    from routes import romm as romm_routes
+    from routes import libraries as lib_routes
 
-    saved = await romm_routes.put_romm_rules({
+    saved = await lib_routes.put_library_rules("romm", {
         "7": {"mode": "dolphin_rvz", "duplicate_action": "overwrite"},
     })
     assert saved["rules"]["7"]["duplicate_action"] == "overwrite"
-    got = await romm_routes.get_romm_rules()
+    got = await lib_routes.get_library_rules("romm")
     assert got["options"]["duplicate_actions"] == ["skip", "overwrite", "rename"]
 
 

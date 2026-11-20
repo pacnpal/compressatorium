@@ -1015,7 +1015,7 @@ def test_the_streaming_verifier_spawns_bare_and_is_reniced(tmp_path, monkeypatch
     from app.services import subprocess_runner as sr
 
     wrapper = shutil.which("env")
-    monkeypatch.setattr(sr, "priority_prefix", lambda _owner=None: [wrapper])
+    monkeypatch.setattr(sr, "priority_prefix", lambda: [wrapper])
     spawned = []
     real_exec = sr.asyncio.create_subprocess_exec
 
@@ -1036,15 +1036,15 @@ def test_the_streaming_verifier_spawns_bare_and_is_reniced(tmp_path, monkeypatch
 
     reniced = []
 
-    def prioritize(owner, pid):
-        reniced.append(owner)
+    def prioritize(pid):
+        reniced.append(pid)
 
     monkeypatch.setattr(sr, "_prioritize_child", prioritize)
     events = asyncio.run(drain())
     # A verdict never comes through an execvp wrapper (CodeRabbit 4616898119):
     # the verifier is spawned bare and given its priority by pid.
     assert spawned == [cmd]
-    assert reniced == ["test"]
+    assert len(reniced) == 1
     assert events[-1]["valid"] is True
 
 
@@ -1337,7 +1337,7 @@ async def _bound_sizing_races_cancel(monkeypatch):
 
     release = threading.Event()
 
-    def _wedged_sizing(_path, _owner=None):
+    def _wedged_sizing(_path):
         release.wait(30)
         return 999
 
@@ -1350,7 +1350,7 @@ async def _bound_sizing_races_cancel(monkeypatch):
     try:
         bound = await asyncio.wait_for(
             runner_mod.resolve_verify_timeout(
-                "/does-not-answer/game.chd", "chdman", cancel_event=cancel_event,
+                "/does-not-answer/game.chd", cancel_event=cancel_event,
             ),
             # Comfortably under _STAT_TIMEOUT: waiting that out is the bug.
             timeout=runner_mod._STAT_TIMEOUT / 2,
@@ -1363,7 +1363,7 @@ async def _bound_sizing_races_cancel(monkeypatch):
 
     # Falls back to the flat baseline: the caller is about to be told the run
     # was cancelled, so the number only has to exist.
-    assert bound == runner_mod.verify_timeout("chdman")
+    assert bound == runner_mod.verify_timeout()
     assert elapsed < runner_mod._STAT_TIMEOUT / 2
 
 
@@ -1550,7 +1550,7 @@ async def _streaming_verify_races_sizing(tmp_path: Path, monkeypatch):
 
     release = threading.Event()
 
-    def _wedged_sizing(_path, _owner=None):
+    def _wedged_sizing(_path):
         release.wait(30)
         return 999
 

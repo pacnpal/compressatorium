@@ -47,6 +47,27 @@ def _default_lock_dir(data_dir: str, *, configured: bool) -> str:
     return lock_dir
 
 
+# Retired names (#542), still read so no deployment breaks; each one set is
+# named in one startup warning (``Settings.retired_env``).
+# Per-tool overrides: each feeds the shared ``tool_<key>`` setting when that is
+# not set itself (two that disagree: the largest).
+_RETIRED_PER_TOOL = {
+    key: tuple(
+        f"COMPRESSATORIUM_{tool}_{key.upper()}" for tool in (
+            "CHDMAN", "DOLPHIN_TOOL", "NSZ", "Z3DS", "MAXCSO", "MAKEPS3ISO",
+            "ROMZ", "JWUD", "NKIT2ISO", "XISO", "ROM_CONVERTO",
+        )
+    )
+    for key in ("nice", "ioprio_class", "ioprio_level", "info_timeout", "verify_timeout")
+}
+# No longer read at all: fixed timings, and a choice the Web UI now remembers.
+_RETIRED_IGNORED = (
+    "CHD_DEBUG_PROGRESS_INTERVAL", "CHD_DEBUG_PROGRESS_TIMEOUT",
+    "COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST",
+    "CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST",
+)
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables and defaults."""
 
@@ -56,6 +77,7 @@ class Settings(BaseSettings):
     )
     _startup_discovered_volumes: list[str] = PrivateAttr(default_factory=list)
     _startup_scan_completed: bool = PrivateAttr(default=False)
+    _retired_env: list[str] = PrivateAttr(default_factory=list)
 
     # Volume configuration. Prefer COMPRESSATORIUM_* names; CHD_* remain supported aliases.
     chd_volumes: str = Field(
@@ -89,16 +111,6 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("COMPRESSATORIUM_AUTH_TOKEN", "CHD_AUTH_TOKEN"),
     )
     auth_username: str = Field(default="admin", alias="COMPRESSATORIUM_AUTH_USERNAME")
-
-    # Web UI behavior
-    search_auto_return_to_file_list: bool = Field(
-        default=True,
-        alias="COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST",
-        validation_alias=AliasChoices(
-            "COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST",
-            "CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST",
-        ),
-    )
 
     # Job limits
     max_concurrent_jobs: int = Field(default=1, alias="MAX_CONCURRENT_JOBS")
@@ -377,9 +389,8 @@ class Settings(BaseSettings):
     # supported as backwards-compatible validation aliases (the same pattern as
     # chd_volumes -> COMPRESSATORIUM_VOLUMES).
     #
-    # Optional per-tool overrides (the *_nice / *_ioprio_* / *_info_timeout /
-    # *_verify_timeout fields below) default to None and fall back to these
-    # shared defaults; see services.subprocess_runner for the resolution policy.
+    # One value for every tool (#542). The old per-tool overrides
+    # (COMPRESSATORIUM_<TOOL>_NICE and so on, _RETIRED_PER_TOOL) still feed these.
     tool_nice: int | None = Field(
         default=10,
         alias="COMPRESSATORIUM_TOOL_NICE",
@@ -439,9 +450,7 @@ class Settings(BaseSettings):
     # no output at all for this long means wedged, and it catches a hang far
     # sooner than the size-scaled overall bound above. Mirrors the conversion
     # path's CHD_PROGRESS_TIMEOUT default, and is independent of it in the same
-    # way -- zeroing the overall verify timeout does not zero this. Named
-    # `tool_*` so per-tool overrides resolve through the same policy as every
-    # other knob here.
+    # way -- zeroing the overall verify timeout does not zero this.
     tool_verify_progress_timeout: int = Field(
         default=600,
         alias="COMPRESSATORIUM_TOOL_VERIFY_PROGRESS_TIMEOUT",
@@ -449,170 +458,6 @@ class Settings(BaseSettings):
             "COMPRESSATORIUM_TOOL_VERIFY_PROGRESS_TIMEOUT",
             "CHD_VERIFY_PROGRESS_TIMEOUT",
         ),
-    )
-
-    # Optional per-tool overrides. Each defaults to None, meaning "use the
-    # shared tool_* default above". Tool keys match the SubprocessRunner owner
-    # names (chdman, dolphin_tool, nsz, z3ds) so per-tool resolution is a plain
-    # getattr lookup. Set e.g. COMPRESSATORIUM_DOLPHIN_TOOL_NICE to give Dolphin
-    # a different nice level than chdman.
-    chdman_nice: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_CHDMAN_NICE",
-    )
-    chdman_ioprio_class: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_CHDMAN_IOPRIO_CLASS",
-    )
-    chdman_ioprio_level: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_CHDMAN_IOPRIO_LEVEL",
-    )
-    chdman_info_timeout: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_CHDMAN_INFO_TIMEOUT",
-    )
-    chdman_verify_timeout: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_CHDMAN_VERIFY_TIMEOUT",
-    )
-    dolphin_tool_nice: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_DOLPHIN_TOOL_NICE",
-    )
-    dolphin_tool_ioprio_class: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_DOLPHIN_TOOL_IOPRIO_CLASS",
-    )
-    dolphin_tool_ioprio_level: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_DOLPHIN_TOOL_IOPRIO_LEVEL",
-    )
-    dolphin_tool_info_timeout: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_DOLPHIN_TOOL_INFO_TIMEOUT",
-    )
-    dolphin_tool_verify_timeout: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_DOLPHIN_TOOL_VERIFY_TIMEOUT",
-    )
-    nsz_nice: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_NSZ_NICE",
-    )
-    nsz_ioprio_class: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_NSZ_IOPRIO_CLASS",
-    )
-    nsz_ioprio_level: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_NSZ_IOPRIO_LEVEL",
-    )
-    # nsz/z3ds expose only a verify subprocess (their info() is a filesystem
-    # read with no child process), so they take a *_verify_timeout override but
-    # no *_info_timeout.
-    nsz_verify_timeout: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT",
-    )
-    z3ds_nice: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_Z3DS_NICE",
-    )
-    z3ds_ioprio_class: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_Z3DS_IOPRIO_CLASS",
-    )
-    z3ds_ioprio_level: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_Z3DS_IOPRIO_LEVEL",
-    )
-    z3ds_verify_timeout: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_Z3DS_VERIFY_TIMEOUT",
-    )
-    # maxcso (CSO/ZSO): like nsz/z3ds, info() is a filesystem read so only a
-    # verify-timeout override is exposed, no info-timeout.
-    maxcso_nice: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_MAXCSO_NICE",
-    )
-    maxcso_ioprio_class: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_MAXCSO_IOPRIO_CLASS",
-    )
-    maxcso_ioprio_level: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_MAXCSO_IOPRIO_LEVEL",
-    )
-    maxcso_verify_timeout: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_MAXCSO_VERIFY_TIMEOUT",
-    )
-    # makeps3iso (PS3 folder -> ISO): one packing subprocess, and no *reachable*
-    # verify -- the mode declines delete-on-verify, the tool registers no verify
-    # extensions or route, and the post-build PARAM.SFO readback is part of
-    # convert(), not verify(). So no _VERIFY_TIMEOUT here: a knob no flow reads
-    # is worse than no knob. Add one alongside a bounded verify entry point if
-    # this tool ever gains one.
-    makeps3iso_nice: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_MAKEPS3ISO_NICE",
-    )
-    makeps3iso_ioprio_class: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_MAKEPS3ISO_IOPRIO_CLASS",
-    )
-    makeps3iso_ioprio_level: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_MAKEPS3ISO_IOPRIO_LEVEL",
-    )
-    # romz (7z ROM packer): like nsz/z3ds/maxcso, info() is a filesystem read so
-    # only a verify-timeout override is exposed, no info-timeout.
-    romz_nice: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_ROMZ_NICE",
-    )
-    romz_ioprio_class: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_ROMZ_IOPRIO_CLASS",
-    )
-    romz_ioprio_level: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_ROMZ_IOPRIO_LEVEL",
-    )
-    romz_verify_timeout: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_ROMZ_VERIFY_TIMEOUT",
-    )
-    # jwud (JWUDTool, Wii U .wud <-> .wux): one conversion subprocess. Like
-    # makeps3iso its verify is pure Python (a WUX header/index-table walk, no
-    # child process), so its verify timeout likewise bounds the call itself.
-    jwud_nice: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_JWUD_NICE",
-    )
-    jwud_ioprio_class: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_JWUD_IOPRIO_CLASS",
-    )
-    jwud_ioprio_level: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_JWUD_IOPRIO_LEVEL",
-    )
-    jwud_verify_timeout: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_JWUD_VERIFY_TIMEOUT",
-    )
-    # nkit2iso (NKit -> ISO): one restore subprocess, and no info/verify child
-    # process of its own (integrity is the header CRC32 checked inline during the
-    # restore), so only the nice/ioprio overrides are exposed.
-    nkit2iso_nice: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_NKIT2ISO_NICE",
-    )
-    nkit2iso_ioprio_class: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_NKIT2ISO_IOPRIO_CLASS",
-    )
-    nkit2iso_ioprio_level: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_NKIT2ISO_IOPRIO_LEVEL",
-    )
-    # extract-xiso (Xbox ISO -> XISO): one rewrite subprocess, plus a verify that
-    # walks the XISO's directory tables and runs `extract-xiso -l` on it.
-    xiso_nice: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_XISO_NICE",
-    )
-    xiso_ioprio_class: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_XISO_IOPRIO_CLASS",
-    )
-    xiso_ioprio_level: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_XISO_IOPRIO_LEVEL",
-    )
-    xiso_verify_timeout: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_XISO_VERIFY_TIMEOUT",
-    )
-    # rom-converto: one `xenon compress` per ZAR, `xenon verify` (every block
-    # decoded and re-hashed) and `xenon info`.
-    rom_converto_nice: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_ROM_CONVERTO_NICE",
-    )
-    rom_converto_ioprio_class: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_ROM_CONVERTO_IOPRIO_CLASS",
-    )
-    rom_converto_ioprio_level: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_ROM_CONVERTO_IOPRIO_LEVEL",
-    )
-    rom_converto_info_timeout: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_ROM_CONVERTO_INFO_TIMEOUT",
-    )
-    rom_converto_verify_timeout: int | None = Field(
-        default=None, alias="COMPRESSATORIUM_ROM_CONVERTO_VERIFY_TIMEOUT",
     )
 
     # Logging
@@ -633,11 +478,6 @@ class Settings(BaseSettings):
         ),
     )
     debug_heartbeat_interval: int = Field(default=30, alias="CHD_DEBUG_HEARTBEAT")
-    debug_progress_interval: int = Field(
-        default=30,
-        alias="CHD_DEBUG_PROGRESS_INTERVAL",
-    )
-    debug_progress_timeout: int = Field(default=300, alias="CHD_DEBUG_PROGRESS_TIMEOUT")
     progress_timeout: int = Field(default=600, alias="CHD_PROGRESS_TIMEOUT")
     progress_timeout_per_gib: int = Field(
         default=120,
@@ -650,6 +490,7 @@ class Settings(BaseSettings):
 
     def model_post_init(self, __context: object, /) -> None:  # pylint: disable=arguments-differ
         """Set default paths after model initialization."""
+        self._apply_retired_env()
         if self.temp_dir is None:
             self.temp_dir = str(Path(self.data_dir) / "temp")
         if self.concurrency_lock_dir is None:
@@ -668,6 +509,28 @@ class Settings(BaseSettings):
             and "log_level" not in getattr(self, "__pydantic_fields_set__", set())
         ):
             self.log_level = "DEBUG"
+
+    def _apply_retired_env(self) -> None:
+        """Read the retired names in the environment (``_RETIRED_PER_TOOL``)."""
+        for key, names in _RETIRED_PER_TOOL.items():
+            values = []
+            for name in names:
+                raw = os.environ.get(name)
+                if raw is None:
+                    continue
+                self._retired_env.append(name)
+                try:
+                    values.append(int(raw))
+                except ValueError:
+                    continue
+            if values and f"tool_{key}" not in self.model_fields_set:
+                setattr(self, f"tool_{key}", max(values))
+        self._retired_env += [name for name in _RETIRED_IGNORED if name in os.environ]
+
+    @property
+    def retired_env(self) -> list[str]:
+        """Retired environment names this process was started with."""
+        return list(self._retired_env)
 
     @property
     def volumes(self) -> list[str]:

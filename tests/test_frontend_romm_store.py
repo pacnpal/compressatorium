@@ -74,7 +74,7 @@ const __defer = () => new Promise((resolve, reject) => {
 const __reloads = [];
 const api = {
   getRommPlatforms: (...a) => { __reloads.push('platforms'); return __defer(...a); },
-  saveRommRules: __defer,
+  saveLibraryRules: __defer,
   getRommStatus: (...a) => { __reloads.push('status'); return __defer(...a); },
   saveRommSettings: async (patch) => (
     globalThis.__saveSettings ? globalThis.__saveSettings(patch) : { ...patch, saved: true }
@@ -479,7 +479,7 @@ _IMPORT = """
 const store = new RommStore();
 store.ruleDefaults = { enabled: false, mode: '', timezone: 'UTC', interval_minutes: 60 };
 const saved = [];
-api.getRommRules = async () => ({
+api.getLibraryRules = async () => ({
   rules: { '10': { mode: 'dolphin_wia', enabled: true } },
   check_rules: {}, defaults: store.ruleDefaults, state: {},
 });
@@ -493,8 +493,9 @@ api.getRommConverterImportPlan = async () => ({
   skipped: [{ platform_id: '9', name: 'Xbox 360', slug: 'xbox360', target: 'zar' }],
   existing: [],
 });
-api.saveRommRules = async (rules, checkRules) => {
+api.saveLibraryRules = async (id, rules, checkRules) => {
   saved.push(rules);
+  if (id !== 'romm') throw new Error(`saved to ${id}`);
   return { rules, check_rules: checkRules };
 };
 const result = await store.importConverterTargets();
@@ -503,7 +504,7 @@ process.stdout.write(JSON.stringify({ result, saved, rules: store.rules }));
 
 
 def test_import_saves_new_rules_through_the_rules_api_only_where_none_exists(tmp_path):
-    """Imported Rules go out through PUT /api/romm/rules, and a Rule is never replaced."""
+    """Imported Rules go out through PUT /api/libraries/romm/rules, and a Rule is never replaced."""
     data = _run(tmp_path, _IMPORT)
 
     assert data["result"]["created"] == 2, data

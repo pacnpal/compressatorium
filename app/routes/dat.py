@@ -28,7 +28,6 @@ from services.subprocess_runner import (
 from services.tools import registry
 from services.tools.base import EmbeddedHashUnavailable
 from services.workload_limiter import workload_limiter
-from routes.volume_guard import off_loop_until_stalled
 from utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
@@ -1361,20 +1360,6 @@ async def _run_match_job(
                 success=job_success,
                 error_message=job_error,
             )
-
-
-@router.post("/dat/prune")
-async def prune_missing():
-    """Remove match cache entries for files that no longer exist.
-
-    One pass on a detached thread under the no-progress bound, one report per
-    entry (#373): a frozen Volume answers 503, and an entry whose file can't
-    be checked is kept.
-    """
-    removed = await off_loop_until_stalled(
-        dat_store.prune_missing_blocking, what="Checking the matched files",
-    )
-    return {"removed": removed}
 
 
 # ---------------------------------------------------------------------------

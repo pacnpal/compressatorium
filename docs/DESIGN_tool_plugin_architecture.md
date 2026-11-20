@@ -248,8 +248,7 @@ class ToolPlugin(Protocol):
                       cancel_event: asyncio.Event | None = None
                       ) -> AsyncGenerator[dict, None]: ...
     # Wall-clock bound for verifying this path (0 = unbounded). Default:
-    # BaseTool resolves the shared size-scaled policy for `policy_owner`, so a
-    # per-tool COMPRESSATORIUM_<OWNER>_VERIFY_TIMEOUT applies. Exposed so
+    # BaseTool resolves the shared size-scaled policy. Exposed so
     # job_manager can bound the whole verify() call — including a tool whose
     # verify spawns nothing (jwud's container walk, makeps3iso's PARAM.SFO
     # readback) — without re-deriving which knob that tool reads.
@@ -353,12 +352,9 @@ class BaseTool:
 
     def __init__(self, binary_path: str):
         self.binary_path = binary_path
-        # `policy_owner or id`, never bare `id`: the owner keys the shared
-        # nice/ioprio/timeout policy's per-tool overrides, and it differs from
-        # the plugin id wherever the service kept its historical name
-        # (dolphin/dolphin_tool, cso/maxcso). In the tree today each *service*
-        # constructs its own runner with that owner as a literal.
-        self._runner = SubprocessRunner(owner=self.policy_owner or self.id)
+        # The owner names the runner's logger. In the tree today each
+        # *service* constructs its own runner with its owner as a literal.
+        self._runner = SubprocessRunner(owner=self.id)
 
     # derived sets (no per-tool duplication)
     @property
@@ -371,19 +367,11 @@ class BaseTool:
                 return m
         raise KeyError(mode)
 
-    # The SubprocessRunner "owner" this tool's service runs under, which keys
-    # the shared nice/ioprio/timeout policy's per-tool overrides. NOT always
-    # `id`: the plugin id is the routing/UI name ("dolphin", "cso") while the
-    # owner is the historical service name ("dolphin_tool", "maxcso").
-    policy_owner: str | None = None
-
-    # Default: the shared size-scaled verify bound for this tool's owner.
+    # Default: the shared size-scaled verify bound.
     async def verify_timeout(
         self, path: str, *, cancel_event: asyncio.Event | None = None,
     ) -> int:
-        return await resolve_verify_timeout(
-            path, self.policy_owner, cancel_event=cancel_event,
-        )
+        return await resolve_verify_timeout(path, cancel_event=cancel_event)
 
     # verify() is the same drain-verify_stream()-and-keep-the-terminal-event
     # wrapper in every service, so it lives once in subprocess_runner as the
@@ -614,10 +602,9 @@ kernel refuses (empty, a bare `#!`) to `/bin/sh`, and its exit 0 would read
 as a pass (CodeRabbit 4616898119, 4617217666).
 
 - **Wrapped** (`run`, and `run_capture` for info and header reads): the argv
-  is `priority_prefix(owner) + cmd`, built in one place (`_wrapped_command`):
+  is `priority_prefix() + cmd`, built in one place (`_wrapped_command`):
   `nice -n <level>` then `ionice -t -c <class> -n <level>`, resolved from the
-  `COMPRESSATORIUM_TOOL_*` settings and any `COMPRESSATORIUM_<OWNER>_*`
-  override. Their exit codes are no verdict on their own (a conversion's
+  `COMPRESSATORIUM_TOOL_*` settings, one value for every tool (#542). Their exit codes are no verdict on their own (a conversion's
   output is checked after it).
 - **Bare, then reniced** (`capture_verify` through `run_capture(verdict=True)`,
   `run_verify`, and `hash_stdout`, whose digest is the Round-trip's): the tool
@@ -881,7 +868,7 @@ member cache. Progress callers:
   through `off_loop_until_stalled`, one report per record, and answer 503 on
   a stalled Volume like the routes above: `GET /api/verified` (prune, then
   each record's containment), `POST /api/verified/lookup`, the CHD badge
-  lookup `POST /api/chd-metadata`, and `POST /api/dat/prune`. The stores give
+  lookup `POST /api/chd-metadata`. The stores give
   them blocking, progress-aware forms (`prune_missing_blocking(progress)`,
   `all_records_blocking()`, `cached_media_type_blocking(path)`) and read the
   paths and delete the rows in separate sessions, so no session is held open
@@ -2839,7 +2826,7 @@ a sweep running concurrently finishes by writing its own ids and schedule stamp
 under the same key. `routes/romm.py` also clears it when `url` or `library_root`
 changes, because a different RomM database reuses the same integer ids for
 different games. `forget_converted()` (exposed as
-`POST /api/romm/rules/forget-converted`, with a per-platform button in the
+`POST /api/libraries/romm/rules/forget-converted`, with a per-platform button in the
 automation editor) is the operator's escape hatch after restoring a backup.
 `_record_run` merges into the entry rather than replacing it, or every run would
 forget the history it shares a key with.
@@ -3016,21 +3003,21 @@ negative (an RVZ replaced by its larger ISO). A job announced terminal twice
 (a queued cancel) writes one row: `(job_id, finished_at)` is unique and the
 insert is `ON CONFLICT DO NOTHING`. The dashboard reads the Ledger through
 `stores/ledger.svelte.js`, refreshed on each terminal job and once more after
-a short settle delay, since the row is written after the completion event. A `retention_days`
-in the `ledger` preference prunes older rows on each write; unset keeps them
-forever. Recording never raises: a failure is logged and the job is unaffected.
+a short settle delay, since the row is written after the completion event. Rows
+are kept forever (#542 removed the `retention_days` setting, which nothing in the UI
+set; a value stored by an older release is ignored). Recording never raises: a failure is logged and the job is unaffected.
 
 Reads all go through `services/ledger.py` so the routes stay thin. A
 `LedgerFilter` (path substring on Source or output, status, tool, Platform)
 builds one set of SQL clauses used by `list_page` (newest first, with a total),
 by `export_csv` (the same filter, keyset-paged on `(finished_at, id)` inside one
 explicit read transaction held for the stream, so every page reads the same SQLite
-snapshot and a job finishing or a prune mid-export neither repeats, skips nor drops
+snapshot and a job finishing mid-export neither repeats, skips nor drops
 a row) and by `facets` (distinct values for the filter
 menus). The Prometheus counters are not computed from the `ledger` table: the
 `ledger_totals` table (migration `0011`, seeded from the Ledger) holds per-status
 job counts and completed-job byte sums, bumped in the same transaction as each
-new row and never decremented, so retention cannot lower a counter. `q` is escaped, so
+new row and never decremented. `q` is escaped, so
 `%` and `_` match literally. CSV cells starting with `=`, `+`, `-`, `@`, tab or
 CR get a leading `'` so a spreadsheet doesn't run them. `metrics_text` renders the
 Prometheus exposition (jobs by status, bytes of completed jobs, plus the live
@@ -3265,11 +3252,10 @@ called on the event loop and must not touch the disk.
 
 **Editor helpers** (`rules/editor.py`): `editor_payload(library)` (Rules,
 state, defaults, options), `save_rules` (strict), `forget_converted`,
-`sweep_now`. RomM's `/api/romm/rules` and `/api/romm/auto-convert/*` and the
-Library routes are thin wrappers over them; `routes/rules.py` holds the shared
-route pieces (422 mapping, the `platform_ids` reading where an empty list means
-none). RomM's forget route still calls `romm_auto.forget_converted`, which is
-the same engine call.
+`sweep_now`. The Library routes (RomM is `/api/libraries/romm/...`; its old
+`/api/romm/rules` and `/api/romm/auto-convert/*` copies are gone, #542) are thin
+wrappers over them; `routes/rules.py` holds the shared route pieces (422
+mapping, the `platform_ids` reading where an empty list means none).
 
 **What `recognized` and `identified` mean.** `recognized` says whether the
 Image is Recognized, and `only_matched` reads it; `identified` is the
@@ -3481,8 +3467,8 @@ job-owner index, then deletes the row. No file is touched.
 `GET /api/libraries/{id}/platforms` (folder only; also `tool_ids`, `mode_ids`
 and `automatable_modes`, as RomM's platform list carries),
 `GET/PUT /api/libraries/{id}/rules`, `POST .../rules/forget-converted`,
-`POST .../preview` and `POST .../run`. RomM's own `/api/romm/rules` and
-`/api/romm/auto-convert/*` are unchanged.
+`POST .../preview` and `POST .../run`, RomM's (`romm`) included. An
+unconfigured RomM answers a sweep with `stopped_reason: "not_configured"`.
 `GET /api/libraries/{id}/placements` (any Library, #430) lists, for each of
 the Library's `platforms()` (one listing, passed to every row as `known`),
 the Platform's own `id` (the row's key: two RomM platforms can share a slug),
@@ -9313,7 +9299,7 @@ an Auto target whose saved preference the mode refuses runs on the tool default
 (`checked_compression`).
 
 Rules go through the same check (#474). A Rule submission (`PUT
-/api/libraries/{id}/rules`, `PUT /api/romm/rules`, both `editor.save_rules`
+/api/libraries/{id}/rules`, through `editor.save_rules`
 with `set_rules(strict=True)`; an Inbox runs its Library's Rules) is refused
 400 with `compression_problem`'s message when the Rule's mode refuses its
 compression (`rules.refuse_unusable_compression`, raising

@@ -61,11 +61,11 @@ function readSwap(raw) {
 class RommStore extends RulesSource {
   constructor() {
     super({
-      getRules: () => api.getRommRules(),
-      saveRules: (rules, checkRules) => api.saveRommRules(rules, checkRules),
-      forgetConverted: (platformIds) => api.forgetRommConverted(platformIds),
-      preview: (body) => api.previewRommAutoConvert(body),
-      run: (body) => api.runRommAutoConvert(body),
+      getRules: () => api.getLibraryRules('romm'),
+      saveRules: (rules, checkRules) => api.saveLibraryRules('romm', rules, checkRules),
+      forgetConverted: (platformIds) => api.forgetLibraryConverted('romm', platformIds),
+      preview: (body) => api.previewLibrary('romm', body),
+      run: (body) => api.runLibrary('romm', body),
       loadError: 'Failed to load automation rules',
     });
   }

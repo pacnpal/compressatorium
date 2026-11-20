@@ -464,12 +464,7 @@ Every job that finishes, fails or is cancelled is written to the Ledger in the
 app database, so the history survives restarts. The dashboard's **Space saved**
 card totals the bytes reclaimed by conversions whose Source was deleted, by
 Platform and by output format, and **Recent conversions** lists the latest rows.
-Rows are kept forever by default; to prune, set a retention in days:
-
-```bash
-curl -X PUT http://localhost:8080/api/ledger/settings \
-  -H 'Content-Type: application/json' -d '{"retention_days": 365}'
-```
+Rows are kept forever.
 
 `GET /api/ledger/recent?limit=N` and `GET /api/ledger/savings` return the rows and
 the totals as JSON.
@@ -539,9 +534,8 @@ compressatorium_queue_depth                      # queued or running now
 `/api/ledger/savings` is the savings summary (totals by Platform and by format).
 Both follow the API's auth rules: with `COMPRESSATORIUM_ENABLE_AUTH` on, give
 Prometheus the token as a bearer token or as the basic-auth password. The job and
-byte totals are true counters kept in their own table: they only go up, and a
-retention prune of Ledger rows does not lower them. (They start from the Ledger's
-contents when you upgrade.)
+byte totals are true counters kept in their own table: they only go up. (They
+start from the Ledger's contents when you upgrade.)
 
 | Light | Dark |
 |-------|------|
@@ -2455,9 +2449,6 @@ goes from 7.3 GB to 5.7 GB.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `EXTRACT_XISO_PATH` | `/usr/local/bin/extract-xiso` | Path to the extract-xiso binary |
-| `COMPRESSATORIUM_XISO_NICE` | *(shared default)* | CPU priority override for extract-xiso |
-| `COMPRESSATORIUM_XISO_IOPRIO_CLASS` / `_LEVEL` | *(shared default)* | I/O priority override for extract-xiso |
-| `COMPRESSATORIUM_XISO_VERIFY_TIMEOUT` | *(shared default)* | Verify bound override for XISO files |
 
 extract-xiso is distributed under a modified BSD license; its license text ships
 in the image at `/usr/share/doc/extract-xiso/LICENSE.TXT`.
@@ -2508,10 +2499,6 @@ Whether a ZAR made here boots in a current Xenia build has not been checked yet
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ROM_CONVERTO_PATH` | `/usr/local/bin/rom-converto` | Path to the rom-converto binary |
-| `COMPRESSATORIUM_ROM_CONVERTO_NICE` | *(shared default)* | CPU priority override for rom-converto |
-| `COMPRESSATORIUM_ROM_CONVERTO_IOPRIO_CLASS` / `_LEVEL` | *(shared default)* | I/O priority override for rom-converto |
-| `COMPRESSATORIUM_ROM_CONVERTO_INFO_TIMEOUT` | *(shared default)* | Bound on `xenon info` |
-| `COMPRESSATORIUM_ROM_CONVERTO_VERIFY_TIMEOUT` | *(shared default)* | Verify bound override for ZAR files, and for the PSP and 3DS outputs' check and Recognized lookup |
 
 ## PSP PBP and 3DS CIA / CCI (rom-converto)
 
@@ -3079,7 +3066,6 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | DELETE | `/api/jobs/completed` | Clear completed/failed/cancelled jobs |
 | POST | `/api/jobs/cancel-all` | Cancel all queued and processing jobs |
 | GET | `/api/jobs/events` | SSE stream for job progress updates |
-| GET | `/api/jobs/{id}/events` | SSE stream for a single job's progress |
 | GET | `/api/jobs/stuck-status` | Check if job queue is in a stuck state |
 | GET | `/api/jobs/history-overflow` | Counts of finished jobs already evicted by `MAX_JOB_HISTORY` |
 | POST | `/api/jobs/recover` | Manually trigger recovery from stuck job queue |
@@ -3197,7 +3183,6 @@ no info route.
 | POST | `/api/dat/match-batch` | Match several files |
 | POST | `/api/dat/match-batch/job` | Match a batch as a background job |
 | POST | `/api/dat/matches/lookup` | Read-only lookup in the match cache |
-| POST | `/api/dat/prune` | Drop cached matches for files that no longer exist |
 | POST | `/api/dat/sync` | Sync DATs from the MAMERedump repo |
 | GET | `/api/dat/sync/status` | The sync's status |
 | POST | `/api/dat/sync/cancel` | Cancel a running sync |
@@ -3244,10 +3229,6 @@ no info route.
 | POST | `/api/romm/repin/plan` | Record the metadata to carry across a conversion |
 | POST | `/api/romm/repin/cancel` | Retire re-pins for conversions never submitted |
 | POST | `/api/romm/repin` | Re-attach metadata to converted ROMs RomM has rescanned |
-| GET / PUT | `/api/romm/rules` | The per-platform Rules, or replace them |
-| POST | `/api/romm/rules/forget-converted` | Forget which ROMs the Rules already converted |
-| POST | `/api/romm/auto-convert/preview` | What a sweep would queue now, without queueing |
-| POST | `/api/romm/auto-convert/run` | Run a sweep now |
 
 ### Ledger, Notifications and Metrics
 
@@ -3258,7 +3239,6 @@ no info route.
 | GET | `/api/ledger/facets` | The status, tool and Platform values the filters offer |
 | GET | `/api/ledger/recent` | The latest Ledger rows (`limit`, default 5) |
 | GET | `/api/ledger/savings` | The Space saved totals |
-| GET / PUT | `/api/ledger/settings` | `{retention_days}` |
 | GET | `/api/metrics` | Prometheus text: jobs by status, bytes in and out, queue depth |
 | GET | `/api/notifications` | Destinations, events, kinds, and whether Apprise is installed |
 | POST | `/api/notifications/destinations` | Add a destination |
@@ -3292,8 +3272,6 @@ no info route.
 | `COMPRESSATORIUM_ENABLE_AUTH` | `false` | Enable token authentication for the Web UI and `/api` routes. Off by default; set to `true` to require a token. |
 | `COMPRESSATORIUM_AUTH_TOKEN` / `CHD_AUTH_TOKEN` | generated in `/config/auth_token` | Web UI/API password (used only when auth is enabled). Send as HTTP Basic password for user `admin`, as `Authorization: Bearer`, or as `X-Compressatorium-Token`. |
 | `COMPRESSATORIUM_AUTH_USERNAME` | `admin` | HTTP Basic username for the Web UI (used only when auth is enabled). |
-| `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Web UI: when true, `Search All` conversions return to the previous file-list view after queueing |
-| `CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Legacy alias for `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` |
 | `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction (auto-created) |
 | `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files, conversion slots and the Rule scheduler lock. Under the data dir so the server and a CLI container share it. Created at start; the process stops with an error if it can't be |
 | `COMPRESSATORIUM_DB_PATH` | `/config/compressatorium.db` | Unified SQLite database for DATs, match cache, CHD metadata, verification state, and DAT-sync state |
@@ -3339,8 +3317,7 @@ no info route.
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT_PER_GIB` | `600` | Extra verify allowance in seconds per GiB of the verified file (0 makes the bound flat). |
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT_CAP` | `86400` | Upper bound in seconds on the size-scaled verify timeout (0 uncapped). |
 | `COMPRESSATORIUM_TOOL_VERIFY_PROGRESS_TIMEOUT` | `600` | Timeout in seconds without any verify output, for the verifiers that stream progress (chdman, dolphin-tool); catches a wedged verify long before the overall bound. Independent of `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` — it still applies when that is `0`. 0 disables. Legacy alias: `CHD_VERIFY_PROGRESS_TIMEOUT`. |
-| `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` | (shared default) | Optional per-tool overrides that fall back to the shared `COMPRESSATORIUM_TOOL_*` values. `<TOOL>` is `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`, `MAXCSO`, `ROMZ` (handheld ROM), `MAKEPS3ISO`, `NKIT2ISO`, `JWUD` (Wii U), `XISO` (Xbox / Xbox 360), or `ROM_CONVERTO` (e.g. `COMPRESSATORIUM_DOLPHIN_TOOL_NICE=15`, `COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT=300`, `COMPRESSATORIUM_MAXCSO_VERIFY_TIMEOUT=300`). `NKIT2ISO` and `MAKEPS3ISO` take the `_NICE`/`_IOPRIO_*` knobs but no `_VERIFY_TIMEOUT`: nkit2iso has no verify step, and makeps3iso's has no reachable entry point (no verify route, no delete-on-verify; its post-build PARAM.SFO readback belongs to the conversion). `JWUD` verifies without a subprocess (a WUX container walk), so its `_VERIFY_TIMEOUT` bounds the verify call itself rather than a child process. |
-| `COMPRESSATORIUM_<TOOL>_INFO_TIMEOUT` | (shared default) | Optional per-tool info-timeout override, only for `<TOOL>` = `CHDMAN`, `DOLPHIN_TOOL` or `ROM_CONVERTO` (the only tools whose `info` runs a subprocess); falls back to the shared `COMPRESSATORIUM_TOOL_INFO_TIMEOUT`. |
+| `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_INFO_TIMEOUT` / `_VERIFY_TIMEOUT` | *(retired)* | The old per-tool overrides. Each one still works: it sets the shared `COMPRESSATORIUM_TOOL_*` value above for every tool (when that isn't set itself; two that disagree give the largest), and startup logs one warning naming it. Use the shared name instead. |
 | `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
 | `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
 | `CHD_ARCHIVE_MAX_TOTAL_SIZE` | `0` | Max total size in bytes for archive listings/extractions (0 disables limit) |
@@ -3353,8 +3330,6 @@ no info route.
 | `LOG_PATH` | (none) | Path to log file (logs to stdout only if unset). Legacy alias: `CHD_DEBUG_LOG_PATH` |
 | `LOG_COLOR` | `always` | ANSI-color stdout logs by level. Values: `always` (default, colored `docker logs` out of the box), `auto` (TTY and no `NO_COLOR`), `never`. File logs are never colored. |
 | `CHD_DEBUG_HEARTBEAT` | `30` | Maintenance loop interval in seconds |
-| `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | Debug progress log interval in seconds |
-| `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | Debug progress timeout in seconds |
 | `CHD_PROGRESS_TIMEOUT` | `600` | Fail a conversion if progress and output size do not advance for this many seconds (0 disables) |
 | `CHD_PROGRESS_TIMEOUT_PER_GIB` | `120` | Additional stall timeout seconds per GiB of input size |
 | `CHD_PROGRESS_TIMEOUT_CAP` | `7200` | Upper bound for adaptive conversion stall timeout (0 disables cap) |

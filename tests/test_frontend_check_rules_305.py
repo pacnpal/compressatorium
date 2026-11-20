@@ -328,7 +328,8 @@ def test_the_jobs_stream_hands_its_job_events_to_the_verification_store() -> Non
 
 def test_the_endpoints_send_the_check_rules() -> None:
     src = _ENDPOINTS.read_text(encoding="utf-8")
-    assert src.count("check_rules: checkRules") == 2
+    # One Rules save for every Library, RomM (`romm`) included (#542).
+    assert src.count("check_rules: checkRules") == 1
 
 
 def test_the_editor_offers_a_check_rule_beside_the_conversion_rule() -> None:

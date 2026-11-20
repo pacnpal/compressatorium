@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from routes import romm as romm_routes
+from routes import libraries as lib_routes
 from services import db as _db
 from services.job_manager import job_manager
 from services.preferences_store import preferences_store
@@ -71,13 +72,13 @@ def test_an_unknown_check_level_falls_back_to_round_trip() -> None:
 @pytest.mark.asyncio
 async def test_the_rules_api_saves_and_returns_the_check_level(db: Path) -> None:
     """Through the routes, with the #296 response shape (no new top-level keys)."""
-    got = await romm_routes.get_romm_rules()
+    got = await lib_routes.get_library_rules("romm")
     assert got["defaults"]["check_level"] == "round_trip"
-    saved = await romm_routes.put_romm_rules({"7": {
+    saved = await lib_routes.put_library_rules("romm", {"7": {
         "mode": "dolphin_rvz", "delete_on_verify": True, "check_level": "container_only",
     }})
     assert saved["rules"]["7"]["check_level"] == "container_only"
-    got = await romm_routes.get_romm_rules()
+    got = await lib_routes.get_library_rules("romm")
     assert got["rules"]["7"]["check_level"] == "container_only"
 
 
@@ -234,7 +235,7 @@ async def test_the_upgrade_sets_every_deleting_rule_to_round_trip(db: Path) -> N
         "folder:/a:gc": DELETING,
     })
 
-    await romm_routes.get_romm_rules()
+    await lib_routes.get_library_rules("romm")
 
     stored = await preferences_store.get("rules")
     assert stored["romm:7"] == {**DELETING, "check_level": "round_trip"}
@@ -251,11 +252,11 @@ async def test_the_upgrade_sets_every_deleting_rule_to_round_trip(db: Path) -> N
 @pytest.mark.asyncio
 async def test_the_upgrade_runs_once(db: Path) -> None:
     await preferences_store.put("rules", {"romm:7": DELETING})
-    await romm_routes.get_romm_rules()
+    await lib_routes.get_library_rules("romm")
 
     # The operator opts out afterwards. Later reads must not undo it.
-    await romm_routes.put_romm_rules({"7": {**DELETING, "check_level": "container_only"}})
-    got = await romm_routes.get_romm_rules()
+    await lib_routes.put_library_rules("romm", {"7": {**DELETING, "check_level": "container_only"}})
+    got = await lib_routes.get_library_rules("romm")
     assert got["rules"]["7"]["check_level"] == "container_only"
     assert (await preferences_store.get("rules"))["romm:7"]["check_level"] == "container_only"
     assert (await preferences_store.get(UPGRADE_KEY))["switched"] == ["romm:7"]
@@ -274,10 +275,10 @@ async def test_a_crash_before_the_marker_repeats_the_upgrade(db: Path) -> None:
 
     with patch.object(preferences_store, "put", side_effect=crash_on_marker), \
             pytest.raises(RuntimeError):
-        await romm_routes.get_romm_rules()
+        await lib_routes.get_library_rules("romm")
     assert await preferences_store.get(UPGRADE_KEY) is None
 
-    got = await romm_routes.get_romm_rules()
+    got = await lib_routes.get_library_rules("romm")
     assert got["rules"]["7"]["check_level"] == "round_trip"
     assert await preferences_store.get("rules") == {
         "romm:7": {**DELETING, "check_level": "round_trip"}, "romm:8": KEEPING,
@@ -287,7 +288,7 @@ async def test_a_crash_before_the_marker_repeats_the_upgrade(db: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_a_fresh_install_switches_nothing(db: Path) -> None:
-    await romm_routes.get_romm_rules()
+    await lib_routes.get_library_rules("romm")
     assert await preferences_store.get("rules") is None
     assert (await preferences_store.get(UPGRADE_KEY))["switched"] == []
 
@@ -297,7 +298,7 @@ async def test_pre_296_rules_are_switched_as_they_are_copied(db: Path) -> None:
     """RomM's old rows predate the check level too."""
     await preferences_store.put("romm.rules", {"7": DELETING, "8": KEEPING})
 
-    got = await romm_routes.get_romm_rules()
+    got = await lib_routes.get_library_rules("romm")
 
     assert got["rules"]["7"]["check_level"] == "round_trip"
     assert await preferences_store.get("rules") == {
@@ -319,7 +320,7 @@ async def test_pre_296_rules_copied_after_the_upgrade_are_switched_too(db: Path)
     await store.read(store.RULES_KEY, _FolderLike(db))
     assert (await preferences_store.get(UPGRADE_KEY))["switched"] == []
 
-    got = await romm_routes.get_romm_rules()
+    got = await lib_routes.get_library_rules("romm")
 
     assert got["rules"]["7"]["check_level"] == "round_trip"
     assert (await preferences_store.get(UPGRADE_KEY))["switched"] == ["romm:7"]

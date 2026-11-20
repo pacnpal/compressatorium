@@ -81,7 +81,6 @@ def _recognized_mode(
 class RomConvertoTool(BaseTool):
     id = "rom_converto"
     display_name = "rom-converto"
-    policy_owner = "rom_converto"
     # The union of every mode's Platform; each mode names its own below.
     platform_slugs = frozenset({"xbox360", "psp"}) | _3DS_SLUGS
     modes = (

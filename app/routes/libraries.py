@@ -2,7 +2,7 @@
 
 ``/api/libraries`` lists every Library (RomM, then each registered folder),
 registers a folder as a Library and removes one. The Rules endpoints work for
-any Library; RomM keeps its own ``/api/romm/rules`` routes as well, unchanged.
+any Library, RomM (``romm``) included.
 
 A Library's id goes in the path (``romm``, ``folder:3``). Rules are validated
 against the Library's capabilities here, before they reach the engine: a

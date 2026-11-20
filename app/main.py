@@ -165,6 +165,13 @@ def configure_logging() -> None:
             "Valid values: auto, always, never",
             settings.log_color,
         )
+    if settings.retired_env:
+        logger.warning(
+            "Retired settings in the environment: %s. A per-tool priority or "
+            "timeout now sets the shared COMPRESSATORIUM_TOOL_* value for every "
+            "tool; the others are no longer read. They can be removed.",
+            ", ".join(settings.retired_env),
+        )
 
 
 @contextmanager

@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 import pytest_asyncio
 from routes import romm as romm_routes
+from routes import libraries as lib_routes
 from services import db as _db
 from services.job_manager import job_manager
 from services.preferences_store import preferences_store
@@ -132,7 +133,7 @@ async def test_old_romm_keys_are_copied_once_and_kept(romm_lib: Path) -> None:
     await preferences_store.put("romm.rules", {"7": rule})
     await preferences_store.put("romm.auto_state", old_state)
 
-    got = await romm_routes.get_romm_rules()
+    got = await lib_routes.get_library_rules("romm")
     assert got["rules"]["7"]["mode"] == "dolphin_rvz"
     assert got["state"] == old_state
 
@@ -146,13 +147,13 @@ async def test_old_romm_keys_are_copied_once_and_kept(romm_lib: Path) -> None:
 @pytest.mark.asyncio
 async def test_old_romm_keys_are_not_read_a_second_time(romm_lib: Path) -> None:
     await preferences_store.put("romm.rules", {"7": {"mode": "dolphin_rvz"}})
-    await romm_routes.get_romm_rules()
+    await lib_routes.get_library_rules("romm")
 
     # Something writes the old row again (a downgraded release, say). The
     # move already happened, so it is not merged in.
     await preferences_store.put("romm.rules", {"8": {"mode": "dolphin_rvz"}})
     await preferences_store.put("romm.auto_state", {"7": {"converted": {"1": {}}}})
-    got = await romm_routes.get_romm_rules()
+    got = await lib_routes.get_library_rules("romm")
     assert list(got["rules"]) == ["7"]
     assert got["state"] == {}
 
@@ -160,7 +161,7 @@ async def test_old_romm_keys_are_not_read_a_second_time(romm_lib: Path) -> None:
 @pytest.mark.asyncio
 async def test_saving_rules_writes_only_the_prefixed_keys(romm_lib: Path) -> None:
     await preferences_store.put("romm.rules", {"7": {"mode": "dolphin_rvz"}})
-    await romm_routes.put_romm_rules({"9": {"mode": "dolphin_rvz"}})
+    await lib_routes.put_library_rules("romm", {"9": {"mode": "dolphin_rvz"}})
     assert list(await preferences_store.get("rules")) == ["romm:9"]
     assert await preferences_store.get("romm.rules") == {"7": {"mode": "dolphin_rvz"}}
     # Nothing to copy on a fresh install, and nothing is ever written to the
@@ -170,7 +171,7 @@ async def test_saving_rules_writes_only_the_prefixed_keys(romm_lib: Path) -> Non
 
 @pytest.mark.asyncio
 async def test_a_fresh_install_writes_no_old_keys(romm_lib: Path) -> None:
-    await romm_routes.put_romm_rules({"7": {"mode": "dolphin_rvz"}})
+    await lib_routes.put_library_rules("romm", {"7": {"mode": "dolphin_rvz"}})
     assert list(await preferences_store.get("rules")) == ["romm:7"]
     assert await preferences_store.get("romm.rules") is None
 
@@ -263,7 +264,7 @@ async def test_a_second_library_runs_through_the_same_engine(romm_lib: Path) -> 
     (root / "gc" / "Disc.iso").write_bytes(b"\0" * 16)
     folder = _FolderLike(root)
 
-    await romm_routes.put_romm_rules({"7": {"mode": "dolphin_rvz", "enabled": True}})
+    await lib_routes.put_library_rules("romm", {"7": {"mode": "dolphin_rvz", "enabled": True}})
     saved = await rules_sweep.set_rules(folder, {
         "gc": {"mode": "dolphin_rvz", "enabled": True},
         "7": {"mode": "dolphin_rvz"},
@@ -280,5 +281,5 @@ async def test_a_second_library_runs_through_the_same_engine(romm_lib: Path) -> 
 
     # Each Library sees only its own Rules.
     assert list(await rules_sweep.get_rules(folder)) == ["gc"]
-    assert list((await romm_routes.get_romm_rules())["rules"]) == ["7"]
+    assert list((await lib_routes.get_library_rules("romm"))["rules"]) == ["7"]
     assert set(await preferences_store.get("rules")) == {"romm:7", "folder:/test:gc"}

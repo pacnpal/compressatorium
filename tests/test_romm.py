@@ -24,6 +24,7 @@ import pytest
 # and every patch would silently no-op.
 from models import JobStatus
 from routes import romm as romm_routes
+from routes import libraries as lib_routes
 from services import db as _db
 from services.job_manager import job_manager
 from services.preferences_store import preferences_store
@@ -4884,15 +4885,15 @@ def test_forgetting_history_for_no_platforms_forgets_nothing() -> None:
     for every platform on an empty selection makes the next sweep reconvert the
     entire library — at full size, with whatever policy each rule carries.
     """
-    from services.romm import auto as romm_auto
+    from services.rules import sweep as rules_sweep
     async def _forget(payload):
         with patch.object(
-            romm_auto, "forget_converted", AsyncMock(return_value=0),
+            rules_sweep, "forget_converted", AsyncMock(return_value=0),
         ) as forget, patch.object(
-            romm_auto, "get_state", AsyncMock(return_value={}),
+            rules_sweep, "get_state", AsyncMock(return_value={}),
         ):
-            await romm_routes.forget_romm_converted(payload)
-        return forget.await_args.args[0]
+            await lib_routes.forget_library_converted("romm", payload)
+        return forget.await_args.args[1]
 
     assert asyncio.run(_forget({"platform_ids": []})) == [], "empty selection widened"
     assert asyncio.run(_forget({})) is None, "an omitted filter must still mean all"

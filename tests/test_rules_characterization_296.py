@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 import pytest_asyncio
 from routes import romm as romm_routes
+from routes import libraries as lib_routes
 from services import db as _db
 from services.job_manager import job_manager
 from services.preferences_store import preferences_store
@@ -105,7 +106,7 @@ def _accepting_queue(queued: list):
 
 @pytest.mark.asyncio
 async def test_the_rules_api_keeps_its_shape(romm_env) -> None:
-    saved = await romm_routes.put_romm_rules({"rules": {
+    saved = await lib_routes.put_library_rules("romm", {"rules": {
         "07": {"mode": "dolphin_rvz", "enabled": True, "max_per_run": 3},
         "not-a-platform": {"mode": "dolphin_rvz"},
         "9": {"mode": "not_a_real_mode"},
@@ -115,7 +116,7 @@ async def test_the_rules_api_keeps_its_shape(romm_env) -> None:
     assert list(saved["rules"]) == ["7"]
     assert saved["rules"]["7"]["max_per_run"] == 3
 
-    got = await romm_routes.get_romm_rules()
+    got = await lib_routes.get_library_rules("romm")
     # #305 added the check Rules beside the conversion Rules; the rest is pinned.
     assert set(got) == {"rules", "state", "defaults", "options", "check_rules", "check_state"}
     assert got["rules"] == saved["rules"]
@@ -139,30 +140,30 @@ async def test_rule_defaults_follow_the_romm_settings(romm_env) -> None:
         "auto_convert_interval_minutes": 15, "auto_convert_max_per_run": 4,
         "verify_after_convert": True,
     })
-    got = await romm_routes.get_romm_rules()
+    got = await lib_routes.get_library_rules("romm")
     assert got["defaults"]["interval_minutes"] == 15
     assert got["defaults"]["max_per_run"] == 4
     assert got["defaults"]["verify_after"] is True
-    saved = await romm_routes.put_romm_rules({"7": {"mode": "dolphin_rvz"}})
+    saved = await lib_routes.put_library_rules("romm", {"7": {"mode": "dolphin_rvz"}})
     assert saved["rules"]["7"]["interval_minutes"] == 15
     assert saved["rules"]["7"]["max_per_run"] == 4
 
 
 @pytest.mark.asyncio
 async def test_preview_and_run_keep_their_summary_shape(romm_env) -> None:
-    await romm_routes.put_romm_rules({"7": {
+    await lib_routes.put_library_rules("romm", {"7": {
         "mode": "dolphin_rvz", "enabled": True, "order": "size_desc",
     }})
     queued: list = []
     with _catalog(), _idle_queue(), _accepting_queue(queued):
-        preview = await romm_routes.preview_auto_convert(
-            romm_routes.SweepRequest(platform_ids=[7]),
+        preview = await lib_routes.preview_library("romm", 
+            lib_routes.SweepRequest(platform_ids=["7"]),
         )
         assert queued == []
-        assert (await romm_routes.get_romm_rules())["state"] == {}
+        assert (await lib_routes.get_library_rules("romm"))["state"] == {}
 
-        run = await romm_routes.run_auto_convert(
-            romm_routes.SweepRequest(platform_ids=[7], limit=1),
+        run = await lib_routes.run_library("romm", 
+            lib_routes.SweepRequest(platform_ids=["7"], limit=1),
         )
 
     assert set(preview) == SWEEP_KEYS
@@ -189,7 +190,7 @@ async def test_preview_and_run_keep_their_summary_shape(romm_env) -> None:
     assert run["repins_recorded"] == 1
     assert run["pending_repins"] == 1
 
-    state = (await romm_routes.get_romm_rules())["state"]
+    state = (await lib_routes.get_library_rules("romm"))["state"]
     assert list(state) == ["7"]
     assert state["7"]["last_queued"] == 1
     assert state["7"]["last_considered"] == 1
@@ -198,17 +199,17 @@ async def test_preview_and_run_keep_their_summary_shape(romm_env) -> None:
 
 @pytest.mark.asyncio
 async def test_converted_history_is_kept_by_platform_and_rom_id(romm_env) -> None:
-    await romm_routes.put_romm_rules({"7": {
+    await lib_routes.put_library_rules("romm", {"7": {
         "mode": "dolphin_rvz", "enabled": True, "duplicate_action": "overwrite",
     }})
     queued: list = []
     with _catalog(), _idle_queue(), _accepting_queue(queued):
-        first = await romm_routes.run_auto_convert(
-            romm_routes.SweepRequest(platform_ids=[7]),
+        first = await lib_routes.run_library("romm", 
+            lib_routes.SweepRequest(platform_ids=["7"]),
         )
     assert first["queued"] == 2
 
-    state = (await romm_routes.get_romm_rules())["state"]
+    state = (await lib_routes.get_library_rules("romm"))["state"]
     converted = state["7"]["converted"]
     assert set(converted) == {"1", "2"}
     assert converted["1"]["path"] == str(romm_env / "Game.rvz")
@@ -222,10 +223,10 @@ async def test_converted_history_is_kept_by_platform_and_rom_id(romm_env) -> Non
     finished = _Job(converted["1"]["path"], job_id)
     finished.status = JobStatus.FAILED
     await romm_auto.note_job_finished(finished)
-    state = (await romm_routes.get_romm_rules())["state"]
+    state = (await lib_routes.get_library_rules("romm"))["state"]
     assert state["7"]["converted"]["1"]["done"] is False
 
-    forgot = await romm_routes.forget_romm_converted({"platform_ids": [7]})
+    forgot = await lib_routes.forget_library_converted("romm", {"platform_ids": [7]})
     assert forgot["cleared"] == 1
     assert "converted" not in forgot["state"]["7"]
     assert "last_run_at" in forgot["state"]["7"]
@@ -245,15 +246,15 @@ async def test_rules_stored_by_an_earlier_release_keep_working(romm_env) -> None
         "converted_ids": [2],
     }})
 
-    got = await romm_routes.get_romm_rules()
+    got = await lib_routes.get_library_rules("romm")
     assert got["rules"]["7"]["mode"] == "dolphin_rvz"
     assert got["rules"]["7"]["duplicate_action"] == "overwrite"
     assert got["state"]["7"]["last_run_at"] == "2026-01-01T00:00:00Z"
 
     queued: list = []
     with _catalog(), _idle_queue(), _accepting_queue(queued):
-        preview = await romm_routes.preview_auto_convert(
-            romm_routes.SweepRequest(platform_ids=[7]),
+        preview = await lib_routes.preview_library("romm", 
+            lib_routes.SweepRequest(platform_ids=["7"]),
         )
     # Both ROMs are remembered as converted: ROM 1 by its record, ROM 2 by
     # the older id-only shape. Nothing reconverts after the upgrade.
@@ -273,7 +274,7 @@ async def test_changing_the_romm_instance_forgets_the_history(romm_env) -> None:
     await romm_routes.put_romm_settings(
         romm_routes.RommSettingsPatch(url="http://another-romm:8080"),
     )
-    got = await romm_routes.get_romm_rules()
+    got = await lib_routes.get_library_rules("romm")
     # The rules are the operator's configuration and survive; what they
     # believe they produced does not.
     assert got["rules"]["7"]["mode"] == "dolphin_rvz"
@@ -305,13 +306,13 @@ async def test_the_scheduler_follows_the_master_switch(romm_env, switch_on) -> N
     from services.romm import settings as romm_settings
 
     await romm_settings.save({"auto_convert": switch_on})
-    await romm_routes.put_romm_rules({"7": {"mode": "dolphin_rvz", "enabled": True}})
+    await lib_routes.put_library_rules("romm", {"7": {"mode": "dolphin_rvz", "enabled": True}})
     queued: list = []
     with _catalog(), _idle_queue(), _accepting_queue(queued), \
             patch("asyncio.sleep", _ticks(1)), pytest.raises(asyncio.CancelledError):
         await romm_auto.run_forever()
 
-    state = (await romm_routes.get_romm_rules())["state"]
+    state = (await lib_routes.get_library_rules("romm"))["state"]
     if switch_on:
         assert len(queued) == 1
         assert state["7"]["last_queued"] == 2

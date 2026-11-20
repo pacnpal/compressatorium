@@ -725,14 +725,6 @@ class BaseTool:
     output_extensions: frozenset[str] = frozenset()
     verify_extensions: frozenset[str] = frozenset()
     disc_extensions: frozenset[str] = frozenset()
-    # The ``SubprocessRunner`` owner name this tool's service runs under, which
-    # is what the shared nice/ioprio/timeout policy keys its per-tool overrides
-    # on (``COMPRESSATORIUM_<OWNER>_*``). It is *not* always ``id``: the plugin
-    # id is the routing/UI name ("dolphin", "cso") while the owner is the
-    # historical service name ("dolphin_tool", "maxcso"). Declared here so
-    # policy lookups stay registry-driven instead of re-deriving the mapping at
-    # each call site. None means "shared defaults only".
-    policy_owner: str | None = None
     # Default False: a tool whose container file SHA1 might be DAT-indexed
     # still falls back to a file-level hash after an embedded-hash miss.
     embedded_hash_is_exhaustive: bool = False
@@ -959,14 +951,11 @@ class BaseTool:
     async def verify_timeout(
         self, path: str, *, cancel_event: asyncio.Event | None = None,
     ) -> int:
-        # Default: the shared size-scaled verify bound, resolved for this tool's
-        # policy owner so a per-tool COMPRESSATORIUM_<OWNER>_VERIFY_TIMEOUT
-        # override applies here exactly as it does inside the tool's own verify.
-        # Sizing the file is itself a stat, so the cancel event is raced against
-        # it: this runs before the verify that would otherwise observe it.
-        return await resolve_verify_timeout(
-            path, self.policy_owner, cancel_event=cancel_event,
-        )
+        # Default: the shared size-scaled verify bound, the same one the tool's
+        # own verify resolves. Sizing the file is itself a stat, so the cancel
+        # event is raced against it: this runs before the verify that would
+        # otherwise observe it.
+        return await resolve_verify_timeout(path, cancel_event=cancel_event)
 
     async def prime_embedded_hashes(
         self, path: str, *, cancel_event: asyncio.Event | None = None,
