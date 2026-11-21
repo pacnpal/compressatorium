@@ -76,6 +76,7 @@ from services.rules.library import (
     FAILED_HOLD,
     GAMELISTS_FOLDER,
     RECOGNIZED_FILTER,
+    AmbiguousFolder,
     Image,
     ImageListing,
     LibraryDefaults,
@@ -706,17 +707,31 @@ class FolderLibrary(LibraryDefaults):
         self._rewalk_thread = thread
         thread.start()
 
-    def _games_folder(self, entries: list[Entry]) -> str | None:
+    def _games_folder(self, entries: list[Entry]) -> tuple[str | None, str | None]:
         """Where most of a console's games are, relative to the root (#541):
-        their console folder, whatever the layout says new ones get. None
-        when they sit in the root itself."""
-        held = Counter(
-            folder for folder in (self.platform_folder(e.path) for e in entries) if folder
-        )
+        their console folder, whatever the layout says new ones get, and a
+        note when that can't be told. ``(None, None)`` when they sit in the
+        root itself.
+
+        A game two folders claim (a symlinked alias, ``AmbiguousFolder``)
+        counts for neither: that check still refuses to pick, but only this
+        console's folder is left unknown, never the whole listing (Codex
+        4653298954).
+        """
+        held: Counter = Counter()
+        ambiguous = None
+        for entry in entries:
+            try:
+                folder = self.platform_folder(entry.path)
+            except AmbiguousFolder as exc:
+                ambiguous = str(exc)
+                continue
+            if folder:
+                held[folder] += 1
         if not held:
-            return None
+            return None, ambiguous
         folder = held.most_common(1)[0][0]
-        return os.path.relpath(folder, self.root).replace(os.sep, "/")
+        return os.path.relpath(folder, self.root).replace(os.sep, "/"), None
 
     def summary(self, *, refresh: bool = False) -> dict[str, Any]:
         """Detected Platforms with Image counts, and the Images left out."""
@@ -734,7 +749,7 @@ class FolderLibrary(LibraryDefaults):
                 {
                     "id": slug, "slug": slug,
                     "name": platform_detect.platform_name(slug), "images": len(entries),
-                    "folder": self._games_folder(entries),
+                    **dict(zip(("folder", "folder_note"), self._games_folder(entries))),
                 }
                 for slug, entries in sorted(scan.by_platform().items())
             ],

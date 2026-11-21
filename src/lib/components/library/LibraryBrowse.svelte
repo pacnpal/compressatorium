@@ -82,8 +82,14 @@
         <tr>
           <td>{platform.name}</td>
           <td class="num">{platform.images ?? 0}</td>
-          <td><code>{folderOf(platform) ? `${folderOf(platform)}/` : '(the top folder)'}</code></td>
-          <td class="open"><a href={openHref(platform)}>Open</a></td>
+          {#if platform.folder_note}
+            <!-- Two folders claim its games: no guess, no link (Codex 4653298954). -->
+            <td class="muted">Can't tell: {platform.folder_note}</td>
+            <td></td>
+          {:else}
+            <td><code>{folderOf(platform) ? `${folderOf(platform)}/` : '(the top folder)'}</code></td>
+            <td class="open"><a href={openHref(platform)}>Open</a></td>
+          {/if}
         </tr>
       {/each}
     </tbody>

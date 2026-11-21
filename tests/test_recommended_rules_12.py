@@ -103,3 +103,30 @@ async def test_each_console_says_where_its_games_are(mixed: Path) -> None:
 
     folders = {p["id"]: p["folder"] for p in listed["platforms"]}
     assert folders == {"psx": "psx", "gba": "gba"}
+
+
+@pytest.mark.asyncio
+async def test_an_ambiguous_console_folder_does_not_fail_the_listing(mixed: Path, monkeypatch) -> None:
+    """Codex 4653298954: a console whose folder can't be told (a symlinked
+    alias) gets no folder and a note; the rest of the listing still answers."""
+    from routes import libraries as routes
+    from services import libraries
+    from services.libraries.folder import FolderLibrary
+    from services.rules.library import AmbiguousFolder
+
+    lib = await _register(mixed)
+    real = FolderLibrary.platform_folder
+
+    def ambiguous_psx(self, path):
+        if "/psx/" in path:
+            raise AmbiguousFolder(path, ["psx", "PlayStation"])
+        return real(self, path)
+
+    monkeypatch.setattr(FolderLibrary, "platform_folder", ambiguous_psx)
+    libraries.reset_for_tests()
+
+    listed = await routes.library_platforms(lib["id"])
+
+    rows = {p["id"]: p for p in listed["platforms"]}
+    assert rows["psx"]["folder"] is None and rows["psx"]["folder_note"]
+    assert rows["gba"]["folder"] == "gba" and rows["gba"]["folder_note"] is None
