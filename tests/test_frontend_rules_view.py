@@ -533,7 +533,7 @@ process.stdout.write(JSON.stringify({{
     assert data["before"] == 1, data
     assert data["none"] == 0, data
     assert data["after"] == 0, data
-    assert data["call"] == ["forgetLibraryConverted", "folder:3", ["ps2"]], data
+    assert data["call"] == ["forgetLibraryConverted", "folder:3", ["ps2"], False], data
 
 
 def test_the_editor_shows_held_images_whatever_the_policy():

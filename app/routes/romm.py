@@ -2324,6 +2324,9 @@ async def forget_romm_converted(payload: dict | None = None) -> dict:
     the only thing standing between the operator and a rerun -- so it is
     clearable, per platform or wholesale.
     """
+    if (payload or {}).get("failed_only"):
+        # Retry the failed ROMs, keeping what was converted (#541).
+        return await shared_rule_routes.forget_converted(romm_library, payload)
     cleared = await romm_auto.forget_converted(
         shared_rule_routes.requested_platform_ids(payload),
     )

@@ -372,8 +372,8 @@ export class RulesSource {
    * from a backup, or move outputs aside by hand, and that memory is the only
    * thing standing between the operator and a rerun.
    */
-  async forgetConverted(platformIds = null) {
-    const data = await this.#endpoints.forgetConverted(platformIds);
+  async forgetConverted(platformIds = null, { failedOnly = false } = {}) {
+    const data = await this.#endpoints.forgetConverted(platformIds, failedOnly);
     this.ruleState = data?.state ?? this.ruleState;
     return data?.cleared ?? 0;
   }

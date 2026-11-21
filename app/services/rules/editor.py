@@ -65,14 +65,19 @@ async def save_rules(library: Library, payload: Any) -> dict[str, Any]:
     return out
 
 
-async def forget_converted(library: Library, platform_ids: list | None) -> dict[str, Any]:
+async def forget_converted(
+    library: Library, platform_ids: list | None, *, failed_only: bool = False,
+) -> dict[str, Any]:
     """Clear the converted history (and failed holds) for *platform_ids*, or all.
 
-    ``None`` means every Platform; an empty list means none.
+    ``None`` means every Platform; an empty list means none. *failed_only*
+    releases the failed holds alone and keeps the converted history (#541).
     """
-    cleared = await rules_sweep.forget_converted(
-        library, [str(p) for p in platform_ids] if platform_ids is not None else None,
-    )
+    ids = [str(p) for p in platform_ids] if platform_ids is not None else None
+    if failed_only:
+        cleared = await rules_sweep.release_failed(library, ids)
+    else:
+        cleared = await rules_sweep.forget_converted(library, ids)
     return {"cleared": cleared, "state": await rules_sweep.get_state(library)}
 
 

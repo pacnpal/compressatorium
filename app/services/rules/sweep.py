@@ -660,6 +660,31 @@ async def forget_converted_locked(
     return cleared
 
 
+async def release_failed(library: Library, platform_ids: list[str] | None = None) -> int:
+    """Drop only the failed holds of *platform_ids* (or every Platform), so
+    the next run tries those Images again (#541, CodeRabbit 4652729342).
+
+    Unlike :func:`forget_converted` it keeps the converted history: under a
+    rename or overwrite Rule that history is what stops a converted Image from
+    being converted again. No decision about a converted Image changes, so
+    nothing is invalidated. Returns how many Platforms had holds.
+    """
+    async with _sweep_lock:
+        state = await get_state(library)
+        targets = [str(p) for p in platform_ids] if platform_ids is not None else list(state)
+        cleared = 0
+        for pid in targets:
+            entry = state.get(pid)
+            if isinstance(entry, dict) and entry.get("failed"):
+                entry = dict(entry)
+                entry.pop("failed", None)
+                state[pid] = entry
+                cleared += 1
+        if cleared:
+            await store.write(store.STATE_KEY, library, state)
+        return cleared
+
+
 def library_generation(library_id: str) -> int:
     """*library_id*'s generation: it moves when that Library is removed.
 
@@ -2015,12 +2040,17 @@ async def sweep(
     overall_limit: int | None = None,
     should_stop: Callable[[], bool] | None = None,
     kinds: tuple[str, ...] = RULE_KINDS,
+    honour_pauses: bool = False,
 ) -> dict:
     """Run one pass over *library*'s ruled Platforms.
 
     *kinds* narrows it to those kinds of Rule: an *arr import into a Library
     runs the console's conversion Rule only (``(CONVERT,)``), never a
-    budget's worth of its check Rule (#541).
+    budget's worth of its check Rule (#541). *honour_pauses* keeps an
+    operator's pause even for the Platforms named: Run now's override is for
+    a person's click, never for an automatic run (CodeRabbit 4652729285). It
+    is read under ``_sweep_lock``, so a pause made after the import was
+    accepted still holds.
 
     Returns a summary rather than raising on a partial failure: one unreachable
     platform must not abort the sweep for the others.
@@ -2066,6 +2096,7 @@ async def sweep(
                 should_stop=should_stop,
                 kept_attempts=kept_attempts,
                 kinds=kinds,
+                honour_pauses=honour_pauses,
             )
         await _run_kept_deletes(
             library, kept_attempts, result,
@@ -2095,6 +2126,7 @@ async def _sweep_locked(
     should_stop: Callable[[], bool] | None = None,
     kept_attempts: list | None = None,
     kinds: tuple[str, ...] = RULE_KINDS,
+    honour_pauses: bool = False,
 ) -> dict:
     """The sweep body. Always called with ``_sweep_lock`` held. The pending
     deletes it plans go in *kept_attempts*, for the caller to try once the
@@ -2228,7 +2260,7 @@ async def _sweep_locked(
         # window becomes no window -- so running it would do more than the
         # saved rule says, unattended, possibly with delete-on-verify. Those
         # stay paused until the operator fixes what is wrong.
-        if _rule_paused(rule, wanted):
+        if _rule_paused(rule, None if honour_pauses else wanted):
             if wanted is not None:
                 result["errors"].append(
                     {"platform_id": platform_ref, "error": "rule_invalid"},

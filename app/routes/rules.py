@@ -40,8 +40,12 @@ def requested_platform_ids(payload: dict | None) -> list[str] | None:
 
 
 async def forget_converted(library: Library, payload: dict | None) -> dict:
-    """``POST .../rules/forget-converted`` for any Library."""
-    return await editor.forget_converted(library, requested_platform_ids(payload))
+    """``POST .../rules/forget-converted`` for any Library. ``failed_only``
+    releases the failed holds and keeps the converted history (#541)."""
+    return await editor.forget_converted(
+        library, requested_platform_ids(payload),
+        failed_only=bool((payload or {}).get("failed_only")),
+    )
 
 
 async def _libraries() -> list:

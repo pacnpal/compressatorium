@@ -62,7 +62,7 @@ class RommStore extends RulesSource {
     super({
       getRules: () => api.getRommRules(),
       saveRules: (rules, checkRules) => api.saveRommRules(rules, checkRules),
-      forgetConverted: (platformIds) => api.forgetRommConverted(platformIds),
+      forgetConverted: (platformIds, failedOnly) => api.forgetRommConverted(platformIds, failedOnly),
       preview: (body) => api.previewRommAutoConvert(body),
       run: (body) => api.runRommAutoConvert(body),
       recommended: () => api.getRecommendedRules('romm'),

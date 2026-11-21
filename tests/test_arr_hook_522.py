@@ -567,3 +567,30 @@ async def test_an_import_whose_console_is_unclear_is_left_alone(client, vol, que
     assert "console" in body["skipped"][0]["problem"]
     await trigger.drain()
     assert queued == []
+
+
+@pytest.mark.asyncio
+async def test_a_rule_paused_after_the_import_was_accepted_is_not_run(vol, db, queued):
+    """CodeRabbit 4652729285: the import's sweep never gets Run now's
+    named-console override. A console paused between accepting the path and
+    the sweep stays paused."""
+    from services.inbox import trigger
+    from services.rules import sweep as rules_sweep
+
+    library, _game = await _ps2_library(vol)
+    await rules_sweep.set_rules(library, {"ps2": {"mode": "createdvd", "enabled": False}})
+
+    await trigger._sweep_now(library, {"ps2"})
+
+    assert queued == []
+
+
+@pytest.mark.asyncio
+async def test_the_path_test_says_what_an_import_would_do(client, vol, queued):
+    """CodeRabbit 4652729358: Test a path gives the import's own answer for a
+    Library path, so it never promises a conversion the import would skip."""
+    _library, game = await _ps2_library(vol, automation=False)
+
+    body = (await client.post("/api/hooks/arr/check", json={"path": str(game)})).json()
+
+    assert "automation is off" in body["problem"]

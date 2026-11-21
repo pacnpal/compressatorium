@@ -771,10 +771,11 @@ export const api = {
 
   // Clears the "already converted by this rule" history that stops overwrite
   // and rename rules from reconverting the same sources every interval.
-  forgetRommConverted: (platformIds = null) =>
+  // `failedOnly` releases the failed holds and keeps what was converted (#541).
+  forgetRommConverted: (platformIds = null, failedOnly = false) =>
     jsonPost(
       `${API_BASE}/romm/rules/forget-converted`,
-      platformIds ? { platform_ids: platformIds } : {},
+      { ...(platformIds ? { platform_ids: platformIds } : {}), ...(failedOnly ? { failed_only: true } : {}) },
       {},
       'Failed to clear the conversion history',
     ),
@@ -908,10 +909,10 @@ export const api = {
       'Failed to save the Rules',
     ),
 
-  forgetLibraryConverted: (id, platformIds = null) =>
+  forgetLibraryConverted: (id, platformIds = null, failedOnly = false) =>
     jsonPost(
       `${API_BASE}/libraries/${encodeURIComponent(id)}/rules/forget-converted`,
-      platformIds ? { platform_ids: platformIds } : {},
+      { ...(platformIds ? { platform_ids: platformIds } : {}), ...(failedOnly ? { failed_only: true } : {}) },
       {},
       'Failed to clear the conversion history',
     ),

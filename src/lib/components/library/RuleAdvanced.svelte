@@ -131,9 +131,11 @@
     return `Last run ${when.toLocaleString()} · ${verb} ${state?.[countKey] ?? 0}`;
   }
 
+  // Releases the failed holds only: what was converted stays remembered, so
+  // a rename or overwrite console never converts it again (#541).
   async function retryFailed() {
     try {
-      await source.forgetConverted([String(platform.id)]);
+      await source.forgetConverted([String(platform.id)], { failedOnly: true });
       toast.success('The next run tries those games again');
     } catch (e) {
       toast.error(e?.message ?? "Couldn't release them");

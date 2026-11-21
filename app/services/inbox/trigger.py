@@ -280,8 +280,17 @@ def _checked(
 
 
 async def check_one(path: str) -> dict[str, Any]:
+    """:func:`check`, and for a Library path the answer an import would get
+    (CodeRabbit 4652729358): never "works" for one the import would skip."""
     rules = await load_rewrites()
-    return await asyncio.wait_for(run_detached(check, path, rules), _STEP_SECONDS)
+    found, _real, ids = await asyncio.wait_for(
+        run_detached(_checked, path, rules), _STEP_SECONDS,
+    )
+    if found["inbox_id"] is None and found["library_id"] is not None:
+        _library, _due, why = await _due_in_library(found, ids)
+        if why:
+            found = {**found, "problem": why}
+    return found
 
 
 # ---- taking paths in -------------------------------------------------------
@@ -384,7 +393,7 @@ async def _sweep_now(library: Any, platform_ids: set[str]) -> None:
     try:
         await rules_sweep.sweep(
             library, platform_ids=sorted(platform_ids), ignore_schedule=True,
-            kinds=(CONVERT,),
+            kinds=(CONVERT,), honour_pauses=True,
         )
     except Exception:
         logger.warning("library: converting an import in %s failed", library.name, exc_info=True)
