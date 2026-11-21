@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import http.client
+import ipaddress
 import json
 import socket
 from pathlib import Path
@@ -28,6 +29,9 @@ from config import settings
 # named its own yet (it does on its first /health request).
 DEFAULT_PORT = 8080
 _TIMEOUT_S = 30
+# Each place the lock names is asked this long: a dead address must not hold up
+# the live one behind it.
+_PROBE_TIMEOUT_S = 3
 
 
 class ServerUnreachable(Exception):
@@ -64,23 +68,62 @@ class Server:
         self._token = _stored_token()
 
     @classmethod
-    def of_holder(cls, holder: dict) -> Server:
-        """The server named in the worker lock's holder note."""
+    def of_holder(cls, holder: dict) -> list[Server]:
+        """Every place the worker lock's holder note names: its host (this
+        one is ``127.0.0.1``), then each of its IPv4 addresses, at its port."""
         host = holder.get("host")
         if not host or host == socket.gethostname():
             host = "127.0.0.1"
-        return cls(f"http://{host}:{holder.get('port') or DEFAULT_PORT}")
+        hosts = [host]
+        for address in holder.get("addresses") or []:
+            try:
+                ipaddress.IPv4Address(address)
+            except ValueError:
+                continue  # the note is only ever written with addresses
+            if address not in hosts:
+                hosts.append(address)
+        port = holder.get("port") or DEFAULT_PORT
+        servers = []
+        for name in hosts:
+            with contextlib.suppress(ValueError):
+                servers.append(cls(f"http://{name}:{port}"))
+        return servers
 
-    def _call(self, method: str, path: str, body: dict | None = None):
+    @classmethod
+    async def find_holder(cls, holder: dict) -> Server:
+        """The first place the holder note names that answers as that holder.
+
+        ``/health`` must answer the note's ``id`` (a note from before ids
+        takes any answer). It is asked without the auth token, which goes only
+        to the server found. Raises :class:`ServerUnreachable` when none does.
+        """
+        servers = cls.of_holder(holder)
+        for server in servers:
+            try:
+                answer = await server.call(
+                    "GET", "/health", auth=False, timeout=_PROBE_TIMEOUT_S,
+                )
+            except (ServerUnreachable, ServerRefused):
+                continue
+            worker = answer.get("worker") if isinstance(answer, dict) else None
+            if "id" not in holder or worker == holder["id"]:
+                return server
+        tried = ", ".join(server.url for server in servers) or "nowhere"
+        raise ServerUnreachable(f"no answer from it at {tried}")
+
+    def _call(
+        self, method: str, path: str, body: dict | None = None, *,
+        auth: bool = True, timeout: float = _TIMEOUT_S,
+    ):
         parts = self._parts
         factory = (
             http.client.HTTPSConnection if parts.scheme == "https"
             else http.client.HTTPConnection
         )
         default_port = 443 if parts.scheme == "https" else 80
-        conn = factory(parts.hostname, parts.port or default_port, timeout=_TIMEOUT_S)
+        conn = factory(parts.hostname, parts.port or default_port, timeout=timeout)
         headers = {"Content-Type": "application/json", "User-Agent": "compressatorium-cli"}
-        if self._token:
+        if self._token and auth:
             headers["X-Compressatorium-Token"] = self._token
         try:
             conn.request(
@@ -103,8 +146,8 @@ class Server:
             raise ServerRefused(response.status, str(detail or f"HTTP {response.status}"))
         return data
 
-    async def call(self, method: str, path: str, body: dict | None = None):
-        return await asyncio.to_thread(self._call, method, path, body)
+    async def call(self, method: str, path: str, body: dict | None = None, **kwargs):
+        return await asyncio.to_thread(self._call, method, path, body, **kwargs)
 
     async def check(self) -> None:
         """Raise :class:`ServerUnreachable` unless the server answers."""

@@ -499,9 +499,12 @@ async def health_check(request: Request):
     """Health check endpoint. Also names the port this server answers on in
     its worker lock, where a CLI looks for it (``services.server_client``)."""
     held = getattr(request.app.state, "scheduler", None)
-    if held is not None:
-        held.note_port((request.scope.get("server") or (None, None))[1])
-    return {"status": "healthy", "version": get_version()}
+    if held is None:
+        return {"status": "healthy", "version": get_version()}
+    held.note_port((request.scope.get("server") or (None, None))[1])
+    # The id in its holder note: a CLI that found this server by address
+    # checks it reached the holder.
+    return {"status": "healthy", "version": get_version(), "worker": held.worker_id}
 
 
 # Serve static files

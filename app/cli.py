@@ -1112,9 +1112,8 @@ async def _worker(args):
             held = await asyncio.to_thread(scheduler_lock.acquire, "convert", wait=0)
         except scheduler_lock.SchedulerLockHeld as exc:
             if exc.holder.get("by") == "server":
-                server = Server.of_holder(exc.holder)
                 try:
-                    await server.check()
+                    server = await Server.find_holder(exc.holder)
                 except ServerUnreachable as lost:
                     raise ServerUnreachable(
                         f"{exc}, but {lost}; pass --server URL to name it",

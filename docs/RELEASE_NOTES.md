@@ -61,11 +61,13 @@
   command's container doesn't. Ctrl-C cancels the run's own jobs on the
   server. With no server running, the command runs the jobs itself, and a
   server started meanwhile waits until it is done, so a command and the
-  server never work on the same file. A server in another container is found by its host name;
-  `--server URL` names one that can't be found. The cross-process job queue
-  the two used to share in `/config/locks` (`queue_*.ticket`,
-  `holder_*.lock`, `convert_slot_*.lock`) is gone; old files there are
-  harmless and can be deleted.
+  server never work on the same file. A server in another container is found
+  with nothing to set: by its host name on a Compose network, and by its own
+  address on Docker's default bridge (`docker run`, Unraid), checked to be
+  that server. `--server URL` names one that still can't be found. The
+  cross-process job queue the two used to share in `/config/locks`
+  (`queue_*.ticket`, `holder_*.lock`, `convert_slot_*.lock`) is gone; old
+  files there are harmless and can be deleted.
 - **No more Recover button or "jobs look stuck" banner** (#533). Recovery
   only ever removed lock files no process held, and such a file never blocks
   a job; the app removes them on its own every 30 seconds. The

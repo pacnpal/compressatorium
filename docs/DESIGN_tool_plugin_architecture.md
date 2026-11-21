@@ -5776,10 +5776,18 @@ this process's) decide which Images are converted:
 * The lock held by a server: the jobs go to it. The server names its host in
   the lock's holder note when it takes it, and its port on its first `/health`
   request (`SchedulerLock.note_port`; the Docker `HEALTHCHECK` asks every
-  30 s). `Server.of_holder` reaches `127.0.0.1` when the host is this one,
-  else the host by name, at that port (8080 until one is named). A server that
-  does not answer ends the run with exit 3, before anything is queued,
-  saying to pass `--server`.
+  30 s). It also writes a random `id` and its own non-loopback IPv4
+  addresses (`scheduler_lock.own_addresses`, stdlib only: the hostname's
+  entry and the address a UDP socket would send from; none readable, none
+  written), because a container's hostname resolves for its siblings on a
+  user-defined network (Compose) but not on Docker's default bridge
+  (`docker run`, Unraid). `Server.of_holder` lists `127.0.0.1` when the host
+  is this one, else the host by name, then each address, at that port (8080
+  until one is named). `Server.find_holder` asks each `/health` in turn, 3 s
+  apiece and without the auth token, and takes the first that answers the
+  note's `id` as `worker`, so another server on a stale address is never
+  taken. None does: exit 3, before anything is queued, saying to pass
+  `--server`.
 * The lock free: `convert` takes it (`acquire("convert")`) and runs its jobs
   in-process as before. A server started meanwhile waits for it
   (`acquire_waiting`, logging who holds it), so it never starts work beside

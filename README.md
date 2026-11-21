@@ -2967,9 +2967,10 @@ Ctrl-C cancels this run's jobs on the
 server. With no server running, `convert` runs the jobs itself, and a server
 started meanwhile waits until it is done. Either way a command and the server
 never work on the same file. A server in another container is found the same
-way, by its host name, so put both on one Docker network (Compose does); if
-it can't be reached, `convert` says so and exits `3`, and `--server URL`
-names it. `verify` only reads, and runs beside the server under the same file
+way, with nothing to set: by its host name on a Compose network, or by the
+address it writes beside it on Docker's default bridge (`docker run`, Unraid),
+and only the server that holds the data directory is taken. If it can't be
+reached, `convert` says so and exits `3`, and `--server URL` names it. `verify` only reads, and runs beside the server under the same file
 locks. Run it in the server's container with `docker exec compressatorium
 compressatorium convert ...`. Started as root (`docker exec` without `-u`, or `--entrypoint`), the command
 first remaps and drops to the `converter` user through the image's entrypoint,

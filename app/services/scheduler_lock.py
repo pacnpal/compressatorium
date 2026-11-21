@@ -21,8 +21,8 @@ the same directory as the job locks (#306). Every
 container that mounts the same ``/config`` sees it, and the kernel drops it when
 its holder dies, however it dies. The file is never unlinked, so the lock is
 always on the file every process opens. While held it names its holder (role,
-PID, host, start time, and a server's port) so the process that is turned away
-can say why, and a CLI can find the server.
+PID, host, start time, an id, and a server's IPv4 addresses and port) so the
+process that is turned away can say why, and a CLI can find the server.
 
 ``CHD_CONCURRENCY_LOCK_DIR`` moves this lock with the rest; processes that
 share a data directory must share the lock directory too.
@@ -33,8 +33,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
+import ipaddress
 import json
 import os
+import secrets
 import socket
 import time
 from collections.abc import Callable
@@ -124,6 +126,11 @@ class SchedulerLock:
         self._record = {**self._record, "port": port}
         _write_record(self._fd, self._record)
 
+    @property
+    def worker_id(self) -> str | None:
+        """The id this holder answers ``/health`` with."""
+        return self._record.get("id")
+
     def release(self) -> None:
         if self._fd is None:
             return
@@ -164,15 +171,49 @@ def _write_record(fd: int, record: dict) -> None:
         pass  # the holder note is for messages only; the flock is the lock
 
 
+def own_addresses() -> list[str]:
+    """This host's own non-loopback IPv4 addresses, ``[]`` when they can't be read.
+
+    A container's hostname resolves for its siblings on a user-defined network
+    (Compose), not on Docker's default bridge (``docker run``, Unraid), where
+    only an address reaches it. The name's own entry (``/etc/hosts`` in a
+    container), and the address a datagram socket would send from (``connect``
+    on UDP sends nothing; TEST-NET-1 is never routed anywhere real).
+    """
+    found = []
+    with contextlib.suppress(OSError, UnicodeError):
+        for *_, sockaddr in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            found.append(sockaddr[0])
+    with contextlib.suppress(OSError), socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.connect(("192.0.2.1", 9))
+        found.append(probe.getsockname()[0])
+    usable = []
+    for address in found:
+        try:
+            ip = ipaddress.IPv4Address(address)
+        except ValueError:
+            continue
+        if not (ip.is_loopback or ip.is_unspecified) and address not in usable:
+            usable.append(address)
+    return usable
+
+
 def _held_by(fd: int, by: str) -> SchedulerLock:
-    """Write the holder note into the file this fd holds, and wrap it."""
+    """Write the holder note into the file this fd holds, and wrap it.
+
+    ``id`` is what a server answers on ``/health`` (``worker``), so a CLI that
+    finds it by address knows it reached this holder and not some other server.
+    """
     record = {
         "by": by,
         "pid": os.getpid(),
         "host": socket.gethostname(),
+        "id": secrets.token_hex(8),
         "since": datetime.now(timezone.utc).isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
     }
+    if by == "server" and (addresses := own_addresses()):
+        record["addresses"] = addresses
     _write_record(fd, record)
     return SchedulerLock(fd, record)
 

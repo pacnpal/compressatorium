@@ -38,7 +38,7 @@ class _Stub:
 
     def __init__(
         self, *, finish: bool = True, max_depth: int = 0, busy: int = 0,
-        available: list[str] | None = None,
+        available: list[str] | None = None, worker: str | None = None,
     ) -> None:
         from services.tools import registry
 
@@ -50,6 +50,8 @@ class _Stub:
         self.max_depth = max_depth
         self.busy = busy
         self.available = [t.id for t in registry.all()] if available is None else available
+        # What /health says this server is: the id in the lock unless told.
+        self.worker = worker
         stub = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -66,7 +68,7 @@ class _Stub:
 
             def do_GET(self):
                 if self.path == "/health":
-                    return self._send(200, {"status": "healthy"})
+                    return self._send(200, {"status": "healthy", "worker": stub.worker_id()})
                 if self.path == "/api/tools":
                     return self._send(200, {"available": stub.available})
                 job = stub.jobs.get(self.path.rsplit("/", 1)[-1])
@@ -108,6 +110,17 @@ class _Stub:
         self._http = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port = self._http.server_address[1]
         threading.Thread(target=self._http.serve_forever, daemon=True).start()
+
+    def worker_id(self) -> str | None:
+        if self.worker is not None:
+            return self.worker
+        from services import scheduler_lock
+
+        try:
+            with open(scheduler_lock.lock_path(), encoding="utf-8") as lock:
+                return json.load(lock).get("id")
+        except (OSError, ValueError):
+            return None
 
     def close(self) -> None:
         self._http.shutdown()
@@ -367,3 +380,84 @@ def test_a_tool_the_server_cannot_run_is_skipped(
     assert code == 0, lines
     assert stub.batches == []
     assert [(line["path"], line["status"]) for line in lines] == [(str(iso), "skipped")]
+
+
+def _advertise(held, **fields):
+    """Rewrite the server's holder note, as a server elsewhere would write it."""
+    from services import scheduler_lock
+
+    held._record = {**held._record, **fields}
+    scheduler_lock._write_record(held._fd, held._record)
+
+
+def test_the_lock_names_the_servers_addresses(server_lock):
+    """The holder note carries an id and the host's own IPv4 addresses, so a
+    CLI on the default bridge (no DNS) can still reach it (Codex 4650363716)."""
+    import ipaddress
+
+    from services import scheduler_lock
+
+    with pytest.raises(scheduler_lock.SchedulerLockHeld) as held:
+        scheduler_lock.check()
+    holder = held.value.holder
+
+    assert holder["id"]
+    for address in holder.get("addresses", []):
+        ip = ipaddress.ip_address(address)
+        assert ip.version == 4 and not ip.is_loopback
+
+
+def test_unreadable_addresses_leave_just_the_host(monkeypatch):
+    from services import scheduler_lock
+
+    def broken(*args, **kwargs):
+        raise OSError("no network")
+
+    monkeypatch.setattr(socket, "getaddrinfo", broken)
+    monkeypatch.setattr(socket, "socket", broken)
+    held = scheduler_lock.acquire("server")
+    try:
+        record = held._record
+    finally:
+        held.release()
+
+    assert "addresses" not in record
+    assert record["host"] == socket.gethostname()
+
+
+def test_a_server_whose_name_does_not_resolve_is_found_by_address(
+    volume, dolphin, capsys, stub, server_lock,
+):
+    iso = _iso(volume)
+    _advertise(
+        server_lock, host="no-such-host.invalid", addresses=["127.0.0.1"], port=stub.port,
+    )
+
+    code, lines = _cli(capsys, "convert", str(volume), "--to", "rvz", "--json")
+
+    assert code == 0, lines
+    assert [b["file_paths"] for b in stub.batches] == [[str(iso)]]
+    assert dolphin["runs"] == []
+
+
+def test_another_server_answering_an_address_is_not_taken(
+    volume, dolphin, capsys, server_lock,
+):
+    """Only the server that holds the lock: an answer with another id is not it."""
+    import cli
+
+    stub = _Stub(worker="someone-else")
+    _iso(volume)
+    _advertise(
+        server_lock, host="no-such-host.invalid", addresses=["127.0.0.1"], port=stub.port,
+    )
+    try:
+        code = cli.main(["convert", str(volume), "--to", "rvz", "--json"])
+    finally:
+        stub.close()
+    err = capsys.readouterr().err
+
+    assert code == cli.EXIT_LOCKED
+    assert "--server" in err
+    assert stub.batches == []
+    assert dolphin["runs"] == []
