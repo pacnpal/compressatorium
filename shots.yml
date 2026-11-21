@@ -1940,9 +1940,12 @@
       if (!tab) throw new Error('Settings tab not found');
       tab.click();
       await new Promise(r => setTimeout(r, 500));
-      if (![...document.querySelectorAll('.card h2')].some(h => h.textContent.trim() === 'Keep the ROM id')) {
-        throw new Error('swap card not shown');
-      }
+      // #535 made each Settings part a fieldset, so the card is found by its legend.
+      const legend = [...document.querySelectorAll('legend')]
+        .find(l => l.textContent.trim() === 'Keep the ROM id');
+      if (!legend) throw new Error('swap card not shown');
+      legend.closest('fieldset').scrollIntoView({ block: 'center' });
+      await new Promise(r => setTimeout(r, 300));
     })()
 - url: http://127.0.0.1:8099/?s=romm-swap-dark#/libraries/romm
   output: docs/screenshots/romm-swap-dark.png

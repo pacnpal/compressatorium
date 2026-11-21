@@ -17,6 +17,12 @@ import { VIEW_TITLES, legacyRedirect, parseHash, hashFor } from '$lib/router/rou
 
 export { VIEW_TITLES };
 
+// *value* when *route* is on *view*, else null: a part of another view's
+// route never lingers in this one's fields.
+function routePart(route, view, value) {
+  return route.view === view ? value : null;
+}
+
 class UIStore {
   // Routing: one field per part of the route (src/lib/router/routes.js).
   activeView = $state('files');
@@ -153,13 +159,12 @@ class UIStore {
   applyHash(hash) {
     const route = parseHash(legacyRedirect(hash) ?? hash);
     this.activeView = route.view;
-    const at = (view, value) => (route.view === view ? value : null);
-    this.libraryTarget = at('libraries', route.id);
-    this.libraryTab = at('libraries', route.tab);
-    this.activityTab = at('activity', route.tab);
-    this.activityLibrary = at('activity', route.id);
-    this.filesPath = at('files', route.path);
-    this.settingsSection = at('settings', route.tab);
+    this.libraryTarget = routePart(route, 'libraries', route.id);
+    this.libraryTab = routePart(route, 'libraries', route.tab);
+    this.activityTab = routePart(route, 'activity', route.tab);
+    this.activityLibrary = routePart(route, 'activity', route.id);
+    this.filesPath = routePart(route, 'files', route.path);
+    this.settingsSection = routePart(route, 'settings', route.tab);
     this.focusBump++;
   }
 
