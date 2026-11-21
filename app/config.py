@@ -1,6 +1,7 @@
 """Application configuration settings for the CHD converter."""
 
 import os
+import shutil
 from pathlib import Path
 
 from pydantic import AliasChoices, Field, PrivateAttr
@@ -10,7 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Used only when no data dir is configured at all (a dev checkout without
 # /config). One fixed path, whatever TMPDIR says, so every process on the host
 # picks the same one. Bandit B108: a fixed path is intended here;
-# lock_manager and concurrency_manager create it 0o700.
+# lock_manager creates it 0o700.
 _UNCONFIGURED_LOCK_DIR = "/tmp/chd-locks"  # nosec B108
 
 
@@ -47,6 +48,28 @@ def _default_lock_dir(data_dir: str, *, configured: bool) -> str:
     return lock_dir
 
 
+def detected_binary(default: str) -> str:
+    """*default* when a program is there, else the same name found on PATH (#515).
+
+    The image installs each tool program at a fixed path. Outside it (a
+    Homebrew or distro install, a dev checkout) that path is usually missing
+    while the program is on PATH, so the tool works with no ``*_PATH`` set.
+    Found nowhere, the default stays and the tool says what to set.
+    """
+    if os.path.exists(default):
+        return default
+    return shutil.which(os.path.basename(default)) or default
+
+
+# Programs the image installs at a fixed path: looked up on PATH by name when
+# that path is missing and the operator set none (#515).
+_IMAGE_BINARIES = (
+    "chdman_path", "dolphin_tool_path", "z3ds_compressor_path", "maxcso_path",
+    "makeps3iso_path", "jwudtool_path", "nkit2iso_path", "extract_xiso_path",
+    "rom_converto_path",
+)
+
+
 # Retired names (#542), still read so no deployment breaks; each one set is
 # named in one startup warning (``Settings.retired_env``).
 # Per-tool overrides: each feeds the shared ``tool_<key>`` setting when that is
@@ -62,7 +85,7 @@ _RETIRED_PER_TOOL = {
 }
 # No longer read at all: fixed timings, and a choice the Web UI now remembers.
 _RETIRED_IGNORED = (
-    "CHD_DEBUG_PROGRESS_INTERVAL", "CHD_DEBUG_PROGRESS_TIMEOUT",
+    "CHD_DEBUG_HEARTBEAT", "CHD_DEBUG_PROGRESS_INTERVAL", "CHD_DEBUG_PROGRESS_TIMEOUT",
     "COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST",
     "CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST",
 )
@@ -150,8 +173,9 @@ class Settings(BaseSettings):
         default=None,
         alias="CHD_CONCURRENCY_LOCK_DIR",
         description=(
-            "Directory for job lock files, conversion slots and the Rule scheduler "
-            "lock. Default: always <data dir>/locks when a data dir is configured "
+            "Directory for job lock files and the data directory's worker lock "
+            "(services.scheduler_lock). Default: <data dir>/locks when a data dir is "
+            "configured "
             "(shared by every container mounting /config); startup fails if it "
             "can't be created. /tmp/chd-locks only when no data dir is configured "
             "at all."
@@ -477,7 +501,6 @@ class Settings(BaseSettings):
             "set 'never' to opt out, or 'auto' to follow TTY / NO_COLOR."
         ),
     )
-    debug_heartbeat_interval: int = Field(default=30, alias="CHD_DEBUG_HEARTBEAT")
     progress_timeout: int = Field(default=600, alias="CHD_PROGRESS_TIMEOUT")
     progress_timeout_per_gib: int = Field(
         default=120,
@@ -493,6 +516,12 @@ class Settings(BaseSettings):
         self._apply_retired_env()
         if self.temp_dir is None:
             self.temp_dir = str(Path(self.data_dir) / "temp")
+        for name in _IMAGE_BINARIES:
+            if name not in self.model_fields_set:
+                setattr(self, name, detected_binary(getattr(self, name)))
+        # The newer 7-Zip package names its program 7zz (Homebrew, recent distros).
+        if "sevenzip_path" not in self.model_fields_set and not shutil.which(self.sevenzip_path):
+            self.sevenzip_path = shutil.which("7zz") or self.sevenzip_path
         if self.concurrency_lock_dir is None:
             # "Configured" means named by CHD_DATA_DIR or the constructor; the
             # image sets CHD_DATA_DIR=/config, so a container always is.

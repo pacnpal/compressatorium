@@ -1,13 +1,11 @@
 <script>
   import { ui } from '$lib/stores/ui.svelte.js';
+  import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { findings } from '$lib/stores/findings.svelte.js';
   import SidebarItem from './SidebarItem.svelte';
-  import LayoutDashboard from '@lucide/svelte/icons/layout-dashboard';
-  import Boxes from '@lucide/svelte/icons/boxes';
-  import Database from '@lucide/svelte/icons/database';
+  import FolderOpen from '@lucide/svelte/icons/folder-open';
   import Library from '@lucide/svelte/icons/library';
-  import ListChecks from '@lucide/svelte/icons/list-checks';
-  import Flag from '@lucide/svelte/icons/flag';
-  import ScrollText from '@lucide/svelte/icons/scroll-text';
+  import Activity from '@lucide/svelte/icons/activity';
   import Settings from '@lucide/svelte/icons/settings';
   import HelpCircle from '@lucide/svelte/icons/circle-help';
   import ChevronLeft from '@lucide/svelte/icons/chevron-left';
@@ -15,12 +13,22 @@
 
   const collapsed = $derived(ui.sidebarCollapsed);
   const view = $derived(ui.activeView);
-  const tool = $derived(ui.workspaceTool);
-  const tools = $derived(ui.visibleTools);
+  // Activity's badge: what needs you first, else what is running or waiting.
+  const attention = $derived(findings.openCount);
+  const running = $derived(jobs.activeCount);
+  const activityBadge = $derived(attention > 0 ? attention : running > 0 ? running : null);
+  const activityTone = $derived(attention > 0 ? 'warning' : 'info');
 
-  function go(target, t) {
+  const PLACES = [
+    { view: 'files', label: 'Files', icon: FolderOpen },
+    { view: 'libraries', label: 'Libraries', icon: Library },
+    { view: 'activity', label: 'Activity', icon: Activity },
+    { view: 'settings', label: 'Settings', icon: Settings },
+  ];
+
+  function go(target) {
     ui.closeDrawer();
-    ui.navigate(target, t);
+    ui.navigate(target);
   }
 </script>
 
@@ -30,57 +38,25 @@
     {#if !collapsed}<span class="brand-text">Compressatorium</span>{/if}
   </div>
 
-  <nav class="section">
-    {#if !collapsed}<h2 class="section-title">Navigate</h2>{/if}
-    <SidebarItem label="Workspace" {collapsed} active={view === 'workspace'} onclick={() => go('workspace', tool)}>
-      {#snippet icon()}<Boxes size={16} />{/snippet}
-    </SidebarItem>
-    <SidebarItem label="Dashboard" {collapsed} active={view === 'dashboard'} onclick={() => go('dashboard')}>
-      {#snippet icon()}<LayoutDashboard size={16} />{/snippet}
-    </SidebarItem>
-    <SidebarItem label="RomM" {collapsed} active={view === 'romm'} onclick={() => go('romm')}>
-      {#snippet icon()}<Library size={16} />{/snippet}
-    </SidebarItem>
-    <SidebarItem label="Rules" {collapsed} active={view === 'rules'} onclick={() => go('rules')}>
-      {#snippet icon()}<ListChecks size={16} />{/snippet}
-    </SidebarItem>
-    <SidebarItem label="Findings" {collapsed} active={view === 'findings'} onclick={() => go('findings')}>
-      {#snippet icon()}<Flag size={16} />{/snippet}
-    </SidebarItem>
-    <SidebarItem label="DAT Library" {collapsed} active={view === 'dat'} onclick={() => go('dat')}>
-      {#snippet icon()}<Database size={16} />{/snippet}
-    </SidebarItem>
-    <SidebarItem label="Ledger" {collapsed} active={view === 'ledger'} onclick={() => go('ledger')}>
-      {#snippet icon()}<ScrollText size={16} />{/snippet}
-    </SidebarItem>
-    <SidebarItem label="Settings" {collapsed} active={view === 'settings'} onclick={() => go('settings')}>
-      {#snippet icon()}<Settings size={16} />{/snippet}
-    </SidebarItem>
-    <SidebarItem label="Help" {collapsed} active={view === 'help'} onclick={() => go('help')}>
-      {#snippet icon()}<HelpCircle size={16} />{/snippet}
-    </SidebarItem>
-  </nav>
-
-  <nav class="section tools">
-    {#if !collapsed}<h2 class="section-title">Tool</h2>{/if}
-    {#each tools as t (t.id)}
+  <nav class="section" aria-label="Places">
+    {#each PLACES as place (place.view)}
       <SidebarItem
-        label={t.label}
-        title={t.hint}
+        label={place.label}
         {collapsed}
-        active={view === 'workspace' && tool === t.id}
-        onclick={() => go('workspace', t.id)}
+        active={view === place.view}
+        badge={place.view === 'activity' ? activityBadge : null}
+        badgeTone={activityTone}
+        onclick={() => go(place.view)}
       >
-        {#snippet icon()}
-          <span class="tool-glyph" style:color={t.accent ?? 'var(--accent)'} aria-hidden="true">
-            {t.glyph ?? t.label[0]}
-          </span>
-        {/snippet}
+        {#snippet icon()}<place.icon size={16} />{/snippet}
       </SidebarItem>
     {/each}
   </nav>
 
-  <nav class="section view">
+  <div class="section footer">
+    <SidebarItem label="Help" {collapsed} active={view === 'help'} onclick={() => go('help')}>
+      {#snippet icon()}<HelpCircle size={16} />{/snippet}
+    </SidebarItem>
     <SidebarItem
       label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
       {collapsed}
@@ -90,9 +66,7 @@
         {#if collapsed}<ChevronRight size={16} />{:else}<ChevronLeft size={16} />{/if}
       {/snippet}
     </SidebarItem>
-  </nav>
-
-  <div class="spacer"></div>
+  </div>
 </aside>
 
 <style>
@@ -101,6 +75,10 @@
     flex-direction: column;
     gap: var(--space-4);
     width: var(--sidebar-width);
+    /* Full height on its own, so its background never stops short of a long page. */
+    position: sticky;
+    top: 0;
+    height: 100dvh;
     padding: var(--space-3);
     background: var(--surface-1);
     border-right: 1px solid var(--border-subtle);
@@ -133,23 +111,9 @@
   }
   .collapsed .brand { justify-content: center; padding: var(--space-1); }
   .section { display: flex; flex-direction: column; gap: 2px; }
-  .section.view {
+  .footer {
+    margin-top: auto;
     border-top: 1px solid var(--border-subtle);
     padding-top: var(--space-2);
   }
-  .section-title {
-    margin: var(--space-2) var(--space-3) var(--space-1);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-semibold);
-    color: var(--text-3);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-  .tool-glyph {
-    font-weight: var(--weight-bold);
-    font-size: 11px;
-    letter-spacing: 0.02em;
-    line-height: 1;
-  }
-  .spacer { flex: 1; }
 </style>

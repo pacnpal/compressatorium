@@ -10,33 +10,40 @@
 // debouncing + sticky-toast-with-id tracking that's awkward to inline.
 
 import { toast } from 'svelte-sonner';
-import { STORAGE_KEYS, readBool, writeBool, readString, writeString } from '$lib/util/localStorage.js';
+import { STORAGE_KEYS, readBool, writeBool } from '$lib/util/localStorage.js';
 import { api } from '$lib/api/endpoints.js';
 import { registry } from '$lib/tools/registry.js';
+import { VIEW_TITLES, legacyRedirect, parseHash, hashFor } from '$lib/router/routes.js';
 
-const VIEWS = Object.freeze(['dashboard', 'workspace', 'romm', 'rules', 'findings', 'dat', 'ledger', 'settings', 'help']);
-// Tool ids come from the registry, single source of truth, no
-// hardcoded set to keep in sync when a 4th tool is added.
-const VALID_TOOLS = registry.ids();
-const DEFAULT_VIEW = 'workspace';
+export { VIEW_TITLES };
 
-function loadPrimaryTool() {
-  const raw = readString(STORAGE_KEYS.PRIMARY_TOOL, 'chdman');
-  return VALID_TOOLS.has(raw) ? raw : 'chdman';
+// *value* when *route* is on *view*, else null: a part of another view's
+// route never lingers in this one's fields.
+function routePart(route, view, value) {
+  return route.view === view ? value : null;
 }
 
 class UIStore {
-  // Routing
-  activeView = $state(DEFAULT_VIEW);
-  // The Library a `#/rules/<id>` link names; the Rules view selects it.
-  rulesTarget = $state(null);
-  workspaceTool = $state(loadPrimaryTool());
+  // Routing: one field per part of the route (src/lib/router/routes.js).
+  activeView = $state('files');
+  // The Library a `#/libraries/<id>` link names, and its tab.
+  libraryTarget = $state(null);
+  libraryTab = $state(null);
+  // Activity's tab, and the Library `#/activity/attention/<id>` filters to.
+  activityTab = $state(null);
+  activityLibrary = $state(null);
+  // The folder a `#/files/<path>` link opens.
+  filesPath = $state(null);
+  // The Settings section a `#/settings/<section>` link scrolls to.
+  settingsSection = $state(null);
   // Tool ids the backend reports unavailable (e.g. Switch with no prod.keys).
   // Only meaningful once `toolsKnown`; read the tool list through
   // `visibleTools`, which draws nothing until then.
   hiddenTools = $state(new Set());
   // True once the first /api/tools answer (or its failure) has been applied.
   toolsKnown = $state(false);
+  // Tool id -> why it can't run, with the fix (#515). Shown, never hidden.
+  toolReasons = $state({});
 
   // Layout
   sidebarCollapsed = $state(readBool(STORAGE_KEYS.SIDEBAR_COLLAPSED, false));
@@ -73,7 +80,6 @@ class UIStore {
   deletePlan = $state(null);
   showCancelAll = $state(false);
   showClearDone = $state(false);
-  showHelp = $state(false);
   // ConvertPanel awaits a per-submit user choice on duplicate outputs.
   // Flag is observed by App.svelte so background refresh-on-terminal
   // events can't swap entries out from under the open dialog.
@@ -92,6 +98,14 @@ class UIStore {
   get visibleTools() {
     if (!this.toolsKnown) return [];
     return registry.all().filter((t) => !this.hiddenTools.has(t.id));
+  }
+
+  /** The tools that can't run here, each with the backend's reason (#515). */
+  get unavailableTools() {
+    if (!this.toolsKnown) return [];
+    return registry.all()
+      .filter((t) => this.hiddenTools.has(t.id))
+      .map((t) => ({ ...t, reason: this.toolReasons[t.id] ?? `${t.label} isn't ready here.` }));
   }
 
   /**
@@ -136,16 +150,15 @@ class UIStore {
     this.mobileDrawerOpen = false;
   }
 
-  /** Navigate by updating the URL hash; the router reads it back into state. */
-  navigate(view, tool) {
-    if (!VIEWS.includes(view)) return;
-    let target = `#/${view}`;
-    if (view === 'workspace' && tool && VALID_TOOLS.has(tool)) {
-      target += `/${tool}`;
-    }
+  /**
+   * Navigate by updating the URL hash; the router reads it back into state.
+   * *opts* is `{ id, tab, path }`, as `hashFor` takes it.
+   */
+  navigate(view, opts = {}) {
+    const target = hashFor(view, opts);
     if (typeof window !== 'undefined') {
       if (window.location.hash === target) {
-        // Force-apply if already on this hash (e.g. switching tools).
+        // Force-apply if already on this hash (the same link clicked again).
         this.applyHash(target);
       } else {
         window.location.hash = target;
@@ -153,51 +166,32 @@ class UIStore {
     }
   }
 
+  /** Read *hash* into the routing fields. An old route reads as its new one. */
   applyHash(hash) {
-    const cleaned = (hash ?? '').replace(/^#/, '').replace(/^\/+/, '');
-    if (!cleaned) {
-      this.activeView = DEFAULT_VIEW;
-      this.focusBump++;
-      return;
-    }
-    const [view, sub] = cleaned.split('/');
-    if (VIEWS.includes(view)) {
-      this.activeView = view;
-      if (view === 'rules') this.rulesTarget = sub ? decodeURIComponent(sub) : null;
-      if (view === 'workspace' && sub && VALID_TOOLS.has(sub)) {
-        this.workspaceTool = sub;
-        writeString(STORAGE_KEYS.PRIMARY_TOOL, sub);
-      }
-    } else {
-      this.activeView = DEFAULT_VIEW;
-    }
+    const route = parseHash(legacyRedirect(hash) ?? hash);
+    this.activeView = route.view;
+    this.libraryTarget = routePart(route, 'libraries', route.id);
+    this.libraryTab = routePart(route, 'libraries', route.tab);
+    this.activityTab = routePart(route, 'activity', route.tab);
+    this.activityLibrary = routePart(route, 'activity', route.id);
+    this.filesPath = routePart(route, 'files', route.path);
+    this.settingsSection = routePart(route, 'settings', route.tab);
     this.focusBump++;
-  }
-
-  setWorkspaceTool(toolId) {
-    if (!VALID_TOOLS.has(toolId)) return;
-    this.workspaceTool = toolId;
-    writeString(STORAGE_KEYS.PRIMARY_TOOL, toolId);
-    if (this.activeView === 'workspace') {
-      this.navigate('workspace', toolId);
-    }
   }
 
   /**
    * Apply the backend's tool-availability report (from GET /api/tools).
-   * Hides tools the backend can't run (e.g. Switch without prod.keys), and if
-   * the currently selected tool just got hidden, falls back to a visible one.
-   * Passing nothing (the fetch failed) shows every tool. Either way the list
-   * is now known.
+   * Keeps tools the backend can't run (e.g. Switch without prod.keys) out of
+   * the working list, with their reasons for `unavailableTools`. Passing
+   * nothing (the fetch failed) shows every tool. Either way the list is now
+   * known.
    */
-  applyToolAvailability(available) {
-    const allow = new Set(available ?? [...VALID_TOOLS]);
-    this.hiddenTools = new Set([...VALID_TOOLS].filter((id) => !allow.has(id)));
+  applyToolAvailability(available, reasons = {}) {
+    const ids = registry.ids();
+    const allow = new Set(available ?? [...ids]);
+    this.hiddenTools = new Set([...ids].filter((id) => !allow.has(id)));
+    this.toolReasons = reasons ?? {};
     this.toolsKnown = true;
-    if (this.hiddenTools.has(this.workspaceTool)) {
-      const fallback = registry.all().find((t) => !this.hiddenTools.has(t.id));
-      if (fallback) this.setWorkspaceTool(fallback.id);
-    }
   }
 
   /**

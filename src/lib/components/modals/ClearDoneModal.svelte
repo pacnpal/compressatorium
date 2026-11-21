@@ -28,13 +28,8 @@
     const pending = total;
     try {
       const r = await jobs.clearCompleted();
-      // Backend /api/jobs/completed returns { deleted, count, total_cleared }.
-      // Prefer `total_cleared`: past MAX_JOB_HISTORY, `count` is only the rows
-      // still held, so it would report "Removed 500" under a "Remove 1,153?"
-      // prompt. Fall back to `count`, then to the pre-clear snapshot.
-      const removed = typeof r?.total_cleared === 'number'
-        ? r.total_cleared
-        : typeof r?.count === 'number' ? r.count : pending;
+      // Backend /api/jobs/completed returns { deleted, count }.
+      const removed = typeof r?.count === 'number' ? r.count : pending;
       toast.success(`Removed ${removed} job(s) from history`);
       close();
     } catch (e) {

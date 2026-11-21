@@ -1498,7 +1498,7 @@ async def get_jwud_info(
 
 @router.get("/tools")
 async def list_tools():
-    """Which tools the frontend should show.
+    """Which tools can run, and why each of the others can't.
 
     A tool is unavailable when its own ``is_ready()`` says its runtime
     prerequisites are missing — today that's Switch (nsz), which needs the
@@ -1514,8 +1514,14 @@ async def list_tools():
     """
     ready = set(await registry.ready_tool_ids())
     available = [t.id for t in registry.all() if t.id in ready]
-    unavailable = [t.id for t in registry.all() if t.id not in ready]
-    return {"available": available, "unavailable": unavailable}
+    unavailable = [t for t in registry.all() if t.id not in ready]
+    # Why each one can't run, in the tool's own words with the fix (#515), so
+    # the UI shows the tool and what to do rather than hiding it.
+    return {
+        "available": available,
+        "unavailable": [t.id for t in unavailable],
+        "reasons": {t.id: not_ready_message(t) for t in unavailable},
+    }
 
 
 @router.get("/nsz-info", response_model=NszInfo)

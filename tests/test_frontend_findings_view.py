@@ -366,10 +366,14 @@ process.stdout.write(JSON.stringify({
 # ----------------------------------------------------------------------
 
 
-def test_findings_is_a_view_of_its_own():
-    assert "'findings'" in _UI.read_text(encoding="utf-8")
-    assert "FindingsView" in _APP.read_text(encoding="utf-8")
-    assert "go('findings')" in _SIDEBAR.read_text(encoding="utf-8")
+def test_findings_live_in_activity():
+    """Restructure item 8: Findings are Activity's Needs attention tab."""
+    activity = (_SRC / "lib" / "components" / "views" / "ActivityView.svelte").read_text(
+        encoding="utf-8",
+    )
+    assert "<FindingsView />" in activity
+    assert "<ActivityView />" in _APP.read_text(encoding="utf-8")
+    assert "view: 'activity'" in _SIDEBAR.read_text(encoding="utf-8")
 
 
 def test_each_finding_links_to_the_actions_that_fix_it():

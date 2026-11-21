@@ -28,19 +28,16 @@ def _manager(monkeypatch):
 
 class _Reader:
     """Drive the stream the way the server does, without pause, collecting
-    every live event (snapshot and history frames left out)."""
+    every live event (snapshot frames left out)."""
 
     def __init__(self, stream):
         self.stream = stream
         self.seen = []
-        self.opened = asyncio.Event()
         self.task = asyncio.create_task(self._run())
 
     async def _run(self):
         async for event in self.stream:
-            if event.get("event") == "history":
-                self.opened.set()
-            if event.get("event") in ("snapshot", "history"):
+            if event.get("event") == "snapshot":
                 continue
             data = json.loads(event["data"])
             self.seen.append((event["event"], data["job_id"], data))
@@ -70,7 +67,13 @@ async def _open_stream():
     parked in a tick when the caller acts."""
     response = await convert_routes.job_events()
     reader = _Reader(response.body_iterator)
-    await asyncio.wait_for(reader.opened.wait(), timeout=3)
+    manager = convert_routes.job_manager
+    for _ in range(150):  # the stream has opened its feed
+        if manager._feeds:
+            break
+        await asyncio.sleep(0.02)
+    assert manager._feeds, "the stream never opened"
+    await asyncio.sleep(0.15)  # one tick, so its loop is parked in a sleep
     return reader
 
 

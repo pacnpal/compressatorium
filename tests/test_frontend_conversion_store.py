@@ -317,18 +317,13 @@ planAnswer = (paths, mode) => {
     recorded_ids: Object.fromEntries(paths.map((p) => [p, ids[p]])),
   };
 };
-// The route's answer when the dolphin_rvz group is refused after the
-// createdvd job already finished: a 409 whose detail carries the kept job in
-// the shape a success returns (what client.fetchJson attaches as err.detail).
-autoAnswer = () => {
-  const err = new Error('taken by another job. Already finished and kept: a.iso.');
-  err.status = 409;
-  err.detail = {
-    message: err.message,
-    jobs: [{ id: 'j1', file_path: '/v/ps2/a.iso', output_path: '/v/ps2/a.chd' }],
-  };
-  throw err;
-};
+// The route queues a.iso and leaves b.iso out (its plan changed since it
+// was confirmed, #520): b.iso is reported in `skipped`, not refused as a 409.
+autoAnswer = () => ({
+  plan,
+  jobs: [{ id: 'j1', file_path: '/v/ps2/a.iso', output_path: '/v/ps2/a.chd' }],
+  skipped: [{ path: '/v/gc/b.iso', reason: 'Its plan changed', code: 'plan_changed' }],
+});
 const store = new ConversionStore();
 let failed = false;
 try {
@@ -343,19 +338,23 @@ process.stdout.write(JSON.stringify({
   cancelled: calls.cancel.flat(),
   adopted: adopted.map((j) => j.id),
   recorded: store.lastRepinRecorded,
+  toasts,
 }));
 """
 
 
-def test_a_job_kept_after_an_auto_failure_keeps_its_re_pin_record(tmp_path):
+def test_an_image_auto_left_out_retires_only_its_own_re_pin_record(tmp_path):
     data = _run(tmp_path, _KEPT_AFTER_FAILURE)
 
-    assert data["failed"] is True, data
-    # a.iso's job finished and was kept: its snapshot (11) stays. Only b.iso's
-    # (22), which never became a job, is retired.
+    assert data["failed"] is False, data
+    # a.iso became a job: its snapshot (11) stays. Only b.iso's (22), which
+    # Auto left out, is retired.
     assert data["cancelled"] == [22], data
     assert data["adopted"] == ["j1"], data
     assert data["recorded"] == 1, data
+    assert any(
+        kind == "success" and "1 skipped" in msg for kind, msg in data["toasts"]
+    ), data
 
 
 _EXPLICIT_TARGET = """
@@ -457,11 +456,7 @@ planAnswer = (paths) => ({
   recorded_paths: { '/v/a.iso': '/v/a.chd' }, recorded_ids: { '/v/a.iso': 11 },
 });
 autoAnswer = () => {
-  const err = new Error('later group refused. Already finished and kept: a.iso.');
-  err.detail = { message: err.message, jobs: [
-    { id: 'j1', file_path: '/v/a.iso', output_path: '/v/a.chd' },
-  ] };
-  throw err;
+  throw new Error('the queue did not answer');
 };
 const badge = [];
 const store = new ConversionStore();
@@ -477,7 +472,9 @@ process.stdout.write(JSON.stringify({ badge, after: store.autoInFlight }));
 def test_run_auto_updates_the_repin_badge_even_when_queueing_fails(tmp_path):
     data = _run(tmp_path, _RUN_AUTO_BADGE_ON_FAILURE)
 
-    assert data["badge"] == [4], data
+    # Nothing was queued, so the snapshot is retired and the badge is told the
+    # count the retirement answered (0), not the stale 4 from before it.
+    assert data["badge"] == [0], data
     assert data["after"] is False, data
 
 
@@ -678,72 +675,32 @@ def test_run_auto_sends_only_the_confirmed_actionable_items(tmp_path):
     assert data["sent"] == [[{"file_path": "/v/a.iso", "mode": "createdvd"}]], data
 
 
-_RUN_AUTO_REASKS_ON_A_CHANGED_PLAN = """
+_RUN_AUTO_REPORTS_A_CHANGED_PLAN = """
 const store = new ConversionStore();
 autoPlanAnswer = () => [{ file_path: '/v/a.iso', mode: 'createdvd' }];
-const newPlan = [{ file_path: '/v/a.iso', mode: 'dolphin_rvz' }];
-let attempts = 0;
-autoAnswer = (items) => {
-  attempts += 1;
-  if (attempts === 1) {
-    const err = new Error('The plan changed since you confirmed it.');
-    err.status = 409;
-    err.detail = { message: err.message, plan: newPlan };
-    throw err;
-  }
-  return { plan: newPlan, jobs: [{ id: 'j1', file_path: items[0].file_path }] };
-};
-const shown = [];
-const confirm = () => { shown.push(store.autoPlan); return Promise.resolve(true); };
-const result = await store.runAuto({ paths: ['/v/a.iso'], confirm });
-process.stdout.write(JSON.stringify({
-  shown,
-  sent: calls.auto.map((args) => args[0]),
-  queued: result !== null,
-  inFlight: store.autoInFlight,
-}));
-"""
-
-
-def test_a_changed_plan_reopens_confirmation_with_the_new_plan(tmp_path):
-    data = _run(tmp_path, _RUN_AUTO_REASKS_ON_A_CHANGED_PLAN)
-
-    assert data["shown"] == [
-        [{"file_path": "/v/a.iso", "mode": "createdvd"}],
-        [{"file_path": "/v/a.iso", "mode": "dolphin_rvz"}],    # the new plan, asked again
-    ], data
-    assert data["sent"] == [
-        [{"file_path": "/v/a.iso", "mode": "createdvd"}],
-        [{"file_path": "/v/a.iso", "mode": "dolphin_rvz"}],
-    ], data
-    assert data["queued"] is True, data
-    assert data["inFlight"] is False, data
-
-
-_RUN_AUTO_DECLINES_THE_CHANGED_PLAN = """
-const store = new ConversionStore();
-autoPlanAnswer = () => [{ file_path: '/v/a.iso', mode: 'createdvd' }];
-autoAnswer = () => {
-  const err = new Error('The plan changed since you confirmed it.');
-  err.status = 409;
-  err.detail = { message: err.message, plan: [{ file_path: '/v/a.iso', mode: null }] };
-  throw err;
-};
+autoAnswer = () => ({
+  plan: [{ file_path: '/v/a.iso', mode: null, skip_reason: 'Its plan changed' }],
+  jobs: [],
+  skipped: [{ path: '/v/a.iso', reason: 'Its plan changed', code: 'plan_changed' }],
+});
 let asked = 0;
-const confirm = () => { asked += 1; return Promise.resolve(asked === 1); };
+const confirm = () => { asked += 1; return Promise.resolve(true); };
 const result = await store.runAuto({ paths: ['/v/a.iso'], confirm });
 process.stdout.write(JSON.stringify({
-  asked, result, sent: calls.auto.length, inFlight: store.autoInFlight, plan: store.autoPlan,
+  asked, sent: calls.auto.length, queued: result !== null,
+  inFlight: store.autoInFlight, toasts,
 }));
 """
 
 
-def test_declining_the_changed_plan_queues_nothing(tmp_path):
-    data = _run(tmp_path, _RUN_AUTO_DECLINES_THE_CHANGED_PLAN)
+def test_a_changed_plan_is_reported_not_asked_again(tmp_path):
+    """The server leaves a changed Image out and says so (#520): one confirm,
+    one request, and a toast that names it."""
+    data = _run(tmp_path, _RUN_AUTO_REPORTS_A_CHANGED_PLAN)
 
-    assert data == {
-        "asked": 2, "result": None, "sent": 1, "inFlight": False, "plan": None,
-    }, data
+    assert data["asked"] == 1 and data["sent"] == 1, data
+    assert data["inFlight"] is False, data
+    assert ["warning", "No jobs queued (all 1 skipped)"] in data["toasts"], data
 
 
 # --- Auto turned off mid-run; abort during the RomM snapshot ------------------
@@ -1138,8 +1095,11 @@ process.stdout.write(JSON.stringify({
     assert data == {"typed": 9, "low": 1, "blank": None, "refit": 5, "kept": 7}
 
 
-def test_the_picker_reads_the_stores_one_level_and_range():
-    """The slider and the number box read the same reconciled value and range."""
+def test_the_picker_reads_one_level_and_range():
+    """The slider and the number box read the same value and range, which the
+    controlled picker takes from its `value` (the panel passes the store's)."""
     picker = _PICKER.read_text(encoding="utf-8")
-    assert "conversion.levelRange" in picker
-    assert picker.count("value={level}") == 2
+    assert "const levelRange = $derived(rangeOf(mode, value));" in picker
+    assert picker.count("value={level") == 2
+    panel = (_SRC / "components" / "panels" / "ConvertPanel.svelte").read_text(encoding="utf-8")
+    assert "value={conversion.compressionChoice}" in panel

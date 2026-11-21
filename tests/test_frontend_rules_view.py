@@ -78,7 +78,10 @@ const api = {
   registerLibrary: __defer('registerLibrary'),
 };
 const romm = { isRomm: true };
-const ui = { navigated: null, navigate(v) { this.navigated = v; } };
+const ui = {
+  navigated: null, navigatedOpts: null,
+  navigate(v, opts = {}) { this.navigated = v; this.navigatedOpts = opts; },
+};
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 """
 
@@ -619,13 +622,13 @@ def test_a_deep_link_change_reselects_while_the_view_stays_mounted():
     src = _RULES_VIEW.read_text(encoding="utf-8")
     effect = re.search(
         r"\$effect\(\(\) => \{\s*if \(embedded\) return;\s*"
-        r"const target = ui\.rulesTarget;(.*?)\n  \}\);",
+        r"const target = ui\.libraryTarget;(.*?)\n  \}\);",
         src, re.DOTALL,
     )
-    assert effect, "the selection does not follow ui.rulesTarget"
+    assert effect, "the selection does not follow ui.libraryTarget"
     assert "libraries.select(target)" in effect.group(1)
     # Not only once on mount.
-    assert "else if (ui.rulesTarget) libraries.select(ui.rulesTarget);" not in src
+    assert "else if (ui.libraryTarget) libraries.select(ui.libraryTarget);" not in src
 
 
 def test_both_libraries_share_one_rules_source():
@@ -642,9 +645,11 @@ def test_both_libraries_share_one_rules_source():
 def test_opening_rules_on_a_library_navigates_there(tmp_path):
     data = _run(tmp_path, """
 libraries.open('folder:3');
-process.stdout.write(JSON.stringify({ selected: libraries.selectedId, view: ui.navigated }));
+process.stdout.write(JSON.stringify({
+  selected: libraries.selectedId, view: ui.navigated, id: ui.navigatedOpts.id,
+}));
 """)
-    assert data == {"selected": "folder:3", "view": "rules"}, data
+    assert data == {"selected": "folder:3", "view": "libraries", "id": "folder:3"}, data
 
 
 # ----------------------------------------------------------------------
@@ -675,9 +680,8 @@ def test_the_editor_reads_policies_from_the_library():
 def test_the_rules_view_has_a_library_picker():
     src = _RULES_VIEW.read_text(encoding="utf-8")
     assert re.search(r'<Select\s+label="Library"', src), "the Library picker is gone"
-    assert "onchange={pick}" in src
-    # Inside the RomM view, another Library opens the full Rules view.
-    assert "if (embedded && id !== ROMM_LIBRARY_ID) libraries.open(id);" in src
+    assert "onchange={(id) => libraries.select(id)}" in src
+    # Inside the RomM view there is no picker: it shows RomM's Rules (#521).
 
 
 def test_folders_offer_register_as_a_library():
@@ -689,10 +693,32 @@ def test_folders_offer_register_as_a_library():
     assert "libraries.register(path)" in src
 
 
-def test_rules_is_a_view_of_its_own():
-    ui = (_SRC / "lib" / "stores" / "ui.svelte.js").read_text(encoding="utf-8")
-    assert "'rules'" in ui.split("const VIEWS", 1)[1].split("\n", 1)[0]
+def test_a_folder_librarys_rules_open_from_its_page():
+    """Restructure item 8: `#/libraries/<folder id>` shows that Library's Rules."""
+    view = (_SRC / "lib" / "components" / "views" / "LibrariesView.svelte").read_text(
+        encoding="utf-8",
+    )
+    assert "{#key id}<RulesView />{/key}" in view
     sidebar = (_SRC / "lib" / "components" / "layout" / "Sidebar.svelte").read_text(
         encoding="utf-8",
     )
-    assert "go('rules')" in sidebar
+    assert "view: 'libraries'" in sidebar
+
+
+def test_a_catalogue_read_answering_after_a_newer_one_is_dropped(tmp_path):
+    """CodeRabbit PR #551: an older read finishing last must not put back
+    stale nesting over the newer catalogue."""
+    data = _run(tmp_path, f"""
+const first = libraries.load();
+await tick();
+const second = libraries.load();
+await tick();
+__calls[1].resolve([{{ ...{_FOLDER}, contains: [] }}]);
+await second;
+__calls[0].resolve([{{ ...{_FOLDER}, contains: [{{ id: 'folder:7', name: 'gone' }}] }}]);
+await first;
+process.stdout.write(JSON.stringify({{
+  contains: libraries.list.find((lib) => lib.id === 'folder:3').contains,
+}}));
+""")
+    assert data["contains"] == [], data

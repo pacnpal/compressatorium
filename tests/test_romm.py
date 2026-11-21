@@ -282,7 +282,8 @@ async def test_status_does_not_leak_romm_response_body() -> None:
     assert "Traceback" not in status["error"]
     assert "/srv/romm" not in status["error"]
     # Still actionable: it names what to go fix.
-    assert "ROMM_TOKEN" in status["error"]
+    assert "API token" in status["error"]
+    assert "the RomM page" in status["error"]
 
 
 @pytest.mark.asyncio
@@ -1602,6 +1603,7 @@ async def test_connection_test_with_a_cleared_token_does_not_reuse_the_saved_one
     class _Probe:
         def __init__(self, *, base_url: str, token: str) -> None:
             seen.append(token)
+            self.base_url = ""
 
         def heartbeat(self) -> dict:
             return {"VERSION": "3.0"}
@@ -1989,7 +1991,8 @@ async def test_connection_test_treats_a_cleared_url_as_cleared(
         romm_routes.RommSettingsPatch(url=""),
     )
     assert result["reachable"] is False
-    assert result["error"] == "Set the RomM URL first."
+    assert result["field"] == "url"
+    assert result["error"].startswith("Fill in the RomM URL")
 
 
 def test_re_recording_supersedes_rather_than_mutating(repin_db) -> None:
@@ -5497,3 +5500,31 @@ def test_heartbeat_version_reads_nested_and_flat_shapes(heartbeat, expected) -> 
     from services.romm import heartbeat_version
 
     assert heartbeat_version(heartbeat) == expected
+
+
+
+class _Stop(Exception):
+    pass
+
+
+def test_an_anonymous_client_sends_no_token_even_with_one_saved(monkeypatch) -> None:
+    """Discovery and pairing ask RomM before it has a token of ours: an
+    anonymous client never falls back to the saved one (#532)."""
+    import services.romm.client as client_module
+
+    monkeypatch.setattr(client_module, "_token", lambda: "rmm_saved")
+    seen: list[dict] = []
+
+    def recording_request(url, headers=None, **_kwargs):
+        seen.append(dict(headers or {}))
+        raise _Stop
+
+    monkeypatch.setattr(client_module.urllib.request, "Request", recording_request)
+
+    for client, sent in (
+        (RommClient(base_url="http://romm:8080", anonymous=True), None),
+        (RommClient(base_url="http://romm:8080"), "Bearer rmm_saved"),
+    ):
+        with pytest.raises(_Stop):
+            client.platforms()
+        assert seen[-1].get("Authorization") == sent

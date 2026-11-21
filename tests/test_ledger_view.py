@@ -128,6 +128,7 @@ async def test_routes_call_the_same_query_layer():
 
 LEDGER_PATHS = [
     "/api/ledger", "/api/ledger/export.csv", "/api/ledger/savings", "/api/metrics",
+    "/api/ledger/totals",
 ]
 
 
@@ -164,6 +165,17 @@ async def test_csv_cells_with_formula_prefixes_are_neutralised(prefix):
     rows = list(csv.reader(io.StringIO(text, newline="")))
     err = rows[1][rows[0].index("error")]
     assert err.startswith("'" + prefix)
+
+
+@pytest.mark.asyncio
+async def test_totals_count_every_finished_job_by_status():
+    """The UI's job totals (#533): every status, a zero included."""
+    from routes import ledger as routes
+
+    await _seed()
+    assert await routes.ledger_totals() == {
+        "jobs": {"cancelled": 1, "completed": 1, "failed": 1},
+    }
 
 
 @pytest.mark.asyncio

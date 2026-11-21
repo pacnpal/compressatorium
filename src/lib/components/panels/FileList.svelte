@@ -3,6 +3,7 @@
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
+  import { conversion } from '$lib/stores/conversion.svelte.js';
   import { chdMetadata } from '$lib/stores/chdMetadata.svelte.js';
   import { datMatching } from '$lib/stores/datMatching.svelte.js';
   import { registry } from '$lib/tools/registry.js';
@@ -48,7 +49,7 @@
   // Name width if the user has dragged it, when unset, Name has no fixed
   // width so it absorbs the table's slack. The table min-width forces the
   // horizontal scrollbar once the fixed columns outgrow the container.
-  const colTool = $derived(ui.workspaceTool);
+  const colTool = $derived(conversion.primaryTool);
   const cols = $derived(layout.columnsFor(colTool));
   const nameSet = $derived(layout.columns[colTool]?.name ?? null);
   const tableMinWidth = $derived(32 + 84 + cols.size + cols.ext + cols.status + (nameSet ?? 160));
@@ -565,16 +566,24 @@
 <style>
   .filelist { display: flex; flex-direction: column; min-width: 0; gap: var(--space-3); }
 
+  /* The breadcrumb gets a row of its own: squeezed into a column beside the
+     search box, a deep path drew over it. */
   .toolbar {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    gap: var(--space-3);
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--space-2) var(--space-3);
     align-items: center;
   }
   @media (max-width: 700px) {
-    .toolbar { grid-template-columns: 1fr; }
+    .toolbar { grid-template-columns: minmax(0, 1fr); }
   }
-  .crumbs { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
+  .crumbs {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+  }
 
   .search {
     position: relative;

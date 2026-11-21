@@ -217,13 +217,9 @@ async def test_a_sweep_job_that_fails_during_batch_creation_is_not_sent_twice(
         [str(src)], ConversionMode.CREATECD, output_paths={str(src): str(tmp_path / "g.chd")},
         owner=owner,
     )
-    try:
-        notifications.sweep_jobs_queued(jobs)
-        notifications.sweep_finished({"queued": 1, "errors": [], "platforms": []})
-        await notifications.drain()
-    finally:
-        for job in jobs:
-            jm.concurrency_manager.release(job.id)
+    notifications.sweep_jobs_queued(jobs)
+    notifications.sweep_finished({"queued": 1, "errors": [], "platforms": []})
+    await notifications.drain()
     assert [e.kind for e in sent] == ["sweep_finished"]
     assert sent[0].data["failed"] == 1 and sent[0].data["queued"] == 1
 
@@ -278,15 +274,11 @@ async def test_a_sweep_job_whose_listener_runs_after_the_batch_returns_is_not_se
         [str(src)], ConversionMode.CREATECD, output_paths={str(src): str(tmp_path / "g.chd")},
         owner=owner,
     )
-    try:
-        assert jobs[0].status == JobStatus.FAILED  # already finished when we see it
-        notifications.sweep_jobs_queued(jobs)
-        notifications.sweep_finished({"queued": 1, "errors": [], "platforms": []})
-        await asyncio.sleep(0.3)
-        await notifications.drain()
-    finally:
-        for job in jobs:
-            jm.concurrency_manager.release(job.id)
+    assert jobs[0].status == JobStatus.FAILED  # already finished when we see it
+    notifications.sweep_jobs_queued(jobs)
+    notifications.sweep_finished({"queued": 1, "errors": [], "platforms": []})
+    await asyncio.sleep(0.3)
+    await notifications.drain()
     assert [e.kind for e in sent] == ["sweep_finished"]
 
 
@@ -353,16 +345,12 @@ async def test_a_manual_job_that_fails_during_preflight_is_not_absorbed_into_the
         [str(src)], ConversionMode.CREATECD, output_paths={str(src): str(tmp_path / "g.chd")},
         owner=owner,
     )
-    try:
-        assert [j._sweep_owner for j in jobs] == [owner]
-        notifications.sweep_jobs_queued(jobs)
-        notifications.sweep_finished({"queued": 1, "errors": [], "platforms": []})
-        jobs[0].status = JobStatus.COMPLETED
-        await notifications.on_job_finished(jobs[0])
-        await notifications.drain()
-    finally:
-        for job in jobs:
-            jm.concurrency_manager.release(job.id)
+    assert [j._sweep_owner for j in jobs] == [owner]
+    notifications.sweep_jobs_queued(jobs)
+    notifications.sweep_finished({"queued": 1, "errors": [], "platforms": []})
+    jobs[0].status = JobStatus.COMPLETED
+    await notifications.on_job_finished(jobs[0])
+    await notifications.drain()
     kinds = sorted(e.kind for e in sent)
     assert kinds == ["job_failed", "sweep_finished"]
     summary = next(e for e in sent if e.kind == "sweep_finished")

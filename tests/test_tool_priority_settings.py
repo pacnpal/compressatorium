@@ -210,3 +210,11 @@ def test_timeout_helpers_clamp_negative_and_none(monkeypatch):
     )
     assert sr.info_timeout() == 0
     assert sr.verify_timeout() == 0
+
+
+def test_the_heartbeat_name_is_reported_too(monkeypatch):
+    """#536 made the maintenance cadence a constant; its old name is retired."""
+    monkeypatch.setenv("CHD_DEBUG_HEARTBEAT", "5")
+    s = Settings()
+    assert s.retired_env == ["CHD_DEBUG_HEARTBEAT"]
+    assert not hasattr(s, "debug_heartbeat_interval")

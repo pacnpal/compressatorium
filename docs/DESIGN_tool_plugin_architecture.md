@@ -303,8 +303,9 @@ class ToolPlugin(Protocol):
     def overwrite_targets(self, output_path: str, mode: str) -> list[str]: ...
 
     # Runtime prerequisites met? False => GET /api/tools reports the tool
-    # unavailable and the frontend hides it, instead of offering jobs that can
-    # only fail. BaseTool answers it from `required_binaries` (the programs
+    # unavailable, with `not_ready_message` in its `reasons` map (#515), and
+    # the dashboard lists it under "Not ready here" with that fix, instead
+    # of offering jobs that can only fail. BaseTool answers it from `required_binaries` (the programs
     # the tool runs, through the shared probe, §3.4 "Declaring the programs a
     # tool runs"); nsz overrides it (prod.keys), exodos (always ready, #513),
     # and so do rom_converto (its `--version` probe) and the chain (every step).
@@ -2012,6 +2013,16 @@ This is a payload field, not a schema change.
   unless its generation is the current one; `None` on either side never is. A
   local dict with no stamp makes no claim and is written as before.
 
+  The generation is two counters added together: the in-memory one above, and
+  a shared one in the database (the `preferences` row
+  `SHARED_GENERATION_KEY`, `dat_index_generation`) that each of those changes
+  moves inside its own transaction (`_bump_shared_generation`). The CLI's
+  `dat import` and `dat sync` run in their own process, with their own
+  in-memory counter, so only the shared one tells the server about them
+  (CodeRabbit on PR #527). Both only grow, so the sum moves when either does.
+  `index_generation()` reads the database (on the writer's own session at the
+  write boundary), so `_match_single_file()` calls it off the event loop.
+
   Remote verdicts take no part in the generation check, even while a change is
   in flight. A refused verdict goes to a *local-only* rematch, which cannot ask
   the remote source again, so refusing a remote hit for an unrelated import
@@ -2402,61 +2413,32 @@ compression-*level* difference on an otherwise-correct, verified artifact of the
 exact source — not a content mismatch — and is accepted rather than have every
 tool persist its resolved defaults.
 
-### 3.3.7 Finished-job history overflow (`JobManager.get_history_overflow`)
+### 3.3.7 Finished-job history and the Ledger's totals (#533)
 
 `MAX_JOB_HISTORY` (default 500) caps how many **terminal** jobs `JobManager`
-retains; `_prune_jobs` deletes the oldest past the cap. That makes the retained
-job list a bounded window, not a record of the run — so **no count may be
-derived from the job list alone**. Doing so is what froze every finished-job
-count at the cap: the Jobs panel read *"Completed 500"* while a 1,153-file batch
-kept draining, and the dashboard's Done / Failed tiles did the same.
+retains; `_prune_jobs` deletes the oldest past the cap. The job list is a
+bounded window, not a record of the run, so no all-time count comes from it.
+The Ledger is the record: every finished job lands in it (`ledger.record`, a
+terminal listener) and its `ledger_totals` counters only ever grow, whatever
+the cap, a Clear or a retention prune removes. `GET /api/ledger/totals`
+answers `{"jobs": {"completed": N, "failed": N, "cancelled": N}}` from them,
+and the dashboard's Done / Failed tiles read it (`ledger.totals`). The Jobs
+panel's tab badges count the rows the list holds, and its Completed and
+Failed tabs link to the Ledger for the rest.
 
-The contract, tool-agnostic and owned by `JobManager`:
+Since the list is a window, its counts can stay flat while jobs finish (at
+the cap a new finished job replaces an evicted one), so nothing keys a
+refresh on them. The file listing (`App.svelte`) and the dashboard's Ledger
+cards (`Dashboard.svelte`) both key on `terminalJobIds(jobs.jobs)`
+(`stores/jobConstants.js`): the file listing refreshes when an id it has not
+refreshed for appears. `ledger._load` reads recent, savings and totals with
+`Promise.allSettled`, so a read that fails keeps its card's last good value
+without dropping the others.
 
-- **`_record_history_eviction(job)`** tallies each automatically evicted job
-  under `status → mode → count`, and appends its id to a bounded log stamped
-  with a monotonic `seq`. **Only automatic eviction is tallied.** A job deleted
-  by the user (single row, or Clear) is history *they* dropped; counting it
-  would make a badge outlive every list that could show it.
-- **`get_history_overflow(since=None, generation=None)`** returns
-  `{generation, max_job_history, evicted, total_evicted, seq, evicted_ids,
-  cursor_expired}` — absolute totals, never deltas, so a dropped frame or a
-  reconnect self-heals. Pass a previously returned `seq` as `since` to also
-  receive the ids evicted after that point, **and the `generation` that cursor
-  came from**: a cursor minted by an earlier process is meaningless here, and
-  reading it literally would return no ids at all, so it is rewound to the
-  start of this log instead. `cursor_expired` says the cursor fell off the end
-  of the bounded id log (sized to `max(2000, 4 × max_job_history)`), so the ids
-  cannot be complete and the client must re-sync against the job list rather
-  than trust the rows it holds — that includes a cursor from before a Clear,
-  which throws the log away and deletes every finished job with it.
-  `history_eviction_seq()` opens a cursor without reading counts.
-- **`reset_history_overflow()`** clears the tally and the id log, and returns
-  the *advanced* `seq`. Never rewind it: it is a cursor clients hold, so
-  rewinding would make a stale cursor look current, while advancing makes every
-  read taken before the reset recognizably older. `DELETE /api/jobs/completed`
-  calls it and reports `history_forgotten` / `total_cleared` / `history_seq` /
-  `history_generation` alongside the deleted row count — feed those back through
-  the same apply path as any other payload, so the Clear result obeys the same
-  staleness and generation rules instead of a hand-rolled copy of them.
-
-**Every change to the tally advances `seq`** — evictions and resets alike. That
-is what makes an out-of-order payload detectable: equal sequences carry equal
-counts, so a client can reject anything older and re-apply an equal one as a
-no-op. The sequence is in-memory, so every payload also carries a
-**`generation`** for the process that produced it: a restart rewinds `seq` to 0,
-and a client comparing across that boundary would reject everything the new
-process sends. A changed generation means *drop the cursor*, not *reject*.
-
-Transport: `GET /api/jobs/history-overflow` for hydration and the polling
-fallback, plus a `history` event on `/api/jobs/events`, emitted on connect and
-whenever the totals change. Additive — clients that don't listen for it drop it
-silently, as with `snapshot`.
-
-The stream opens its cursor **before** emitting the snapshot, not after:
-snapshot emission suspends the generator between jobs, so a row already handed
-to the client can be evicted moments later, and the first `history` frame has to
-be able to retract it.
+The jobs store still tombstones a finished job the backend stops listing
+(`refresh()` reconciles against `/api/jobs`, and Clear names what it deleted),
+so a late copy of it (an SSE frame, a REST snapshot, an Auto response) never
+brings it back.
 
 **The stream follows every job from its registration** (#456). It opens a
 `JobFeed` (`JobManager.watch_jobs()`) before anything else, and
@@ -3070,8 +3052,64 @@ API and the Rules view; the engine never reads those three), and:
 
 **Hooks for steps only one Library performs.**
 
+RomM's connection helpers live in `services/romm/connect.py` (#532). Discovery and pairing ask RomM before it has a token
+of ours through `RommClient(base_url, anonymous=True)`, which sends no token
+and never falls back to the saved one:
+`discover()` (the heartbeat at RomM's usual addresses, bounded, no token
+sent), `find_library_root(FS_PLATFORMS, before=...)` (a bounded breadth-first
+look through the Volumes for the folder holding RomM's platform folders under
+the declared prefix *before*, `games` for `games/{platform}/{game}`, or RomM's
+default layouts when no structure is known; the connection test withholds its
+suggestion when the token could read the structure and the read failed), and
+the layout cache (`refresh_layout()`; `structure()` and
+`excluded()` / `excluded_extension()` only read it). The layout is re-read at
+most every five minutes, by `/api/romm/status`, every sweep and Inbox poll
+(the Library's `refresh()` hook, below), and forced by a connection test and a
+Save that changes the connection. The two parts, the exclusions
+(`/api/config`) and the structure (`/api/setup/library`), are read, timed
+and known separately: a part RomM didn't answer is retried after
+`_LAYOUT_RETRY` (30 s) without re-reading the other, which keeps its full
+TTL (a 404 for the structure is an answer: RomM before 5.3 has none). Until
+a part has ever been read for the configured RomM, its emptiness means "not
+known": `RommLibrary.sweep_blocked()` defers the sweep with
+`romm_layout_unread` until `exclusions_known()`, and placement with no
+declared structure raises `LibraryUnreadable` until `structure_known()`:
+retryable, so an Inbox leaves the file for a later poll rather than holding
+it as it would on `PlacementUnknown`. `structure()`, `structure_known()` and
+`layout()` take an optional base URL, for the RomM a connection test probes.
+RomM placement uses the declared structure when there is one, and refuses a
+structure with a wildcard level (`{category}`); `platform_folder()` looks
+under the same declared prefix (`games/{platform}/{game}` gives
+`<root>/games/<platform>`), with `_declared`'s `roms` rule. A pairing code
+(`POST /api/romm/pair`) saves nothing: the token it is traded for is held in
+memory for that URL, and a connection test
+or Save sent with `paired: true` uses it (400 when none is held for the URL it
+names), so the token, URL and Library path are committed by one Save.
+
 - `sweep_blocked()` returns an error code to refuse the sweep. RomM refuses
   with `identity_cleanup_pending` while a change of instance is half cleaned up.
+- `excluded(name)` (#532) says the Library ignores a file or game folder by
+  that name. The sweep skips such an Image, and one whose output file would
+  have such a name (both counted in `skipped_filtered`).
+  `excluded_extension(ext)` says it ignores every `.<ext>` file, by extension
+  alone; the sweep skips a Rule whose output extension that is (error
+  `output_excluded`, skip check `output_excluded`). A name pattern is never
+  read as a whole extension. A retried kept delete (#329) asks `excluded()`
+  of the Source's name first and leaves an excluded Source, and its pending
+  entry, alone; a delete already `deleting` finishes. Both in memory, never
+  blocking.
+  `LibraryDefaults` answers False; RomM answers from its `exclude:` settings
+  (`EXCLUDED_SINGLE_EXT`, `EXCLUDED_SINGLE_FILES`, `EXCLUDED_MULTI_FILES` and
+  RomM's defaults, from `GET /api/config`), cached by
+  `services/romm/connect.py`.
+- `refresh()` (#532) brings what the Library caches about itself up to date,
+  bounded and never raising. The sweep awaits it before taking its lock, an
+  Inbox poll before placing, and the placements listing before it lists, so
+  the scheduler and `run-rules` read RomM's layout without the RomM page
+  open. `LibraryDefaults` does nothing; RomM
+  calls `refresh_layout()` (within its five-minute TTL). The suite's conftest
+  turns RomM's off, and reads both layout parts as known, unless a test module sets
+  `READS_ROMM_LAYOUT = True`.
 - `summary_fields()` seeds every per-Platform summary and the result (RomM:
   `repins_recorded: 0`).
 - `after_queue(rule, spec, queued, summary, result)` runs once a Platform's
@@ -3431,12 +3469,62 @@ of `folder_libraries` (root unique, name, `schedule_enabled`, `max_per_sweep`,
 migration 0012, `AUTOINCREMENT` so a removed Library's id is never reused and
 state keyed by it cannot reach another folder), read once and cached; `register`, `update` and `remove`
 replace the cached copy. `register` uses `ensure_path_within_volumes` (the file
-browser's check), requires a folder, and refuses the same root or one that
-contains or sits inside another Library's root, a registered folder or RomM's
-library folder (409), since two Libraries would give one Image two Rules. The
-rule is one function, `libraries.find_overlap`, run in both directions: the
-RomM settings route checks a new RomM library root against every folder
-Library (`check_romm_root`, a 409 naming the Library) before saving it. Both
+browser's check), requires a folder, and refuses the same root as another
+Library, a registered folder or RomM's library folder (409), and a root that
+is, holds or sits inside an Inbox (409). The same-root rule is one function,
+`libraries.same_root`, run in both directions: the RomM settings route checks
+a new RomM library root against every folder Library (`check_romm_root`, a 409
+naming the Library) before saving it.
+
+Libraries may nest (#514): a folder inside RomM's library folder, or inside or
+around another folder Library, registers, and RomM's root may be set around or
+inside one. **The nearest root owns a file.** `library_for` takes the longest
+root spelling that holds the path as listed and the deepest resolved root that
+holds where it lives; when those two name different Libraries it still raises
+`AmbiguousLibrary` (#413), and every caller fails closed as before. The owner's
+Referrers apply, and only the owner's: a file in a folder Library inside RomM
+gets that Library's gamelist and `.m3u` Referrers, never RomM's swap, re-pin
+or gamelist, because RomM's Rules never convert it and RomM's settings were
+not chosen for it (RomM sees the new file on its next library scan). No file
+is swept twice: `libraries.inner_folders(library)` lists the roots of the
+other Libraries inside *library*'s (resolved, relative to its root), and each
+Library's listing leaves them out. A folder Library's walk prunes them (so its
+Rules, check Rules, Findings, find-duplicates and counts never see an inner
+Library's files), and `RommLibrary.images` gives a ROM whose local path is in
+one no path (`image_from_rom(owned_elsewhere=...)`), asked only when the
+path is read, inside the bounded candidate probe, so listing never maps every
+ROM onto the mount (Codex PR #518). A root
+that can't be resolved there raises `LibraryUnreadable`: the listing fails
+rather than take an inner Library's files. Registering, removing a Library
+and saving RomM's root drop every folder Library's kept walk, so an outer
+Library re-lists, and move `libraries.ownership_generation()`, all as one
+step under `libraries._ownership_lock` (`_changing_ownership`, which also drops
+every cached resolved root; registration, removal and every RomM settings
+save then seed RomM's again, `_reseed_romm_root`, bounded through
+`run_admitted` and outside the registration lock, so the Rules view's nesting
+is right before any scan and a dead RomM mount holds nothing up). A sweep reads the counter when it lists a
+Platform and admits its work through `libraries.owned_as_listed(owned_at)`,
+which raises `rules.library.LibrariesChanged` when it moved and otherwise
+holds that lock while the work goes in: `JobManager.create_jobs_atomic(...,
+admission=...)` (and `create_batch_jobs`) enters it under the queue lock around
+the checks and the queueing, with no await inside, and the check job is
+started inside it against the counter read when the sweep began. So no
+registration lands between the check and the queueing: work from a stale
+listing is never queued, the run is not recorded, and the Platform reports
+`libraries_changed` (PR #518). The lock is taken before `libraries._lock`,
+never after, and never held across an await or a disk read. Hidden staging (#398) asks `libraries.hidden_staging(path)`,
+any Library holding the path with `HIDDEN_STAGING`, not only its owner: RomM
+scans its whole folder, an inner folder Library included. Folder Platform
+mappings belong to the nearest folder Library (`set_mapping`), and where two
+Libraries mapped one folder the nearer root's mapping wins in the index.
+Setting or clearing a folder's mapping also deletes the rows the outer
+Libraries holding it keep for that folder (a mapping made before the folder
+became a nearer Library's), so a clear always clears (Codex PR #518). The
+Libraries API adds `within` (the nearest Library around this one, or null)
+and `contains` (the Libraries inside it), worked out from the stored and
+already-resolved roots without touching the disk; the Rules view shows them.
+
+Registration and the RomM root save both
 take `_register_lock`: `register` in its worker thread, held across RomM's
 root resolve and the database write, and the RomM save through
 `romm_root_claim`, which polls for the lock without parking a thread, so a
@@ -3474,7 +3562,10 @@ the Library's `platforms()` (one listing, passed to every row as `known`),
 the Platform's own `id` (the row's key: two RomM platforms can share a slug),
 its `placement` relative to the root, placed by its own record alone
 (`known=[platform]`, so two RomM records show their own two folders, #512),
-whether the folder exists, its `rom_count`, `guessed` and `why`, or the
+whether the folder exists, its `rom_count`, `guessed` (a best guess among
+several: a folder Library's two folders for one Platform, #515, or RomM's, #512;
+`Placement.guessed`, False by default, is the shared field every Library sets)
+and `why`, or the
 `PlacementUnknown` reason. Where the Platform's new Images go is placed from
 the whole listing: when that has `choices`, the row it lands on has
 `new_images_here` True, the `choices` and the `picked` folder name, and the
@@ -3511,7 +3602,9 @@ a Library that needs its Platform records (RomM's folder names, carried as
   (`<root>/roms/<platform>`) or `flat` (`<root>`, where the header decides).
   For the first two it uses a folder already in the parent that names the
   Platform by the user's mapping or by a name detection reads
-  (`platform_detect.platform_folders`, spelled as listed; two refuse), else a
+  (`platform_detect.platform_folders`, spelled as listed; with two or more it
+  takes the one holding the most Image files, ties by name, and marks the
+  `Placement` `guessed=True`, #515), else a
   new one named by `platform_detect.esde_folder_name(slug)` (ES-DE's system
   name, `_ESDE_FOLDERS`, each value an alias of its slug) or the RomM slug.
   The layout decides only where new Images go, and changing it moves
@@ -4053,15 +4146,28 @@ never see a transport:
   filtered or capped sweep forgets nothing. There is no recovery message. The key
   is the error text, so those texts must stay constant.
 
-Events are a registry: `register_event(key, title)` adds one, `event_list()`
-feeds Settings. A later ticket (check failed, with check Rules) registers its own
-event and calls `notify`; no transport changes.
+Events are a registry: `register_event(key, title, default=True)` adds one,
+`event_list()` feeds Settings. A later ticket (check failed, with check Rules)
+registers its own event and calls `notify`; no transport changes. Each
+destination chooses its events (#523): an `events` list of keys stored on it
+(unknown keys refused on save), or, when it never chose, every event
+registered `default=True`, so a new default event reaches it with no
+migration. The dispatcher enqueues an event only for the destinations whose
+`_events_of(dest)` holds its kind; Test ignores the choice. `job_succeeded`
+(a job started by hand that completed, `default=False`) is the one event off
+by default.
 
 Destination types are rows of one table, `_KINDS` (`Kind(key, label, placeholder,
-send, check, hint)`); `KINDS`, `TRANSPORTS` and `kind_list()` (which Settings reads
+send, check, hint, signs)`); `KINDS`, `TRANSPORTS` and `kind_list()` (which Settings reads
 to build its picker) derive from it, so adding a type is one row and nothing else
 branches on the kind. Transports are `TRANSPORTS[kind](url, event)`, blocking and
-raising on failure. `webhook` and `discord` share one HTTP path, `_post_json`
+raising on failure. A kind with `signs=True` (the generic webhook, #523) also
+takes the destination's signing secret as a third argument, passed only when
+one is set: `_post_json` then sends `SIGNATURE_HEADER`
+(`X-Compressatorium-Signature: sha256=<hex>`), the HMAC-SHA256 of the exact
+body bytes. A secret on any other kind is refused on save. Like the URL, it
+is never returned (`public_view` says only `signed`); an edit omitting it
+keeps it and `""` removes it. `webhook` and `discord` share one HTTP path, `_post_json`
 (`http.client`, JSON `POST`, http/https only, one overall deadline) and differ only
 in the payload builder: `generic_payload` is `{"event", "title", "message", "data"}`
 (example in the README); `discord_payload` is one embed (colour by outcome, at most
@@ -4392,22 +4498,30 @@ only through `_is_file_within_volumes`, which confines it with
 (`SOURCE_OUTSIDE_VOLUMES`, 403 for a single job) before any filesystem call,
 and only the confined path is stat'ed. Auto prepares every group first, so
 a planning error queues nothing, then checks the whole batch against
-`max_queue_depth`, then queues the groups. Each group is its own atomic call,
-so a later group can still be refused at queue time (409 when another job took
-a destination, 503 when a volume stops answering), and earlier jobs may have
-started by then. On any failure the route withdraws the jobs this request
-queued (`job_manager.cancel_job`) and returns the error. A job that had already
-finished cannot be withdrawn: its output stays, it is logged, and the error
-returns it, for an HTTP error from the queue and for an unexpected exception
-alike (the latter logged with its traceback and returned as a 500; a
-cancellation still propagates). `/jobs/auto` queues only the plan the user
-confirmed: the client sends the confirmed plan's actionable rows as
-`items: [{file_path, mode}]` (an Image the preview skipped is never sent), the
-route replans those paths, and if any target differs (another tool, or now
-skipped) it answers 409 with `detail = {"message", "plan"}` before queueing
-anything. `conversion.runAuto` then shows the new plan and asks again.
-Queueing an Image the user never saw would also skip its RomM metadata
-snapshot. Nothing in either Auto endpoint, or in the
+`max_queue_depth`, then queues the groups. Each group is its own queue call.
+A group the queue refuses whole (503 when a volume stops answering, or an
+unexpected exception, logged with its traceback) reports each of its files as
+`queue_failed` and the other groups stay queued (#520); only a cancelled
+request (a client disconnect) withdraws what it queued (`_cancel_queued`).
+`/jobs/auto` queues only the plan the user confirmed: the client sends the
+confirmed plan's actionable rows as `items: [{file_path, mode}]` (an Image the
+preview skipped is never sent), and the route replans those paths. Each item
+whose target is unchanged is queued; one whose target changed (another tool,
+or now skipped) is not, since queueing an Image the user never saw would also
+skip its RomM metadata snapshot. `AutoBatchResponse` carries `skipped:
+[{path, reason, code}]` like the batch route: `plan_changed`, `queue_failed`,
+`output_claimed` and every `prepare_batch` skip, and each skipped file's plan
+row has `mode: null` and the reason. The SPA's shared submit toast names them.
+
+**One claimed destination skips one file (#520).** The locked reservation
+(`_reject_claimed_destinations_locked`) still never lets two live jobs write
+one file. `create_jobs_atomic(..., skipped=[...])` leaves a spec whose
+destination (or a sidecar) a live job or an earlier spec holds out of the
+batch, appends `(file_path, reason)`, and queues the rest; `queue_prepared`
+passes the list and reports each as `output_claimed`, so the batch route, Auto
+and the CLI skip that file rather than failing a Select-All of thousands over
+it. Without the list (the sweep, the Inbox, a single job) the call stays
+all-or-nothing and raises `OutputClaimedError` (409 for a single job). Nothing in either Auto endpoint, or in the
 batch preparation they share, touches a Volume on the event loop: the per-path
 Volume checks run together with planning (`_checked_auto_plan`) or on their
 own (`_check_within_volumes`) through `routes.volume_guard.off_loop_bounded`,
@@ -4882,8 +4996,8 @@ rewrite.
 **The `gamelist.xml` Referrer** (`gamelist.py`, #386) is opt-in
 (`opt_in = True`), in `Phase.FILE`, with a plain `apply`
 (`files.rewrite_in_place`). EmulationStation frontends (ES-DE, Batocera,
-Knulli, muOS) key each game's artwork, favourite flag and play count on its
-`<path>`.
+Knulli) key each game's artwork, favourite flag and play count on its
+`<path>`. muOS reads no gamelist (its catalogue is keyed by game name).
 
 - *When it runs.* Only for an Image whose Library says
   `referrer_enabled("gamelist")` (`rules.library.ES_FRONTEND_REFERRER`): a
@@ -4891,9 +5005,16 @@ Knulli, muOS) key each game's artwork, favourite flag and play count on its
   existing row), RomM's `es_frontend` setting (`ROMM_ES_FRONTEND`). Both are
   in memory, so the registry's question never blocks. `describe()` and
   `GET /api/libraries` report `es_frontend`; `PATCH /api/libraries/{id}` and
-  `PUT /api/romm/settings` set it. The Rules editor shows the switch for the
-  selected Library (`source.esFrontend` / `source.setEsFrontend`) with the
-  note to close ES-DE first, since ES-DE rewrites its gamelist on exit.
+  `PUT /api/romm/settings` set it. The Rules editor shows it as a
+  **Frontend** select (#523) over the two stored settings, with no column of
+  its own: None is the switch off, Batocera or Knulli the switch on with no
+  gamelists folder, ES-DE the switch on with one. ES-DE is turned on only once
+  its folder is chosen. `GET /api/libraries/gamelists-folders`
+  (`libraries.find_gamelists_folders`) finds candidates: a folder named
+  `gamelists` holding a `<system>/gamelist.xml`, at most
+  `GAMELISTS_SEARCH_DEPTH` (4) below a Volume root, hidden folders and
+  symlinks not walked, each confirmed inside the Volumes, capped by
+  `GAMELISTS_SEARCH_MAX_FOLDERS` and run under `admitted`'s time bound.
 - *Where it looks.* A `gamelist.xml` directly in each folder of
   `files.dirs_for(renames)`: the Platform folder, with the Image beside it or
   in a subfolder. Each entry resolves against its gamelist's folder; the
@@ -5666,7 +5787,7 @@ caller of the same seams the routes use, not a second conversion path:
 | `--to <format>` | `platform_detect.format_route` / `format_candidates` (below) |
 | `--auto` | `routes.convert.plan_auto_targets` (`plan_auto` plus `checked_compression`), the Auto route's planner |
 | Plan | `routes.convert.prepare_batch`: `plan_job` per file; each skip a `BatchSkip` (#504) |
-| Queue and run | `routes.convert.queue_prepared` into the `job_manager` singleton, started with `process_queue()`, emptied with `JobManager.drain()` and stopped with `JobManager.shutdown()`. Fed in chunks below `max_queue_depth` when it is set. A group the planner refuses is re-planned one Image at a time, so only the Image at fault fails |
+| Queue and run | With a server running: `POST /api/jobs/batch?report_skipped=true` on it, each job followed with `GET /api/jobs/{id}` (`cli._run_remote`, `services.server_client`). Alone: `routes.convert.queue_prepared` into the `job_manager` singleton, started with `process_queue()`, emptied with `JobManager.drain()` and stopped with `JobManager.shutdown()`. Fed in chunks below `max_queue_depth` when it is set. A group the planner refuses is re-planned one Image at a time, so only the Image at fault fails |
 | Delete | `JobManager._delete_check`, so `--delete-source` gets the Round-trip check where the mode has one and `--container-only` is the job's `container_only` |
 | Ledger | `ledger.record` as a terminal listener, as in `main.py` |
 | Verify | `ToolPlugin.verify` bounded by `verify_timeout`, then `verification_store.mark_verified`, or `clear` on a conclusive failure only |
@@ -5693,21 +5814,83 @@ the romz mode for its ROM. `_can_read` asks a tool's `converts_path` only about 
 `input_extensions` cover, so chdman's `.chd` readers are not refused by a tool
 that leaves `.chd` out of its tool-wide inputs.
 
-**Locks beside a server.** Output locks were already `flock` files in
-`CHD_CONCURRENCY_LOCK_DIR`, and the conversion slots and FIFO tickets live
-there too, so a CLI process and the server contend for the same outputs and
-slots. The default is now `<data dir>/locks` (`config._default_lock_dir`), so a
-separate container that mounts the same `/config` shares them. The choice is a
-pure function of configuration, never of whether a folder exists yet: with a
-data dir configured (`CHD_DATA_DIR` or the constructor; the image sets
-`CHD_DATA_DIR=/config`) it is always `<data dir>/locks`, created when chosen
-(parents included, `0o700`), and one that can't be created raises at startup
-instead of moving the locks. Only with no data dir configured at all is it the
-fixed `/tmp/chd-locks`, the same for every process whatever `TMPDIR` says.
-Before, a data dir that did not exist yet sent the first process to
-`$TMPDIR/chd-locks` and, once database init had made the folder, the next one to
-`<data dir>/locks`. Two rules keep a lock file meaningful across processes
-(`LockManager`):
+**One process works a data directory (#533).** The server, `run-rules` and a
+`convert` that runs its jobs itself never work one data directory at once. Each
+holds the worker lock (`services.scheduler_lock`, §3.3.17's Rule scheduler
+lock, `scheduler.lock` in the lock dir) while it works: the server for its
+life, `run-rules` for its pass, `convert` while its jobs run. `convert`
+decides where its jobs go before it routes and plans them (`cli._worker`),
+so the tools ready where they will run (the server's `GET /api/tools`, or
+this process's) decide which Images are converted:
+
+* `--server URL` names a server: the jobs go there.
+* The lock held by a server: the jobs go to it. The server names its host in
+  the lock's holder note when it takes it, and its port at once, from
+  uvicorn's launch (`main._launch_port`: `--port N`, `--port=N` or
+  `UVICORN_PORT`; uvicorn binds only after the lifespan starts and tells the
+  app nothing), so a server on `PORT=9090` (`run_dev.sh`) is found before any
+  request. Each `/health` request also names the port it arrived on
+  (`SchedulerLock.note_port`), for a launch that named none, and writes the
+  note again when its last write failed (`_write_record` answers False), in
+  place: the lock file is never replaced, since the flock is on it. It also writes a random `id` and its own non-loopback IPv4
+  addresses (`scheduler_lock.own_addresses`, stdlib only: the hostname's
+  entry and the address a UDP socket would send from; none readable, none
+  written), because a container's hostname resolves for its siblings on a
+  user-defined network (Compose) but not on Docker's default bridge
+  (`docker run`, Unraid). `Server.of_holder` lists `127.0.0.1` when the host
+  is this one, else the host by name, then each address, at that port (8080
+  until one is named). `Server.find_holder` asks each `/health` in turn, 3 s
+  apiece and without the auth token, and takes the first that answers the
+  note's `id` as `worker`, so another server on a stale address is never
+  taken. None does: exit 3, before anything is queued, saying to pass
+  `--server`.
+* The lock free: `convert` takes it (`acquire("convert")`) and runs its jobs
+  in-process as before. A server started meanwhile waits for it
+  (`acquire_waiting`, logging who holds it), so it never starts work beside
+  the CLI.
+* The lock held by `run-rules` or another `convert`: this run waits its turn,
+  logging who holds it every 30 s.
+
+On a server, `cli._run_remote` queues each chunk with the server's batch
+route (the CLI's own plan names the files; the server plans them again with
+the same planner, and its `report_skipped` list marks what it left out),
+follows each job with `GET /api/jobs/{id}` once a second, and prints each
+line from the job it reads back (`_finish`, as in-process). A chunk the
+server turns away with 429 (its queue full: its own `MAX_QUEUE_DEPTH`, which
+may be below the CLI's window, or other clients' jobs) is never failed: it is
+split in half until it fits, and a single job waits a poll, following this
+run's jobs, and is offered again. A stop cancels
+this run's jobs there (`DELETE /api/jobs/{id}`) and waits for them to end.
+`Server.cancel` answers whether that is settled: cancelled, or already ended
+or gone (404, the 400 for a job past cancelling). No answer, a 429 or a 5xx
+leaves it pending, and `_run_remote` asks again each turn, for every job, so
+one lost connection never abandons the others. A
+server that stops answering fails the jobs still followed. The auth token,
+when the server has one, comes from the same place the server reads it
+(`COMPRESSATORIUM_AUTH_TOKEN` or `<data dir>/auth_token`).
+
+So a CLI and a server never both work on one file: either the server runs
+the job, or the CLI does while no server can start. The same holds for the
+`MAX_CONCURRENT_JOBS` limit, which is now one process's semaphore. The
+cross-process ticket queue that used to share slots between the two
+(`ConcurrencyManager`: `convert_slot_<i>.lock`, `holder_<id>.lock`,
+`queue_*.ticket`, `queue_counter`) is gone. The job manager orders its own
+queue with an in-memory counter (`JobManager._tickets`). `verify` only reads:
+it runs beside a server, under the same shared input lock a job takes, so it
+never checks a file a job is writing, and a job never replaces one it is
+checking.
+
+Output, input, folder and Referrer locks are still `flock` files in
+`CHD_CONCURRENCY_LOCK_DIR`, kept as the second wall. The default is
+`<data dir>/locks` (`config._default_lock_dir`), so a separate container that
+mounts the same `/config` shares them. The choice is a pure function of
+configuration, never of whether a folder exists yet: with a data dir configured
+(`CHD_DATA_DIR` or the constructor; the image sets `CHD_DATA_DIR=/config`) it is
+always `<data dir>/locks`, created when chosen (parents included, `0o700`), and
+one that can't be created raises at startup instead of moving the locks. Only
+with no data dir configured at all is it the fixed `/tmp/chd-locks`, the same
+for every process whatever `TMPDIR` says. Two rules keep a lock file meaningful
+across processes (`LockManager`):
 
 1. A lock file is unlinked only by a process holding its flock, while it holds
    it, and only when the path still names the held file (`_unlink_held`).
@@ -5717,49 +5900,11 @@ Before, a data dir that did not exist yet sent the first process to
    path (`_still_linked`: device and inode, ENOENT counts as a mismatch) and
    retries on a mismatch.
 
-Unlinking after the unlock let a second process lock the doomed file and a
-third create and lock a new one at the same path. `lock_manager.still_linked`
-and `unlink_held` are module functions, shared with the concurrency manager.
-
-**Slots and tickets (`ConcurrencyManager`).** Slot files
-(`convert_slot_<i>.lock`) are a fixed set held by `flock` and are never
-unlinked. Each process creates one `holder_<id>.lock` on first use (temp name,
-flock, rename, so it is never visible unlocked) and holds its flock for its
-whole life: one open file per process, whatever it queues. A ticket is a plain
-file naming its holder, `queue_<ticket>_<seq>_<holder>_<key>.ticket`, and
-`release_ticket` removes it while the holder lock is held. Liveness is the
-holder's flock, not a PID (PIDs mean nothing across containers): a holder file
-another process can lock, or one that is gone, belongs to a process that died
-without cleanup, and `_prune_dead_tickets` removes its tickets and leftover
-temp files while holding that lock, then the holder file (`unlink_held`). It
-runs at construction and at most once a second from `_wait_for_turn`, so a CLI
-killed by SIGKILL, SIGHUP or the OOM killer stops blocking the server's queue as
-soon as the server's next job waits. Tickets and temp files from older versions
-(no holder in the name) go when they can be locked.
-
-A holder file deleted from outside while its process runs (a tmp cleaner, a
-user) would make that process look dead. `_ensure_holder`, called on every wait
-poll, checks the held handle against the path (`still_linked`); when they
-differ it makes the holder again under the same id and writes back every
-ticket the process holds. Slot files have no such repair: a cleaner that
-deletes `convert_slot_<i>.lock` on the `/tmp/chd-locks` fallback lets two
-processes lock different files for one slot. Keep the lock dir out of reach of
-age-based cleaners; `/config/locks`, the default, is.
-
-The directory is made again (`_ensure_dir`, owner only) whenever a holder,
-ticket or slot file is created, not only on first use, so a lock directory
-deleted while a process runs (a tmp cleaner on the `/tmp/chd-locks` default, someone
-clearing `/config/locks`) no longer leaves every later job waiting forever.
-
-A queue that cannot be listed (EMFILE, an I/O error) is never read as empty:
-`_list_tickets` raises, and `_wait_for_turn` logs it (at most every 30 s) and
-retries. The shared counter is retried before the in-process fallback, whose
-collisions `_list_tickets` breaks by `(seq, key)` identically in every process.
 The server and the CLI raise the soft open-file limit to the hard limit at
-start (`utils.process_limits.raise_open_file_limit`). The CLI still keeps at
-most twice `MAX_CONCURRENT_JOBS` of its jobs queued (never more than
-`MAX_QUEUE_DEPTH`), so a cron run does not put a whole library ahead of the web
-UI.
+start (`utils.process_limits.raise_open_file_limit`). The CLI keeps at most
+twice `MAX_CONCURRENT_JOBS` of its jobs queued (never more than
+`MAX_QUEUE_DEPTH`), in-process and on a server alike, so a cron run does not
+put a whole library ahead of the web UI.
 
 **What a `--to` walk lists.** A folder walk lists what the web search lists
 (`scan_tree`, tool-wide inputs). With `--to`, the same single walk also lists
@@ -5836,13 +5981,11 @@ writes one already taken ("Same output as X"). The planner's own collapse
 works within one batch only.
 
 **Lazy, and read-only for a dry run.** Choosing the lock dir creates the
-directory and nothing in it (`config._default_lock_dir`). The
-module singletons `lock_manager` and `concurrency_manager` are built
-`lazy=True`: the directory, `queue_counter`, the stale sweep and the ticket
-prune happen on first use. A dry run wraps the run in `lock_manager.read_only()`,
-in which no lock is taken or probed and no lock file removed; a lock file that
-is present counts as held. A dry run queues nothing, so tickets and slots are
-never touched.
+directory and nothing in it (`config._default_lock_dir`). The module singleton
+`lock_manager` is built `lazy=True`: the directory and the stale sweep happen
+on first use. A dry run wraps the run in `lock_manager.read_only()`, in which
+no lock is taken or probed and no lock file removed; a lock file that is
+present counts as held. A dry run queues nothing and takes no worker lock.
 
 **Folder locks across processes.** A directory lock (folder_to_iso packing a
 PS3 folder) protects its subtree only in the process that took it
@@ -6721,8 +6864,9 @@ holder writes a note into it (`by`, `pid`, `host`, `since`) that
   probes with a shared non-blocking `flock`, creating nothing.
 
 The stale-lock sweeps leave the file alone (`LockManager` only touches
-`filelock-*`, `ConcurrencyManager` only holders and tickets). `convert` and
-`verify` do not take it: they run beside a server.
+`filelock-*` and `referrer-*`). `convert` takes it while it runs its jobs
+itself and hands them to the server that holds it (#533, §3.3.17);
+`verify` does not take it: it only reads, under shared input locks.
 
 ### 3.3.18 Check Rules (`services/rules/check.py`, `services/image_checks.py`)
 
@@ -7930,7 +8074,9 @@ without one (chunked) is cut off the moment it passes it. Nothing is spooled.
 `save_upload` writes the bytes into a hidden temp file in
 `<data dir>/patches/` and stops at the exact
 `CHD_PATCH_MAX_PATCH_SIZE` (413, nothing kept). Any other upload route that
-must hold a size limit can use `file_upload` the same way. The header must say IPS or
+must hold a size limit can use `file_upload` the same way, or
+`file_uploads` for a form of many files (one async iterator of them, the cap
+on the whole body; `POST /dat/import-batch` uses it). The header must say IPS or
 BPS. The file is kept as `<16 hex>-<safe name>`, the `upload_id`, so the
 Ledger's path stays valid; `POST /api/patch` accepts an `upload_id` only in
 that exact shape (no separator can appear) and reads it with `read_beneath`
@@ -8199,11 +8345,9 @@ that isn't ready gives its own reason, `not_ready_message(tool)` read after
 started_by_hand=False, takes_slot=True)`: it converts nothing). One background
 task per Image, each an external job. Its file work runs in one of the same
 `max_concurrent` slots conversions take: `job_manager.hold_slot(job_id,
-cancel_event)` acquires the dispatcher's own semaphore and then the
-cross-process slot `_process_job` takes (`concurrency_manager.acquire`), so a
-CLI process converting holds a copy back too. With the dispatcher running a copy
-joins the conversions' FIFO (Codex 4606061259): it reserves its ticket when it
-asks, its id goes on the dispatcher's queue under that ticket, and the
+cancel_event)` acquires the dispatcher's own semaphore. With the dispatcher
+running a copy joins the conversions' FIFO (Codex 4606061259): it takes the
+next ticket when it asks, its id goes on the dispatcher's queue under that ticket, and the
 dispatcher hands it the local slot when the ticket comes up (`_hand_slot`), so
 nothing holds the local slot while waiting behind someone else and one slot
 can't deadlock; a cancel drops the ticket and gives back a slot already handed
@@ -8676,6 +8820,36 @@ own work has drained, whatever it queued meanwhile is cancelled and drained too
 memory a run keeps includes `ranked_holds` and `taken_holds` (Codex
 4608417851), so a later run lifts a hold whose ranking or name changed.
 
+**Taking a path in now (#522, `services/inbox/trigger.py`, `routes/hooks.py`).**
+`POST /api/hooks/arr` (Sonarr, Radarr, ROMarr webhooks) and `POST /api/scan`
+(`{"path"}` or `{"paths"}`) are one path into the same intake; there is no
+second pipeline. Both need the app's auth when it is on and the action
+confirmation header `X-Chd-Action-Confirm: scan`, the *arr `Test` event
+included, so its Test button proves the whole setup. `trigger.paths_in` reads
+`path`/`paths` and the `path` of every `*File` object and `*Files` list, so an
+*arr with its own field name needs no code; only `Download`/`Import` (or no
+`eventType`) take anything. Each path is rewritten by the longest whole-folder
+`from` (Autoscan's `from`/`to`, stored in the `arr_hook` preference and set in
+the UI only), then must be `volume_containment(...) is True` (a "couldn't
+tell" refuses it) and lie under an Inbox's folder. `intake.mark_ready` records
+it on that Inbox's `_State.ready`, and the Inbox is polled at once
+(`_poll_now`, waiting out a poll already running, then
+`report.after_pass`). A poll treats an Image as settled when a marker names it,
+a folder above it, or one of its files (a sheet's track): only the settle wait
+is skipped. Every marker covers only what was last written by the time it
+was named (every file of the Image, a sheet and its tracks, by mtime against
+the marker's wall-clock time), so a download still being written there, or a
+new one at a named path, settles as usual. A taken Image consumes its own
+markers (the file, its tracks), never another sheet's beside it; a folder's
+marker stays for the rest of the folder until it expires. `trigger.process` resolves the marker's path in the same bounded
+worker as the check (`_checked`) and hands it to `mark_ready(...,
+resolved=True)`, so nothing touches the disk on the event loop (PR #526). A held Image stays held, and only files the poll lists (no link,
+no `processed/`) are ever taken, so a marker can't reach anything intake
+wouldn't. Markers expire after `READY_SECONDS`. `trigger.check` is the
+dry run the UI's **Test** uses; for a path that lands nowhere,
+`trigger.suggest` looks for the same tail of folders under each Volume and
+offers the rewrite. The last 20 paths received are kept in memory for the UI.
+
 ### 3.3.26 Event streams end cleanly on shutdown (`services/event_stream.py`, #465)
 
 Every server-sent event route returns `event_stream(generator)`, never a bare
@@ -8963,6 +9137,15 @@ requirement is stated on `ToolPlugin.is_ready` so a new gated tool inherits it.
 
 #### Declaring the programs a tool runs (`required_binaries`, #494)
 
+Where a program is found (#515): each image-installed fixed path
+(`config._IMAGE_BINARIES`: `CHDMAN_PATH`, `DOLPHIN_TOOL_PATH`, ...) is
+resolved once, when `Settings` is built, by `config.detected_binary`: the
+default when it exists, else the same base name on `PATH`, else the default
+(so the not-ready reason names it). A path the operator set is never
+replaced. `SEVENZIP_PATH` falls back to `7zz` the same way. A new tool whose
+image path is fixed adds its field to `_IMAGE_BINARIES`; the probe below then
+checks the resolved path like any other.
+
 A tool that spawns a program does not write its own readiness check. It
 declares the program on `BaseTool.required_binaries`, a tuple of
 `services.tools.binaries.RequiredBinary(label, path, setting)`, and
@@ -9090,7 +9273,12 @@ every other planning skip. A chain mode is refused when any step tool is not
 ready, since `ChainTool.is_ready` asks each. The CLI, the Rules sweeps and the
 Inbox already skip a not-ready tool before they plan, so they never reach this
 check and nothing is reported twice. Per-route or per-tool checks are not
-needed.
+needed. `plan_job` and `prepare_batch` take `ready_tool_ids` (as `plan_auto`
+does) to answer for the process that will run the job instead of probing
+here: a `convert` that hands its jobs to a server routes and plans with the
+server's `GET /api/tools` list (`Server.ready_tool_ids`, #533), so an NSZ
+Image converts on a server that has the keys even when the CLI's container
+lacks them, and the server's own planning has the last word.
 
 **File info routes (#488).** Every `GET /api/*info` route in `routes/info.py`
 (`/info` for chdman, `/dolphin-info`, `/z3ds-info`, `/nkit-info`, `/xiso-info`,
@@ -9275,8 +9463,10 @@ read through `ModeSpec.level_range(codec)`, from the plugin's `CODEC_LEVELS`
 (Dolphin's `DiscIO/WIABlob.cpp` `GetAllowedCompressionLevels`: bzip2, lzma and
 lzma2 1-9, zstd 1-22; zstd keeps this app's 19, the others Dolphin's dialog
 default, 5). `compression_for` gives a codec with no level its default level;
-an explicit level outside the range is refused, never clamped, by the same
-two checks (`base.compression_problem`). The frontend mirrors both per mode in `registry.js`
+an explicit level outside the range is clamped into it by the routes
+(`base.clamp_levels`, #520: `zstd:40` on RVZ runs as `zstd:22`, for a single
+job, a batch and a saved Auto preference), and one that reaches the plugin
+some other way is refused there (`base.compression_problem`). The frontend mirrors both per mode in `registry.js`
 (`compressionCodecs`, `defaultCompression` on the mode entry, read through
 `registry.codecsForMode` / `defaultCompressionForMode`), and each codec entry's
 `levelRange` (`registry.levelRangeFor(mode, codec)`), so the pickers never
@@ -9872,22 +10062,61 @@ new tool or mode silently missed them:
   registry can't express (whether a tool's media reads as an optical disc or a
   cartridge/handheld "game"). `.chd` keeps its own Disc3 glyph and the
   handheld-ROM archives (`.7z`/`.zip`) get the archive glyph.
-- `src/lib/components/views/HelpView.svelte` generates its per-mode reference
-  table from `registry.all()` (one section per tool + mode-group, in registry
-  order) via `helpModeSections()`. The only hand-authored content lives in
-  `src/lib/tools/helpModes.js`: `MODE_BLURBS` (the human one-liner per mode) and
-  `MODE_OUTPUT` (a display override for reversible/companion outputs the
-  registry stores as a single or `null` `outputExt`).
 
-A single Node-evaluated guard, `tests/test_frontend_registry_derives_186.py`,
-fails if either drifts: a filterable extension with no icon bucket, an
-unclassified tool, a mode with no blurb, a stale blurb/override key, or a mode
-that would render a blank Output cell.
+A Node-evaluated guard, `tests/test_frontend_registry_derives_186.py`, fails if
+it drifts: a filterable extension with no icon bucket, or an unclassified tool.
+(Help used to carry a per-mode table built from the registry; the restructure
+moved that detail to the README, and the Convert-to list below is now the
+surface that must cover every mode.)
 
 The same Node harness also pins the behaviour of the registry's own query
 helpers: `infoToolsForPath` ordering, `displayExtension`, and
 `contentClaimsFor`. A new shared helper on `registry` gets its test here, next
 to the facts it reads. A new *tool* still needs no edit to this file.
+
+**Shared pieces on top of the registry (restructure, #534).** Every picker reads
+these instead of keeping its own copy, so a new tool or mode reaches them all
+with no edit:
+
+- `src/lib/tools/compression.js` owns the compression wire format. A choice is
+  `{ codecs: string[], level: number|null }`; `formatCompression(mode, value)`
+  writes the string a job is sent (`"zlib,lzma"`, `"zstd:19"`, `"none"`, or
+  null for the tool's own default, sending only the codecs the mode offers,
+  #471) and `parseCompression` reads it back. `fromRule` / `toRule` map a Rule's
+  `compression` + `compression_level`, `defaultCompression` / `isDefault` drive
+  Reset, and `toggleCodec` / `withCodec` / `withLevel` are the picker's edits
+  (the codec cap, a level pulled into the codec's own range). Tested by
+  `tests/test_frontend_compression_util.py`.
+- `CompressionPicker.svelte` is controlled: `{ mode, value, onchange, compact,
+  label }`. It reads only the registry and the compat table, never a store. The
+  convert store exposes `compressionChoice` / `setCompressionChoice(v)` as thin
+  wrappers (its `compressionValue` stays the wire string a job is sent).
+- `src/lib/tools/convertTargets.js` groups every mode for a "Convert to"
+  select: *Recommended* (best format for each game), *Make smaller* (one option
+  per output format, or per mode with `perMode`), *Unpack* (`kind: 'extract'`)
+  and *Other* (`kind: 'copy'` plus `OTHER_MODES`, which change a container
+  without shrinking it). It narrows by the games at hand (`entries`, by
+  `inputExtensions` or a folder mode's `convertible_by`), a console's
+  `modeIds` / `toolIds`, and the `ready` tools. `PLAIN_MODE_LABELS` names the
+  extract and other modes by what comes out ("BIN/CUE from CHD"). Its guard,
+  `tests/test_frontend_convert_targets.py`, fails when a mode lands in no group
+  or in two.
+- `src/lib/util/safetyOptions.js` (drawn by `SafetyOptions.svelte`) decides
+  which safety choices a set of mode specs offers: check each new file, delete
+  the original (only where `supportsDeleteOnVerify`; the rest are named as
+  kept, with `sourceKeptReason`), and the quick check (only where a Round-trip
+  runs and isn't required). Deleting forces the check on.
+- `FolderPicker.svelte` / `FolderPickerModal.svelte` pick a folder by walking
+  the Drives (`/api/volumes`, then `/api/files`), never through a typed path.
+- The defaults store (`src/lib/stores/defaults.svelte.js`, `GET`/`PUT
+  /api/preferences/defaults`, model `DefaultsPreferences`) holds the safety
+  choices new conversions and new console settings start with. Nothing stored
+  answers the safe defaults: check on, delete off, full check.
+- Routes live in one pure file, `src/lib/router/routes.js`: `VIEWS`,
+  `VIEW_TITLES`, `parseHash`, `hashFor` and `legacyRedirect`, which moves every
+  old route (`#/workspace/<tool>`, `#/rules/<id>`, `#/findings`, …) to its new
+  home. The router applies a redirect with `history.replaceState`, so Back
+  never bounces. `tests/test_frontend_routes_8.py` checks every row.
 
 ---
 
@@ -10107,3 +10336,53 @@ match only) and this app's own `.compressatorium-stage` folder
 folder Library walk (which feeds sweeps, check Rules and the Platform walk) and
 the Switch key search all route through it. Add a new ignored name there, not in
 a caller.
+
+## DAT import and Redump sync (`services/dat_import.py`, #524)
+
+One path imports DATs for the batch upload (`POST /dat/import-batch`), the
+Redump sync (`POST /dat/redump/sync`) and the CLI (`dat import`, `dat sync`):
+
+- `import_files([(label, path)])` takes `.dat`/`.xml` files and `.zip` files
+  of them. `extract_dats` reads a zip under the Inbox gate
+  (`ArchiveService.check_inbox_source`: entries, declared sizes, links,
+  absolute and `..` paths, expansion ratio) and the extract path's name rules
+  (`member_segments`), counts the bytes it reads with `_UnpackBudget`, skips
+  `is_junk_path` members, and copies each DAT to `<n>.dat` in a private temp
+  folder, so a member name never reaches the disk. Any bad member refuses the
+  whole zip, and so does data that can't be read (corrupt deflate data,
+  `zlib.error`), never the rest of the batch (PR #527).
+- Each DAT is imported with `dat_store.import_dat(..., replace=True)`: an
+  earlier DAT with the same name and family is deleted in the same
+  transaction (its rank carries over). One rematch runs after the batch
+  (local-only, `routes.dat.rematch_after_dat_change`). The CLI has no server
+  to finish it later, so it waits for it (`routes.dat.wait_for_match_jobs`),
+  and `dat sync` reads RomM's saved settings (`romm_settings.load`) before it
+  asks which consoles are present (PR #527).
+- `sync_redump` maps Platform slugs (`REDUMP_SYSTEMS`) to Redump's systems,
+  asks `https://redump.org/datfile/<system>/` through `http.client` on the
+  fixed host (`HTTPSConnection` with `ssl.create_default_context()`, so the
+  certificate and host name are checked; never plain HTTP, whose answer could
+  be swapped on the way into the DAT index, Codex on PR #527; no redirect
+  followed, generic `USER_AGENT`), one system at a time with
+  `REQUEST_GAP_SECONDS` between requests, at most one sync at once. The cache
+  (preference `redump_sync`) skips a system synced within `FRESH_FOR` whose
+  DATs are still installed, sends `If-None-Match`/`If-Modified-Since` when it
+  has them, and skips re-importing an identical download (SHA-256). "Still
+  installed" is by DAT id (`dat_ids`), not name: a DAT of the same name and
+  family imported by hand replaces the synced one under a new id, and the
+  next sync then asks again, unconditionally, and re-imports (PR #527). The
+  answer's `changed` says some DAT went in, even for a system that failed
+  part-way; the UI refreshes on it.
+- A loose `.dat`/`.xml` over `MAX_DAT_SIZE` is refused before it is parsed,
+  for the CLI and Redump's bare-DAT answer as much as the upload, and a file
+  that can't be read (`OSError`, such as `PermissionError`) is that file's
+  error, never the batch's (PR #527).
+- `POST /dat/import-batch` reads its body with
+  `upload_stream.file_uploads`, the many-files form of `file_upload`: the
+  whole body is capped at `MAX_BATCH_SIZE` while it arrives (413 by its
+  `Content-Length`, or as it comes), and each file at its own cap as it is
+  written (PR #527).
+- `dat_sync.save_capped` is the capped download loop both syncs share.
+- The MAMERedump sync follows the same replace rule (#525): after a full
+  success it deletes only the existing DATs whose name and family match a DAT
+  it just staged, never DATs from another source.

@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from config import settings
 from models import ConversionMode
-from services import dat_rename, hasheous
+from services import dat_import, dat_rename, hasheous, upload_stream
 from services.dat_ranking import record_of
 from services.dat_store import CANDIDATE_HASHES_KEY, INDEX_GENERATION_KEY, dat_store
 from services.file_hasher import compute_file_sha1, compute_file_sha1_sync
@@ -221,6 +221,107 @@ async def import_dat(file: UploadFile = File(...)):
     )
 
     return result
+
+
+# The batch body is read by ``services.upload_stream``, not FastAPI's
+# ``UploadFile`` (which spools it whole first), so this documents its form.
+_BATCH_BODY = {
+    "requestBody": {
+        "required": True,
+        "content": {"multipart/form-data": {"schema": {
+            "type": "object",
+            "required": ["files"],
+            "properties": {"files": {
+                "type": "array", "items": {"type": "string", "format": "binary"},
+            }},
+        }}},
+    },
+}
+
+
+@router.post("/dat/import-batch", openapi_extra=_BATCH_BODY)
+async def import_dat_batch(request: Request):
+    """Import several DATs at once: ``.dat``/``.xml`` files and ``.zip`` files of
+    them, such as No-Intro's daily pack or a Redump per-system zip (#524).
+
+    Each DAT replaces an earlier import of itself. A file that can't be read
+    is listed in ``errors`` and the rest still import. 200, or 413 once the
+    whole body passes ``dat_import.MAX_BATCH_SIZE``: by its ``Content-Length``
+    before a byte is read, or as it arrives. Nothing is spooled whole.
+    """
+    with tempfile.TemporaryDirectory(prefix="dat-upload-") as work:
+        saved: list[tuple[str, str]] = []
+        refused: list[dict] = []
+        try:
+            uploads = upload_stream.file_uploads(
+                request, field="files", max_bytes=dat_import.MAX_BATCH_SIZE,
+            )
+            index = 0
+            async for upload in uploads:
+                index += 1
+                name = os.path.basename(upload.filename) or f"file {index}"
+                lower = name.lower()
+                is_zip = lower.endswith(".zip")
+                if not is_zip and not lower.endswith((".dat", ".xml")):
+                    refused.append({"file": name, "error": "not a .dat, .xml or .zip file"})
+                    continue
+                cap = dat_import.MAX_ZIP_SIZE if is_zip else dat_import.MAX_DAT_SIZE
+                # Saved under a name of our own; the upload's name is only a label.
+                path = os.path.join(work, f"{index}{'.zip' if is_zip else '.dat'}")
+                if not await _save_upload(upload.chunks, path, cap):
+                    refused.append({"file": name, "error": dat_import.too_large(cap)})
+                    continue
+                saved.append((name, path))
+        except upload_stream.UploadRefused as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.message) from None
+        result = await dat_import.import_files(saved)
+    result["errors"] = [*refused, *result["errors"]]
+    return result
+
+
+async def _save_upload(chunks, path: str, cap: int) -> bool:
+    """Write *chunks* to *path*; False (and nothing kept) past *cap* bytes."""
+    total = 0
+    out = await run_in_threadpool(open, path, "wb")
+    try:
+        async for chunk in chunks:
+            total += len(chunk)
+            if total > cap:
+                break
+            await run_in_threadpool(out.write, chunk)
+    finally:
+        out.close()
+    if total > cap:
+        os.unlink(path)
+        return False
+    return True
+
+
+@router.get("/dat/redump")
+async def redump_status():
+    """The disc Platforms in your Libraries that Redump has a DAT for (#524)."""
+    cache = await preferences_store.get(dat_import.CACHE_KEY) or {}
+    return await run_in_threadpool(dat_import.status_blocking, cache)
+
+
+class RedumpSyncRequest(BaseModel):
+    #: Platform slugs; omitted, every disc Platform in your Libraries.
+    platforms: list[str] | None = None
+    #: Ask again even for a system synced in the last day.
+    force: bool = False
+
+
+@router.post("/dat/redump/sync")
+async def redump_sync(request: RedumpSyncRequest | None = None):
+    """Download and import Redump's DATs for your disc Platforms, one at a time.
+
+    Waits for the sync and answers its summary. 409 while one is running.
+    """
+    request = request or RedumpSyncRequest()
+    try:
+        return await dat_import.sync_redump(request.platforms, force=request.force)
+    except dat_import.SyncRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 @router.get("/dat/list")
@@ -912,6 +1013,14 @@ async def _schedule_rematch(paths: list[str], *, source: str) -> tuple[str, str 
         source, len(paths),
     )
     return "deferred", None
+
+
+async def wait_for_match_jobs() -> None:
+    """Wait for every match job this process started, those it started in
+    turn (a deferred rematch) included. For a process with no server to
+    finish them later: the CLI (Codex PR #527)."""
+    while live := [t for t in _background_match_tasks if not t.done()]:
+        await asyncio.gather(*live, return_exceptions=True)
 
 
 async def schedule_match_job(
@@ -1847,10 +1956,11 @@ async def _match_single_file(
     before the first lookup. Hashing a file can take minutes, and a DAT change
     can commit at any await in between; the store compares the stamp at the
     write and refuses a local verdict decided against an index that is no
-    longer current (issue #492). Every caller that caches a result gets it
+    longer current (issue #492), even one another process changed (the CLI's
+    ``dat import``; CodeRabbit PR #527). Every caller that caches a result gets it
     from here, so the check covers them all.
     """
-    generation = dat_store.index_generation()
+    generation = await run_in_threadpool(dat_store.index_generation)
     result = await _decide_match(
         file_path, cancel_event=cancel_event, local_only=local_only,
         stall_bounded=stall_bounded, stall=stall,

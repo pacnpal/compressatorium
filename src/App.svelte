@@ -5,24 +5,23 @@
   import Sidebar from '$lib/components/layout/Sidebar.svelte';
   import MobileDrawer from '$lib/components/layout/MobileDrawer.svelte';
   import TopBar from '$lib/components/layout/TopBar.svelte';
-  import Dashboard from '$lib/components/views/Dashboard.svelte';
-  import WorkArea from '$lib/components/views/WorkArea.svelte';
-  import RommView from '$lib/components/views/RommView.svelte';
-  import RulesView from '$lib/components/views/RulesView.svelte';
-  import FindingsView from '$lib/components/views/FindingsView.svelte';
-  import DATView from '$lib/components/views/DATView.svelte';
+  import FilesView from '$lib/components/views/FilesView.svelte';
+  import LibrariesView from '$lib/components/views/LibrariesView.svelte';
+  import ActivityView from '$lib/components/views/ActivityView.svelte';
   import SettingsView from '$lib/components/views/SettingsView.svelte';
-  import LedgerView from '$lib/components/views/LedgerView.svelte';
   import HelpView from '$lib/components/views/HelpView.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { terminalJobIds } from '$lib/stores/jobConstants.js';
   import { jobToasts } from '$lib/stores/jobToasts.svelte.js';
   import { conversion } from '$lib/stores/conversion.svelte.js';
   import { api } from '$lib/api/endpoints.js';
   import { verification } from '$lib/stores/verification.svelte.js';
   import { datMatching } from '$lib/stores/datMatching.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
+  import { findings } from '$lib/stores/findings.svelte.js';
+  import { defaults } from '$lib/stores/defaults.svelte.js';
   import { ModeWatcher, mode } from 'mode-watcher';
   import { Toaster, toast } from 'svelte-sonner';
   import { STORAGE_KEYS } from '$lib/util/localStorage.js';
@@ -52,8 +51,13 @@
     });
   });
 
+  // The Convert panel never sits on a tool the backend can't run (Switch with
+  // no prod.keys): once availability is known, move it to the first that can.
   $effect(() => {
-    conversion.setPrimaryTool(ui.workspaceTool);
+    const tools = ui.visibleTools;
+    if (tools.length && !tools.some((t) => t.id === conversion.primaryTool)) {
+      conversion.setPrimaryTool(tools[0].id);
+    }
   });
 
   // Refresh the file listing when terminal job events arrive, newly
@@ -62,7 +66,7 @@
   //
   // Refresh interferes with whatever the user was doing if we don't
   // gate it carefully. Skip while any of the following hold; the
-  // counter advances only after refresh actually fires so the gates
+  // ids it refreshed for advance only once refresh fires, so the gates
   // clearing (modal closes, batch finishes, etc.) immediately re-runs
   // the effect and lets the deferred refresh through.
   //   - User toggled auto-refresh off explicitly.
@@ -71,26 +75,35 @@
   //   - A verify batch is running.
   //   - fileBrowser is already loading.
   //   - We're in search mode (refresh() short-circuits anyway).
-  let _lastTerminal = $state(0);
+  //
+  // Keyed on which jobs finished, not how many, as the dashboard is: at the
+  // history cap a newly finished job replaces an evicted one and the counts
+  // stay flat. Clearing history only drops ids, so nothing refreshes then.
+  let _refreshedFor = new Set();
   $effect(() => {
-    const total = jobs.completedCount + jobs.failedCount + jobs.cancelledCount;
-    // The count can drop when the user clears terminal history
-    // (jobs.clearCompleted). Track the watermark down too, otherwise a
-    // post-clear conversion whose new total is still below the old
-    // high-water mark would never trigger a refresh.
-    if (total < _lastTerminal) {
-      _lastTerminal = total;
+    const finished = terminalJobIds(jobs.jobs);
+    if (finished.every((id) => _refreshedFor.has(id))) {
+      _refreshedFor = new Set(finished);
       return;
     }
-    if (total <= _lastTerminal) return;
     if (!fileBrowser.autoRefresh) return;
     if (fileBrowser.loading) return;
     if (fileBrowser.searchMode) return;
     if (ui.anyEntryModalOpen) return;
     if (conversion.converting) return;
     if (verification.batchRun) return;
-    _lastTerminal = total;
+    _refreshedFor = new Set(finished);
     fileBrowser.refresh().catch(() => {});
+  });
+
+  // What needs attention can change whenever a run finishes (a check, a
+  // duplicate scan, a watch folder's intake), so the sidebar badge and
+  // Activity's opening tab reload it then, whether or not Needs attention is
+  // on screen. Keyed on which jobs finished, as the refresh above is.
+  const finishedRuns = $derived(terminalJobIds(jobs.jobs).join(','));
+  $effect(() => {
+    void finishedRuns;
+    findings.load();
   });
 
   // Surface a live toast for every RUNNING job and resolve it on
@@ -122,14 +135,16 @@
 
   onMount(() => {
     ui.loadVersion();
-    // Ask the backend which tools to show. Switch (nsz) is hidden until
-    // prod.keys are configured. The tool list stays empty until this answers;
-    // on failure every tool is shown rather than none.
+    // Ask the backend which tools can run, and why the others can't (#515):
+    // the dashboard lists those with their fix. The tool list stays empty
+    // until this answers; on failure every tool is shown rather than none.
     api.getTools()
-      .then((t) => ui.applyToolAvailability(t?.available))
+      .then((t) => ui.applyToolAvailability(t?.available, t?.reasons))
       .catch(() => ui.applyToolAvailability(null));
     // Load remembered per-tool compression settings from the server.
     conversion.loadServerPrefs();
+    // The safety choices new conversions start with.
+    defaults.load();
     // Rehydrate the verified set + DAT-library state so OK / DAT badges
     // survive reloads. Fire and forget, failure leaves the cache empty.
     verification.loadVerified();
@@ -192,14 +207,10 @@
     <TopBar />
     <main id="main-content" bind:this={mainEl} class="main" tabindex="-1" aria-label="Main content">
       <svelte:boundary onerror={onBoundaryError}>
-        {#if ui.activeView === 'dashboard'}<Dashboard />
-        {:else if ui.activeView === 'workspace'}<WorkArea />
-        {:else if ui.activeView === 'romm'}<RommView />
-        {:else if ui.activeView === 'rules'}<RulesView />
-        {:else if ui.activeView === 'findings'}<FindingsView />
-        {:else if ui.activeView === 'dat'}<DATView />
+        {#if ui.activeView === 'files'}<FilesView />
+        {:else if ui.activeView === 'libraries'}<LibrariesView />
+        {:else if ui.activeView === 'activity'}<ActivityView />
         {:else if ui.activeView === 'settings'}<SettingsView />
-        {:else if ui.activeView === 'ledger'}<LedgerView />
         {:else if ui.activeView === 'help'}<HelpView />
         {/if}
         {#snippet failed(error, reset)}
@@ -231,8 +242,10 @@
     min-width: 0;
     background: var(--surface-2);
   }
+  /* <main> takes focus on every route change so a screen reader starts there.
+     It isn't a control (tabindex -1), so it draws no ring. */
   .main { flex: 1; overflow-y: auto; outline: none; }
-  .main:focus-visible { box-shadow: inset 0 0 0 3px var(--accent); }
+  .main:focus, .main:focus-visible { box-shadow: none; }
 
   .skip-link {
     position: fixed;

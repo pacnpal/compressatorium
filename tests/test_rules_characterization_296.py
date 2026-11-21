@@ -84,7 +84,7 @@ SWEEP_KEYS = {
     "queued", "considered", "repins_recorded", "skipped_existing",
     "skipped_active", "skipped_filtered", "skipped_unconvertible",
     "skipped_missing", "platforms", "errors", "stopped_reason", "dry_run",
-    "pending_repins",
+    "pending_repins", "skipped_paused",
 }
 
 

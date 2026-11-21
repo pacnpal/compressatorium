@@ -63,6 +63,16 @@ source at ``eb10d95``:
   ``PUT /api/roms/{id}`` carrying provider ids (``igdb_id`` and the rest, no
   ``fs_name``) writes them and is recorded in ``metadata_writes``.
 
+* The connection's calls (#532): ``fs_platforms`` is the heartbeat's
+  ``FILESYSTEM.FS_PLATFORMS`` (RomM's platform folder names on disk);
+  ``GET /api/setup/library`` (``backend/endpoints/heartbeat.py``) answers
+  ``library_structure``, the ``filesystem.structure.default`` template, from
+  ``structure`` (404 when None, as a RomM before 5.3 answers); ``excluded``
+  adds ``EXCLUDED_*`` lists to ``/api/config``; and
+  ``POST /api/client-tokens/exchange`` (``backend/endpoints/client_tokens.py``)
+  trades a code in ``pair_codes`` for its token, once, ignoring dashes and case
+  as RomM does (404 for an unknown or used code).
+
 ``converter=False`` is a RomM from before the converter: neither ``CONVERTO``
 key is served.
 """
@@ -125,7 +135,16 @@ class FakeRomm:
         library: str | os.PathLike | None = None,
         title_id_extraction: bool | None = None,
         heartbeat_status: int = 200,
+        fs_platforms: list[str] | None = None,
+        structure: str | None = None,
+        excluded: dict[str, list[str]] | None = None,
+        pair_codes: dict[str, dict[str, Any]] | None = None,
     ) -> None:
+        self.fs_platforms = fs_platforms
+        self.structure = structure
+        self.excluded = dict(excluded or {})
+        # code -> the ClientTokenCreateSchema the exchange answers with.
+        self.pair_codes = dict(pair_codes or {})
         self.version = version
         self.title_id_extraction = title_id_extraction
         self.heartbeat_status = heartbeat_status
@@ -304,6 +323,8 @@ class FakeRomm:
         body: dict[str, Any] = {"SYSTEM": {"VERSION": self.version, "SHOW_SETUP_WIZARD": False}}
         if self.title_id_extraction is not None:
             body["FILESYSTEM"] = {"TITLE_ID_EXTRACTION_ENABLED": self.title_id_extraction}
+        if self.fs_platforms is not None:
+            body.setdefault("FILESYSTEM", {})["FS_PLATFORMS"] = list(self.fs_platforms)
         if self.converter:
             body["CONVERTO"] = {"ENABLED": self.enabled}
         return body
@@ -313,6 +334,7 @@ class FakeRomm:
             "CONFIG_FILE_MOUNTED": True,
             "CONFIG_FILE_WRITABLE": True,
             "EXCLUDED_PLATFORMS": [],
+            **{key: list(value) for key, value in self.excluded.items()},
         }
         if self.converter:
             body["CONVERTO"] = {
@@ -396,6 +418,19 @@ class FakeRomm:
         task_route = re.fullmatch(r"/api/tasks/([\w-]+)", route)
         if task_route and method == "GET" and task_route.group(1) in self._tasks:
             return 200, dict(self._tasks[task_route.group(1)])
+        if method == "POST" and route == "/api/client-tokens/exchange":
+            code = str(json.loads(body or b"{}").get("code", "")).replace("-", "").upper()
+            token = self.pair_codes.pop(code, None)
+            if token is None:
+                return 404, {"detail": "Invalid or expired pairing code"}
+            return 200, dict(token)
+        if route == "/api/setup/library":
+            if self.structure is None:
+                return 404, {"detail": "Not Found"}
+            return 200, {
+                "library_ready": True, "library_structure": self.structure,
+                "existing_platforms": [], "supported_platforms": [],
+            }
         if route == "/api/heartbeat":
             if self.heartbeat_status != 200:
                 return self.heartbeat_status, {"detail": "heartbeat unavailable"}
