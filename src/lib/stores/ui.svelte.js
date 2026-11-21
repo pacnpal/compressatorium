@@ -14,7 +14,19 @@ import { STORAGE_KEYS, readBool, writeBool, readString, writeString } from '$lib
 import { api } from '$lib/api/endpoints.js';
 import { registry } from '$lib/tools/registry.js';
 
-const VIEWS = Object.freeze(['dashboard', 'workspace', 'romm', 'rules', 'findings', 'dat', 'ledger', 'settings', 'help']);
+// Each view's top-bar title. VIEWS is its keys, so a new view can't go untitled.
+export const VIEW_TITLES = Object.freeze({
+  dashboard: 'Dashboard',
+  workspace: 'Workspace',
+  romm: 'RomM',
+  rules: 'Rules',
+  findings: 'Findings',
+  dat: 'DAT Library',
+  ledger: 'Ledger',
+  settings: 'Settings',
+  help: 'Help',
+});
+const VIEWS = Object.freeze(Object.keys(VIEW_TITLES));
 // Tool ids come from the registry, single source of truth, no
 // hardcoded set to keep in sync when a 4th tool is added.
 const VALID_TOOLS = registry.ids();
@@ -37,6 +49,8 @@ class UIStore {
   hiddenTools = $state(new Set());
   // True once the first /api/tools answer (or its failure) has been applied.
   toolsKnown = $state(false);
+  // Tool id -> why it can't run, with the fix (#515). Shown, never hidden.
+  toolReasons = $state({});
 
   // Layout
   sidebarCollapsed = $state(readBool(STORAGE_KEYS.SIDEBAR_COLLAPSED, false));
@@ -83,6 +97,14 @@ class UIStore {
     return registry.all().filter((t) => !this.hiddenTools.has(t.id));
   }
 
+  /** The tools that can't run here, each with the backend's reason (#515). */
+  get unavailableTools() {
+    if (!this.toolsKnown) return [];
+    return registry.all()
+      .filter((t) => this.hiddenTools.has(t.id))
+      .map((t) => ({ ...t, reason: this.toolReasons[t.id] ?? `${t.label} isn't ready here.` }));
+  }
+
   /**
    * True when any modal that depends on file-listing state is open.
    * Used by App.svelte to suppress background refreshes that would
@@ -125,12 +147,17 @@ class UIStore {
     this.mobileDrawerOpen = false;
   }
 
-  /** Navigate by updating the URL hash; the router reads it back into state. */
-  navigate(view, tool) {
+  /**
+   * Navigate by updating the URL hash; the router reads it back into state.
+   * *sub* is the Workspace's tool or the Rules view's Library id.
+   */
+  navigate(view, sub) {
     if (!VIEWS.includes(view)) return;
     let target = `#/${view}`;
-    if (view === 'workspace' && tool && VALID_TOOLS.has(tool)) {
-      target += `/${tool}`;
+    if (view === 'workspace' && sub && VALID_TOOLS.has(sub)) {
+      target += `/${sub}`;
+    } else if (view === 'rules' && sub) {
+      target += `/${encodeURIComponent(sub)}`;
     }
     if (typeof window !== 'undefined') {
       if (window.location.hash === target) {
@@ -174,14 +201,16 @@ class UIStore {
 
   /**
    * Apply the backend's tool-availability report (from GET /api/tools).
-   * Hides tools the backend can't run (e.g. Switch without prod.keys), and if
+   * Keeps tools the backend can't run (e.g. Switch without prod.keys) out of
+   * the working list, with their reasons for `unavailableTools`, and if
    * the currently selected tool just got hidden, falls back to a visible one.
    * Passing nothing (the fetch failed) shows every tool. Either way the list
    * is now known.
    */
-  applyToolAvailability(available) {
+  applyToolAvailability(available, reasons = {}) {
     const allow = new Set(available ?? [...VALID_TOOLS]);
     this.hiddenTools = new Set([...VALID_TOOLS].filter((id) => !allow.has(id)));
+    this.toolReasons = reasons ?? {};
     this.toolsKnown = true;
     if (this.hiddenTools.has(this.workspaceTool)) {
       const fallback = registry.all().find((t) => !this.hiddenTools.has(t.id));

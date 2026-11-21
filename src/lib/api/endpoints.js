@@ -438,8 +438,8 @@ export const api = {
     return fetchJson(buildApiUrl('/rom-converto-info', params), undefined, 'Failed to get ZAR info');
   },
 
-  // Which tools the UI should show. Switch is reported unavailable when no
-  // prod.keys are configured, so the sidebar can hide it entirely.
+  // Which tools can run, and `reasons`: why each of the others can't, with
+  // the fix (Switch with no prod.keys, a program that isn't installed).
   getTools() {
     return fetchJson(`${API_BASE}/tools`, undefined, 'Failed to load tool availability');
   },
@@ -629,15 +629,24 @@ export const api = {
     fetchJson(`${API_BASE}/chd-metadata/scan/status`, undefined, 'Failed to get scan status'),
 
   // ─── DAT library ──────────────────────────────────────────────────────
-  importDAT(file) {
+  // .dat / .xml files and .zip files of them (No-Intro's daily pack, a Redump
+  // zip), all in one request -> { imported: [...], errors: [{file, error}], message }.
+  importDATs(files) {
     const formData = new FormData();
-    formData.append('file', file);
+    for (const file of files) formData.append('files', file);
     return fetchJson(
-      `${API_BASE}/dat/import`,
+      `${API_BASE}/dat/import-batch`,
       { method: 'POST', body: formData },
-      'Failed to import DAT',
+      'Failed to import DATs',
     );
   },
+
+  // The disc Platforms in your Libraries Redump has a DAT for: { running, systems }.
+  getRedump: () => fetchJson(`${API_BASE}/dat/redump`, undefined, 'Failed to read Redump status'),
+
+  // Waits for the sync: { systems, imported, up_to_date, failed, changed, message }.
+  syncRedump: (force = false) =>
+    jsonPost(`${API_BASE}/dat/redump/sync`, { force }, {}, 'Redump sync failed'),
 
   // ─── Patch bench (#428) ──────────────────────────────────────────────
   // Keeps an .ips/.bps in the app's data directory; answers { upload_id, ... }.
@@ -757,6 +766,14 @@ export const api = {
   listLibraries: () =>
     fetchJson(`${API_BASE}/libraries`, undefined, 'Failed to list Libraries'),
 
+  // ES-DE gamelists folders found in the Volumes (#523).
+  findGamelistsFolders: () =>
+    fetchJson(
+      `${API_BASE}/libraries/gamelists-folders`,
+      undefined,
+      'Failed to search the Volumes for ES-DE gamelists',
+    ),
+
   registerLibrary: (path, name = null) =>
     jsonPost(`${API_BASE}/libraries`, { path, name }, {}, 'Failed to register the Library'),
 
@@ -828,6 +845,23 @@ export const api = {
       { method: 'DELETE' },
       'Failed to remove the Inbox',
     ),
+
+  // The *arr webhook (#522): its setup, path rewrites and a dry-run check.
+  getArrHook: () => fetchJson(`${API_BASE}/hooks/arr`, undefined, 'Could not read the webhook setup'),
+
+  saveArrRewrites: (rewrites) =>
+    fetchJson(
+      `${API_BASE}/hooks/arr/rewrites`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rewrites }),
+      },
+      'Could not save the rewrites',
+    ),
+
+  checkArrPath: (path) =>
+    jsonPost(`${API_BASE}/hooks/arr/check`, { path }, {}, 'Could not check the path'),
 
   getLibraryRules: (id) =>
     fetchJson(

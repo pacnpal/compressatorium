@@ -304,11 +304,12 @@ class ToolPlugin(Protocol):
     def overwrite_targets(self, output_path: str, mode: str) -> list[str]: ...
 
     # Runtime prerequisites met? False => GET /api/tools reports the tool
-    # unavailable and the frontend hides it, instead of offering jobs that can
-    # only fail. BaseTool answers it from `required_binaries` (the programs
+    # unavailable, with `not_ready_message` in its `reasons` map (#515), and
+    # the dashboard lists it under "Not ready here" with that fix, instead
+    # of offering jobs that can only fail. BaseTool answers it from `required_binaries` (the programs
     # the tool runs, through the shared probe, §3.4 "Declaring the programs a
-    # tool runs"); nsz and exodos override it (prod.keys, EXODOS_DOS_DIR), and
-    # so do rom_converto (its `--version` probe) and the chain (every step).
+    # tool runs"); nsz overrides it (prod.keys), exodos (always ready, #513),
+    # and so do rom_converto (its `--version` probe) and the chain (every step).
     # Async because the probe may touch disk. `not_ready_reason` / `verify_not_ready_reason` say
     # why it answered False; callers show them through `not_ready_message`
     # (§3.4) rather than formatting their own line.
@@ -2025,6 +2026,16 @@ This is a payload field, not a schema change.
   unless its generation is the current one; `None` on either side never is. A
   local dict with no stamp makes no claim and is written as before.
 
+  The generation is two counters added together: the in-memory one above, and
+  a shared one in the database (the `preferences` row
+  `SHARED_GENERATION_KEY`, `dat_index_generation`) that each of those changes
+  moves inside its own transaction (`_bump_shared_generation`). The CLI's
+  `dat import` and `dat sync` run in their own process, with their own
+  in-memory counter, so only the shared one tells the server about them
+  (CodeRabbit on PR #527). Both only grow, so the sum moves when either does.
+  `index_generation()` reads the database (on the writer's own session at the
+  write boundary), so `_match_single_file()` calls it off the event loop.
+
   Remote verdicts take no part in the generation check, even while a change is
   in flight. A refused verdict goes to a *local-only* rematch, which cannot ask
   the remote source again, so refusing a remote hit for an unrelated import
@@ -3407,12 +3418,62 @@ of `folder_libraries` (root unique, name, `schedule_enabled`, `max_per_sweep`,
 migration 0012, `AUTOINCREMENT` so a removed Library's id is never reused and
 state keyed by it cannot reach another folder), read once and cached; `register`, `update` and `remove`
 replace the cached copy. `register` uses `ensure_path_within_volumes` (the file
-browser's check), requires a folder, and refuses the same root or one that
-contains or sits inside another Library's root, a registered folder or RomM's
-library folder (409), since two Libraries would give one Image two Rules. The
-rule is one function, `libraries.find_overlap`, run in both directions: the
-RomM settings route checks a new RomM library root against every folder
-Library (`check_romm_root`, a 409 naming the Library) before saving it. Both
+browser's check), requires a folder, and refuses the same root as another
+Library, a registered folder or RomM's library folder (409), and a root that
+is, holds or sits inside an Inbox (409). The same-root rule is one function,
+`libraries.same_root`, run in both directions: the RomM settings route checks
+a new RomM library root against every folder Library (`check_romm_root`, a 409
+naming the Library) before saving it.
+
+Libraries may nest (#514): a folder inside RomM's library folder, or inside or
+around another folder Library, registers, and RomM's root may be set around or
+inside one. **The nearest root owns a file.** `library_for` takes the longest
+root spelling that holds the path as listed and the deepest resolved root that
+holds where it lives; when those two name different Libraries it still raises
+`AmbiguousLibrary` (#413), and every caller fails closed as before. The owner's
+Referrers apply, and only the owner's: a file in a folder Library inside RomM
+gets that Library's gamelist and `.m3u` Referrers, never RomM's swap, re-pin
+or gamelist, because RomM's Rules never convert it and RomM's settings were
+not chosen for it (RomM sees the new file on its next library scan). No file
+is swept twice: `libraries.inner_folders(library)` lists the roots of the
+other Libraries inside *library*'s (resolved, relative to its root), and each
+Library's listing leaves them out. A folder Library's walk prunes them (so its
+Rules, check Rules, Findings, find-duplicates and counts never see an inner
+Library's files), and `RommLibrary.images` gives a ROM whose local path is in
+one no path (`image_from_rom(owned_elsewhere=...)`), asked only when the
+path is read, inside the bounded candidate probe, so listing never maps every
+ROM onto the mount (Codex PR #518). A root
+that can't be resolved there raises `LibraryUnreadable`: the listing fails
+rather than take an inner Library's files. Registering, removing a Library
+and saving RomM's root drop every folder Library's kept walk, so an outer
+Library re-lists, and move `libraries.ownership_generation()`, all as one
+step under `libraries._ownership_lock` (`_changing_ownership`, which also drops
+every cached resolved root; registration, removal and every RomM settings
+save then seed RomM's again, `_reseed_romm_root`, bounded through
+`run_admitted` and outside the registration lock, so the Rules view's nesting
+is right before any scan and a dead RomM mount holds nothing up). A sweep reads the counter when it lists a
+Platform and admits its work through `libraries.owned_as_listed(owned_at)`,
+which raises `rules.library.LibrariesChanged` when it moved and otherwise
+holds that lock while the work goes in: `JobManager.create_jobs_atomic(...,
+admission=...)` (and `create_batch_jobs`) enters it under the queue lock around
+the checks and the queueing, with no await inside, and the check job is
+started inside it against the counter read when the sweep began. So no
+registration lands between the check and the queueing: work from a stale
+listing is never queued, the run is not recorded, and the Platform reports
+`libraries_changed` (PR #518). The lock is taken before `libraries._lock`,
+never after, and never held across an await or a disk read. Hidden staging (#398) asks `libraries.hidden_staging(path)`,
+any Library holding the path with `HIDDEN_STAGING`, not only its owner: RomM
+scans its whole folder, an inner folder Library included. Folder Platform
+mappings belong to the nearest folder Library (`set_mapping`), and where two
+Libraries mapped one folder the nearer root's mapping wins in the index.
+Setting or clearing a folder's mapping also deletes the rows the outer
+Libraries holding it keep for that folder (a mapping made before the folder
+became a nearer Library's), so a clear always clears (Codex PR #518). The
+Libraries API adds `within` (the nearest Library around this one, or null)
+and `contains` (the Libraries inside it), worked out from the stored and
+already-resolved roots without touching the disk; the Rules view shows them.
+
+Registration and the RomM root save both
 take `_register_lock`: `register` in its worker thread, held across RomM's
 root resolve and the database write, and the RomM save through
 `romm_root_claim`, which polls for the lock without parking a thread, so a
@@ -3450,7 +3511,10 @@ the Library's `platforms()` (one listing, passed to every row as `known`),
 the Platform's own `id` (the row's key: two RomM platforms can share a slug),
 its `placement` relative to the root, placed by its own record alone
 (`known=[platform]`, so two RomM records show their own two folders, #512),
-whether the folder exists, its `rom_count`, `guessed` and `why`, or the
+whether the folder exists, its `rom_count`, `guessed` (a best guess among
+several: a folder Library's two folders for one Platform, #515, or RomM's, #512;
+`Placement.guessed`, False by default, is the shared field every Library sets)
+and `why`, or the
 `PlacementUnknown` reason. Where the Platform's new Images go is placed from
 the whole listing: when that has `choices`, the row it lands on has
 `new_images_here` True, the `choices` and the `picked` folder name, and the
@@ -3487,7 +3551,9 @@ a Library that needs its Platform records (RomM's folder names, carried as
   (`<root>/roms/<platform>`) or `flat` (`<root>`, where the header decides).
   For the first two it uses a folder already in the parent that names the
   Platform by the user's mapping or by a name detection reads
-  (`platform_detect.platform_folders`, spelled as listed; two refuse), else a
+  (`platform_detect.platform_folders`, spelled as listed; with two or more it
+  takes the one holding the most Image files, ties by name, and marks the
+  `Placement` `guessed=True`, #515), else a
   new one named by `platform_detect.esde_folder_name(slug)` (ES-DE's system
   name, `_ESDE_FOLDERS`, each value an alias of its slug) or the RomM slug.
   The layout decides only where new Images go, and changing it moves
@@ -4029,15 +4095,28 @@ never see a transport:
   filtered or capped sweep forgets nothing. There is no recovery message. The key
   is the error text, so those texts must stay constant.
 
-Events are a registry: `register_event(key, title)` adds one, `event_list()`
-feeds Settings. A later ticket (check failed, with check Rules) registers its own
-event and calls `notify`; no transport changes.
+Events are a registry: `register_event(key, title, default=True)` adds one,
+`event_list()` feeds Settings. A later ticket (check failed, with check Rules)
+registers its own event and calls `notify`; no transport changes. Each
+destination chooses its events (#523): an `events` list of keys stored on it
+(unknown keys refused on save), or, when it never chose, every event
+registered `default=True`, so a new default event reaches it with no
+migration. The dispatcher enqueues an event only for the destinations whose
+`_events_of(dest)` holds its kind; Test ignores the choice. `job_succeeded`
+(a job started by hand that completed, `default=False`) is the one event off
+by default.
 
 Destination types are rows of one table, `_KINDS` (`Kind(key, label, placeholder,
-send, check, hint)`); `KINDS`, `TRANSPORTS` and `kind_list()` (which Settings reads
+send, check, hint, signs)`); `KINDS`, `TRANSPORTS` and `kind_list()` (which Settings reads
 to build its picker) derive from it, so adding a type is one row and nothing else
 branches on the kind. Transports are `TRANSPORTS[kind](url, event)`, blocking and
-raising on failure. `webhook` and `discord` share one HTTP path, `_post_json`
+raising on failure. A kind with `signs=True` (the generic webhook, #523) also
+takes the destination's signing secret as a third argument, passed only when
+one is set: `_post_json` then sends `SIGNATURE_HEADER`
+(`X-Compressatorium-Signature: sha256=<hex>`), the HMAC-SHA256 of the exact
+body bytes. A secret on any other kind is refused on save. Like the URL, it
+is never returned (`public_view` says only `signed`); an edit omitting it
+keeps it and `""` removes it. `webhook` and `discord` share one HTTP path, `_post_json`
 (`http.client`, JSON `POST`, http/https only, one overall deadline) and differ only
 in the payload builder: `generic_payload` is `{"event", "title", "message", "data"}`
 (example in the README); `discord_payload` is one embed (colour by outcome, at most
@@ -4368,22 +4447,30 @@ only through `_is_file_within_volumes`, which confines it with
 (`SOURCE_OUTSIDE_VOLUMES`, 403 for a single job) before any filesystem call,
 and only the confined path is stat'ed. Auto prepares every group first, so
 a planning error queues nothing, then checks the whole batch against
-`max_queue_depth`, then queues the groups. Each group is its own atomic call,
-so a later group can still be refused at queue time (409 when another job took
-a destination, 503 when a volume stops answering), and earlier jobs may have
-started by then. On any failure the route withdraws the jobs this request
-queued (`job_manager.cancel_job`) and returns the error. A job that had already
-finished cannot be withdrawn: its output stays, it is logged, and the error
-returns it, for an HTTP error from the queue and for an unexpected exception
-alike (the latter logged with its traceback and returned as a 500; a
-cancellation still propagates). `/jobs/auto` queues only the plan the user
-confirmed: the client sends the confirmed plan's actionable rows as
-`items: [{file_path, mode}]` (an Image the preview skipped is never sent), the
-route replans those paths, and if any target differs (another tool, or now
-skipped) it answers 409 with `detail = {"message", "plan"}` before queueing
-anything. `conversion.runAuto` then shows the new plan and asks again.
-Queueing an Image the user never saw would also skip its RomM metadata
-snapshot. Nothing in either Auto endpoint, or in the
+`max_queue_depth`, then queues the groups. Each group is its own queue call.
+A group the queue refuses whole (503 when a volume stops answering, or an
+unexpected exception, logged with its traceback) reports each of its files as
+`queue_failed` and the other groups stay queued (#520); only a cancelled
+request (a client disconnect) withdraws what it queued (`_cancel_queued`).
+`/jobs/auto` queues only the plan the user confirmed: the client sends the
+confirmed plan's actionable rows as `items: [{file_path, mode}]` (an Image the
+preview skipped is never sent), and the route replans those paths. Each item
+whose target is unchanged is queued; one whose target changed (another tool,
+or now skipped) is not, since queueing an Image the user never saw would also
+skip its RomM metadata snapshot. `AutoBatchResponse` carries `skipped:
+[{path, reason, code}]` like the batch route: `plan_changed`, `queue_failed`,
+`output_claimed` and every `prepare_batch` skip, and each skipped file's plan
+row has `mode: null` and the reason. The SPA's shared submit toast names them.
+
+**One claimed destination skips one file (#520).** The locked reservation
+(`_reject_claimed_destinations_locked`) still never lets two live jobs write
+one file. `create_jobs_atomic(..., skipped=[...])` leaves a spec whose
+destination (or a sidecar) a live job or an earlier spec holds out of the
+batch, appends `(file_path, reason)`, and queues the rest; `queue_prepared`
+passes the list and reports each as `output_claimed`, so the batch route, Auto
+and the CLI skip that file rather than failing a Select-All of thousands over
+it. Without the list (the sweep, the Inbox, a single job) the call stays
+all-or-nothing and raises `OutputClaimedError` (409 for a single job). Nothing in either Auto endpoint, or in the
 batch preparation they share, touches a Volume on the event loop: the per-path
 Volume checks run together with planning (`_checked_auto_plan`) or on their
 own (`_check_within_volumes`) through `routes.volume_guard.off_loop_bounded`,
@@ -4858,8 +4945,8 @@ rewrite.
 **The `gamelist.xml` Referrer** (`gamelist.py`, #386) is opt-in
 (`opt_in = True`), in `Phase.FILE`, with a plain `apply`
 (`files.rewrite_in_place`). EmulationStation frontends (ES-DE, Batocera,
-Knulli, muOS) key each game's artwork, favourite flag and play count on its
-`<path>`.
+Knulli) key each game's artwork, favourite flag and play count on its
+`<path>`. muOS reads no gamelist (its catalogue is keyed by game name).
 
 - *When it runs.* Only for an Image whose Library says
   `referrer_enabled("gamelist")` (`rules.library.ES_FRONTEND_REFERRER`): a
@@ -4867,9 +4954,16 @@ Knulli, muOS) key each game's artwork, favourite flag and play count on its
   existing row), RomM's `es_frontend` setting (`ROMM_ES_FRONTEND`). Both are
   in memory, so the registry's question never blocks. `describe()` and
   `GET /api/libraries` report `es_frontend`; `PATCH /api/libraries/{id}` and
-  `PUT /api/romm/settings` set it. The Rules editor shows the switch for the
-  selected Library (`source.esFrontend` / `source.setEsFrontend`) with the
-  note to close ES-DE first, since ES-DE rewrites its gamelist on exit.
+  `PUT /api/romm/settings` set it. The Rules editor shows it as a
+  **Frontend** select (#523) over the two stored settings, with no column of
+  its own: None is the switch off, Batocera or Knulli the switch on with no
+  gamelists folder, ES-DE the switch on with one. ES-DE is turned on only once
+  its folder is chosen. `GET /api/libraries/gamelists-folders`
+  (`libraries.find_gamelists_folders`) finds candidates: a folder named
+  `gamelists` holding a `<system>/gamelist.xml`, at most
+  `GAMELISTS_SEARCH_DEPTH` (4) below a Volume root, hidden folders and
+  symlinks not walked, each confirmed inside the Volumes, capped by
+  `GAMELISTS_SEARCH_MAX_FOLDERS` and run under `admitted`'s time bound.
 - *Where it looks.* A `gamelist.xml` directly in each folder of
   `files.dirs_for(renames)`: the Platform folder, with the Image beside it or
   in a subfolder. Each entry resolves against its gamelist's folder; the
@@ -7033,20 +7127,43 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   even when that worker is abandoned by the stall bound: its unlink is guarded
   by the folder descriptor, sidecar lock and inode checks the same thread
   holds while it unlinks, not by locks a caller could release.
-- **Gating.** `EXODOS_DOS_DIR` is the only source of the template tree. It must
-  be a directory inside a configured Volume; otherwise `is_ready` is false (run
-  through `run_detached`, since it stats a possibly dead mount) and the tool is
-  hidden. Checking a product reads only the `.dosz`, so `verify_is_ready` is
-  always true: `compressatorium verify` and Verify work without the install.
+- **No gating (#513).** `is_ready` and `verify_is_ready` are always true: the
+  tool runs no binary and needs no setting. The template tree is found per zip
+  by `ExodosService.candidates(path)`: the `EXODOS_DOS_DIR` override first, then
+  `<folder>/!dos` for the zip's real folder and each parent up to
+  `lock_boundary_root(path)`, nearest first. A candidate is used only when its
+  real path is a directory inside a Volume (`is_within_configured_volumes`), and
+  the template is read beneath that real path through `read_beneath`, so it
+  resolves inside the `!dos` folder it came from. The first candidate holding
+  `<game>/dosbox.conf` wins (`NoTemplate`, a missing file, moves on to the next).
+  A template that is there but refused (a link, not a regular file, too large)
+  or unreadable just now stops the search and fails the zip: it never becomes
+  a repack without a conf.
+- **No template.** A zip with no template found still repacks when its one game
+  folder holds a DOS program (`.exe`, `.com`, `.bat`, what DOSBox Pure's start
+  menu offers). That is the line between an eXoDOS game zip and any other zip
+  with one folder: the tool is manual only and writes a new `.dosz` beside a
+  Source it never changes, so a false yes costs one extra file, while a folder
+  with nothing to run is refused. Such a product gets no `dosbox.conf`: the
+  zip's own `<Game>/dosbox.conf` (in any case, `DOSBOX.CONF` too), never
+  rewritten, is left out too (PR #517), or DOSBox Pure would load it instead
+  of its start menu. The job's last update is a warning naming where it
+  looked (`RepackPlan.no_template_reason`, worked out during the bounded
+  inspection, so nothing is read on the event loop), and saying so when it
+  left the zip's own conf out. A candidate tree that is missing is skipped;
+  one whose stat fails just now (`EIO`) raises `TemplateUnreadable`, a
+  `ProbeUnavailable` the probe never caches. The repack's own
+  check requires the root conf only when it wrote one; Verify accepts a `.dosz`
+  with no root conf when it holds a DOS program.
 - **Content-refined source.** `.zip` is romz's archive extension too, so
   `converts_path` reads the zip's directory: every name passes
   `member_segments` and `enforce_archive_limits`, every member sits in one game
   folder (a loose root file refuses it), and `<tree>/<game>/dosbox.conf`
   is read through `read_beneath` (no symlink on any component, a regular
   file, one descriptor). The answer, a yes or a no, is cached per (path,
-  size, mtime) of the zip and kept only while the template tree is unchanged
-  (#331): the root's and the game folder's mtimes, and the template file's
-  own mtime, size and inode. That stamp is taken before the template is read
+  size, mtime) of the zip and its candidate list, and kept only while every
+  candidate tree is unchanged (#331, #513): each tree's, its game folder's
+  and its template file's mtime, size and inode. That stamp is taken before the template is read
   and checked again after; if the tree moved in between, the answer is not
   cached. Only a verdict is cached (not an eXoDOS layout, no template): any
   OSError reading the zip or the template (a permission or I/O error, an
@@ -7883,7 +8000,9 @@ without one (chunked) is cut off the moment it passes it. Nothing is spooled.
 `save_upload` writes the bytes into a hidden temp file in
 `<data dir>/patches/` and stops at the exact
 `CHD_PATCH_MAX_PATCH_SIZE` (413, nothing kept). Any other upload route that
-must hold a size limit can use `file_upload` the same way. The header must say IPS or
+must hold a size limit can use `file_upload` the same way, or
+`file_uploads` for a form of many files (one async iterator of them, the cap
+on the whole body; `POST /dat/import-batch` uses it). The header must say IPS or
 BPS. The file is kept as `<16 hex>-<safe name>`, the `upload_id`, so the
 Ledger's path stays valid; `POST /api/patch` accepts an `upload_id` only in
 that exact shape (no separator can appear) and reads it with `read_beneath`
@@ -8627,6 +8746,36 @@ own work has drained, whatever it queued meanwhile is cancelled and drained too
 memory a run keeps includes `ranked_holds` and `taken_holds` (Codex
 4608417851), so a later run lifts a hold whose ranking or name changed.
 
+**Taking a path in now (#522, `services/inbox/trigger.py`, `routes/hooks.py`).**
+`POST /api/hooks/arr` (Sonarr, Radarr, ROMarr webhooks) and `POST /api/scan`
+(`{"path"}` or `{"paths"}`) are one path into the same intake; there is no
+second pipeline. Both need the app's auth when it is on and the action
+confirmation header `X-Chd-Action-Confirm: scan`, the *arr `Test` event
+included, so its Test button proves the whole setup. `trigger.paths_in` reads
+`path`/`paths` and the `path` of every `*File` object and `*Files` list, so an
+*arr with its own field name needs no code; only `Download`/`Import` (or no
+`eventType`) take anything. Each path is rewritten by the longest whole-folder
+`from` (Autoscan's `from`/`to`, stored in the `arr_hook` preference and set in
+the UI only), then must be `volume_containment(...) is True` (a "couldn't
+tell" refuses it) and lie under an Inbox's folder. `intake.mark_ready` records
+it on that Inbox's `_State.ready`, and the Inbox is polled at once
+(`_poll_now`, waiting out a poll already running, then
+`report.after_pass`). A poll treats an Image as settled when a marker names it,
+a folder above it, or one of its files (a sheet's track): only the settle wait
+is skipped. Every marker covers only what was last written by the time it
+was named (every file of the Image, a sheet and its tracks, by mtime against
+the marker's wall-clock time), so a download still being written there, or a
+new one at a named path, settles as usual. A taken Image consumes its own
+markers (the file, its tracks), never another sheet's beside it; a folder's
+marker stays for the rest of the folder until it expires. `trigger.process` resolves the marker's path in the same bounded
+worker as the check (`_checked`) and hands it to `mark_ready(...,
+resolved=True)`, so nothing touches the disk on the event loop (PR #526). A held Image stays held, and only files the poll lists (no link,
+no `processed/`) are ever taken, so a marker can't reach anything intake
+wouldn't. Markers expire after `READY_SECONDS`. `trigger.check` is the
+dry run the UI's **Test** uses; for a path that lands nowhere,
+`trigger.suggest` looks for the same tail of folders under each Volume and
+offers the rewrite. The last 20 paths received are kept in memory for the UI.
+
 ### 3.3.26 Event streams end cleanly on shutdown (`services/event_stream.py`, #465)
 
 Every server-sent event route returns `event_stream(generator)`, never a bare
@@ -8913,6 +9062,15 @@ every tool that declares `required_binaries` (below) touch the disk; the
 requirement is stated on `ToolPlugin.is_ready` so a new gated tool inherits it.
 
 #### Declaring the programs a tool runs (`required_binaries`, #494)
+
+Where a program is found (#515): each image-installed fixed path
+(`config._IMAGE_BINARIES`: `CHDMAN_PATH`, `DOLPHIN_TOOL_PATH`, ...) is
+resolved once, when `Settings` is built, by `config.detected_binary`: the
+default when it exists, else the same base name on `PATH`, else the default
+(so the not-ready reason names it). A path the operator set is never
+replaced. `SEVENZIP_PATH` falls back to `7zz` the same way. A new tool whose
+image path is fixed adds its field to `_IMAGE_BINARIES`; the probe below then
+checks the resolved path like any other.
 
 A tool that spawns a program does not write its own readiness check. It
 declares the program on `BaseTool.required_binaries`, a tuple of
@@ -9226,8 +9384,10 @@ read through `ModeSpec.level_range(codec)`, from the plugin's `CODEC_LEVELS`
 (Dolphin's `DiscIO/WIABlob.cpp` `GetAllowedCompressionLevels`: bzip2, lzma and
 lzma2 1-9, zstd 1-22; zstd keeps this app's 19, the others Dolphin's dialog
 default, 5). `compression_for` gives a codec with no level its default level;
-an explicit level outside the range is refused, never clamped, by the same
-two checks (`base.compression_problem`). The frontend mirrors both per mode in `registry.js`
+an explicit level outside the range is clamped into it by the routes
+(`base.clamp_levels`, #520: `zstd:40` on RVZ runs as `zstd:22`, for a single
+job, a batch and a saved Auto preference), and one that reaches the plugin
+some other way is refused there (`base.compression_problem`). The frontend mirrors both per mode in `registry.js`
 (`compressionCodecs`, `defaultCompression` on the mode entry, read through
 `registry.codecsForMode` / `defaultCompressionForMode`), and each codec entry's
 `levelRange` (`registry.levelRangeFor(mode, codec)`), so the pickers never
@@ -10058,3 +10218,53 @@ match only) and this app's own `.compressatorium-stage` folder
 folder Library walk (which feeds sweeps, check Rules and the Platform walk) and
 the Switch key search all route through it. Add a new ignored name there, not in
 a caller.
+
+## DAT import and Redump sync (`services/dat_import.py`, #524)
+
+One path imports DATs for the batch upload (`POST /dat/import-batch`), the
+Redump sync (`POST /dat/redump/sync`) and the CLI (`dat import`, `dat sync`):
+
+- `import_files([(label, path)])` takes `.dat`/`.xml` files and `.zip` files
+  of them. `extract_dats` reads a zip under the Inbox gate
+  (`ArchiveService.check_inbox_source`: entries, declared sizes, links,
+  absolute and `..` paths, expansion ratio) and the extract path's name rules
+  (`member_segments`), counts the bytes it reads with `_UnpackBudget`, skips
+  `is_junk_path` members, and copies each DAT to `<n>.dat` in a private temp
+  folder, so a member name never reaches the disk. Any bad member refuses the
+  whole zip, and so does data that can't be read (corrupt deflate data,
+  `zlib.error`), never the rest of the batch (PR #527).
+- Each DAT is imported with `dat_store.import_dat(..., replace=True)`: an
+  earlier DAT with the same name and family is deleted in the same
+  transaction (its rank carries over). One rematch runs after the batch
+  (local-only, `routes.dat.rematch_after_dat_change`). The CLI has no server
+  to finish it later, so it waits for it (`routes.dat.wait_for_match_jobs`),
+  and `dat sync` reads RomM's saved settings (`romm_settings.load`) before it
+  asks which consoles are present (PR #527).
+- `sync_redump` maps Platform slugs (`REDUMP_SYSTEMS`) to Redump's systems,
+  asks `https://redump.org/datfile/<system>/` through `http.client` on the
+  fixed host (`HTTPSConnection` with `ssl.create_default_context()`, so the
+  certificate and host name are checked; never plain HTTP, whose answer could
+  be swapped on the way into the DAT index, Codex on PR #527; no redirect
+  followed, generic `USER_AGENT`), one system at a time with
+  `REQUEST_GAP_SECONDS` between requests, at most one sync at once. The cache
+  (preference `redump_sync`) skips a system synced within `FRESH_FOR` whose
+  DATs are still installed, sends `If-None-Match`/`If-Modified-Since` when it
+  has them, and skips re-importing an identical download (SHA-256). "Still
+  installed" is by DAT id (`dat_ids`), not name: a DAT of the same name and
+  family imported by hand replaces the synced one under a new id, and the
+  next sync then asks again, unconditionally, and re-imports (PR #527). The
+  answer's `changed` says some DAT went in, even for a system that failed
+  part-way; the UI refreshes on it.
+- A loose `.dat`/`.xml` over `MAX_DAT_SIZE` is refused before it is parsed,
+  for the CLI and Redump's bare-DAT answer as much as the upload, and a file
+  that can't be read (`OSError`, such as `PermissionError`) is that file's
+  error, never the batch's (PR #527).
+- `POST /dat/import-batch` reads its body with
+  `upload_stream.file_uploads`, the many-files form of `file_upload`: the
+  whole body is capped at `MAX_BATCH_SIZE` while it arrives (413 by its
+  `Content-Length`, or as it comes), and each file at its own cap as it is
+  written (PR #527).
+- `dat_sync.save_capped` is the capped download loop both syncs share.
+- The MAMERedump sync follows the same replace rule (#525): after a full
+  success it deletes only the existing DATs whose name and family match a DAT
+  it just staged, never DATs from another source.

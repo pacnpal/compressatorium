@@ -114,9 +114,8 @@ jobs:
           printf '#!/bin/sh\necho "rom-converto 0.24.0"\n' > "$RUNNER_TEMP/bin/rom-converto"
           chmod +x "$RUNNER_TEMP/bin/rom-converto"
           export ROM_CONVERTO_PATH="$RUNNER_TEMP/bin/rom-converto"
-          # The eXoDOS tool hides itself without a template tree; the fixture
-          # ships a synthetic one.
-          export EXODOS_DOS_DIR="$RUNNER_TEMP/fixture/eXoDOS/!dos"
+          # The eXoDOS tool needs no setting (#513): the fixture's synthetic
+          # !dos tree sits beside its game zip, where the tool finds it.
           mkdir -p "$CHD_DATA_DIR" "$CHD_TEMP_DIR"
           python -m uvicorn main:app --host 127.0.0.1 --port 8099 > "$RUNNER_TEMP/server.log" 2>&1 &
           for i in $(seq 1 30); do

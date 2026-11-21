@@ -287,12 +287,14 @@ class Placement:
     Platform folder that isn't there yet: whoever places an Image creates it.
 
     ``guessed`` is True when the folder is a best guess the user may want to
-    change (#512): RomM's default structure where its structure can't be read
-    off the disk, or one of several RomM folders for the Platform that hold
-    ROMs. ``why`` says in plain words how the folder was picked, or None when
-    there was nothing to pick. ``choices`` are the folder names the Library
-    could have picked from, each with its ROM count, when there are several
-    (RomM's records for one Platform); empty otherwise.
+    change: more than one folder could be it and a folder Library picked one
+    (#515; a mapping makes it certain), RomM's default structure where its
+    structure can't be read off the disk, or one of several RomM folders for
+    the Platform that hold ROMs (#512). ``why`` says in plain words how the
+    folder was picked, or None when there was nothing to pick. ``choices``
+    are the folder names the Library could have picked from, each with its
+    ROM count, when there are several (RomM's records for one Platform);
+    empty otherwise.
     """
 
     platform: str
@@ -301,6 +303,11 @@ class Placement:
     guessed: bool = False
     why: str | None = None
     choices: tuple[tuple[str, int], ...] = ()
+
+
+class LibrariesChanged(Exception):
+    """Which Libraries sit inside which changed since a listing was taken
+    (``libraries.owned_as_listed``, PR #518): work from it is refused."""
 
 
 class PlacementUnknown(Exception):

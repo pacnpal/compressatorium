@@ -217,12 +217,13 @@ Volume behavior:
 | `CHD_METADATA_STORE` | *(deprecated)* | Legacy JSON path; auto-migrated to SQLite on first startup (custom path honored if set) |
 | `CHD_VERIFICATION_STORE` | *(deprecated)* | Legacy JSON path; auto-migrated to SQLite on first startup (custom path honored if set) |
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` (CLI mode) |
+| *(any `*_PATH` below)* | | **Found on its own** (#515): each fixed path is where the image installs the program. When it isn't there and the variable is unset, the program is looked up on `PATH` by name (a Homebrew or distro install works with nothing set). A path you set is used as is. A program found nowhere leaves its tool listed as not ready on the dashboard, with what to install or set |
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to the z3ds_compressor binary (3DS) |
 | `NSZ_PATH` | `nsz` | Path to the nsz binary (Switch); resolved on PATH by default |
 | `MAXCSO_PATH` | `/usr/local/bin/maxcso` | Path to maxcso binary (PSP/PS2 CSO/CSO v2/ZSO/DAX) |
-| `SEVENZIP_PATH` | `7z` | Path to the 7z binary (handheld ROM `.gb`/`.gbc`/`.gba`/`.nds` ↔ `.7z`/`.zip`). Ships via `p7zip-full`; set to `7zz` on distros that provide the newer `7zip` package |
+| `SEVENZIP_PATH` | `7z` | Path to the 7z binary (handheld ROM `.gb`/`.gbc`/`.gba`/`.nds` ↔ `.7z`/`.zip`). Ships via `p7zip-full`; with no `7z` on `PATH`, a `7zz` (the newer `7zip` package) is used on its own |
 | `UNAR_PATH` | `unar` | Path to the unar binary (a multi-part RAR4/RAR5 set → the one file inside it, `rar_extract`). Ships via the Debian `unar` package |
 | `MAKEPS3ISO_PATH` | `/usr/local/bin/makeps3iso` | Path to the makeps3iso binary (PS3 decrypted folder → ISO) |
 | `JWUDTOOL_PATH` | `/usr/local/bin/jwudtool` | Path to the JWUDTool launcher (Wii U `.wud` ↔ `.wux`). The image ships a launcher that execs the bundled jar with a headless JRE |
@@ -232,7 +233,7 @@ Volume behavior:
 | `NKIT2ISO_RECOVERY` | `none` | What nkit2iso does with a Wii image whose update partition was removed: `none` zero-fills it (fully offline; playable but not redump-verifiable), `download` fetches the publicly archived recovery partition for a bit-exact restore. `download` is the only path on which the tool uses the network. |
 | `SWITCH_KEYS` | *(unset)* | Directory holding your own Switch `prod.keys`. Source of truth for Switch (nsz); mount it read-only. When unset, the app best-effort checks `~/.switch`, the nsz config dirs, your mounted volumes and the data dir. No keys ship with the image. |
 | `NSZ_COMPRESSION_LEVEL` | `18` | zstandard level for Switch compression (1-22) |
-| `EXODOS_DOS_DIR` | *(unset)* | Your eXoDOS `!dos` folder (holding `<Game>/dosbox.conf`) for the eXoDOS repack. Must be inside a mounted volume; unset hides the tool. Nothing from eXoDOS ships with the image. |
+| `EXODOS_DOS_DIR` | *(unset)* | Optional. A `!dos` folder (holding `<Game>/dosbox.conf`) the eXoDOS repack searches first. Not needed: it finds `!dos` beside each game zip, or in a parent folder up to the volume. Must be inside a mounted volume; a value that is not is skipped. Nothing from eXoDOS ships with the image. |
 | `MAX_CONCURRENT_JOBS` | `1` | Parallel conversion jobs |
 | `MAMEREDUMP_REPO` | `MetalSlug/MAMERedump` | GitHub repo the DAT sync pulls from |
 | `MAMEREDUMP_AUTO_SYNC` | `false` | Sync DATs on startup when none are loaded |

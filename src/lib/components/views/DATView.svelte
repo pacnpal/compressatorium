@@ -50,6 +50,13 @@
   const importing = $derived(datMatching.importingDat);
   const syncing = $derived(datMatching.syncing);
   const syncStatus = $derived(datMatching.syncStatus);
+  const redumpSystems = $derived(datMatching.redump?.systems ?? []);
+  const redumpSyncing = $derived(datMatching.redumpSyncing);
+  // Asked once (#524): until the user answers, the panel is a yes/no question.
+  // Answering either way saves the choice, so it never comes back.
+  const hasheousUndecided = $derived(
+    Boolean(stats) && !stats.hasheous_overridden && !stats.hasheous_enabled,
+  );
 
   const hasheousOn = $derived(Boolean(stats?.hasheous_enabled));
   // Interpolated straight into prose, so it needs a value before /dat/stats
@@ -62,8 +69,7 @@
   let testingHasheous = $state(false);
   let hasheousTest = $state(null);
 
-  async function handleToggleHasheous() {
-    const next = !hasheousOn;
+  async function handleToggleHasheous(next = !hasheousOn) {
     savingHasheous = true;
     hasheousTest = null;
     try {
@@ -93,6 +99,7 @@
 
   onMount(() => {
     datMatching.loadDATs();
+    datMatching.loadRedump();
     // Poll sync status whenever syncing flips on; an $effect handles
     // restart, this onMount just primes the initial status.
     datMatching.pollSyncStatus();
@@ -115,18 +122,39 @@
     }
   });
 
+  function reportRefused(errors) {
+    if (!errors?.length) return;
+    const shown = errors.slice(0, 3).map((e) => `${e.file}: ${e.error}`).join('\n');
+    const more = errors.length > 3 ? `\n…and ${errors.length - 3} more` : '';
+    toast.error(`${errors.length} not imported`, { description: shown + more });
+  }
+
   async function handleImport(event) {
-    const file = event.currentTarget?.files?.[0];
-    if (!file) return;
+    const files = Array.from(event.currentTarget?.files ?? []);
+    if (!files.length) return;
     try {
-      const result = await datMatching.importDAT(file);
-      const added = result?.imported ?? result?.added ?? 1;
-      toast.success(`Imported DAT (${added} entr${added === 1 ? 'y' : 'ies'})`);
+      const result = await datMatching.importDATs(files);
+      if (result?.imported?.length) toast.success(result.message);
+      reportRefused(result?.errors);
     } catch (e) {
       toast.error(e?.message ?? 'DAT import failed');
     } finally {
       // Reset so the same file can be re-selected later.
       if (fileInputEl) fileInputEl.value = '';
+    }
+  }
+
+  async function handleRedumpSync() {
+    try {
+      const result = await datMatching.syncRedump();
+      const failed = (result?.systems ?? []).filter((s) => s.status === 'failed');
+      if (failed.length) {
+        reportRefused(failed.map((s) => ({ file: s.system, error: s.error })));
+      } else {
+        toast.success(result?.message ?? 'Redump DATs up to date');
+      }
+    } catch (e) {
+      toast.error(e?.message ?? 'Redump sync failed');
     }
   }
 
@@ -183,11 +211,12 @@
     <div class="header-actions">
       <input
         type="file"
-        accept=".dat,.xml"
+        accept=".dat,.xml,.zip"
+        multiple
         class="sr-only"
         bind:this={fileInputEl}
         onchange={handleImport}
-        aria-label="Import DAT file"
+        aria-label="Import DAT files or zips"
       />
       <Button
         variant="secondary"
@@ -196,7 +225,19 @@
         onclick={() => fileInputEl?.click()}
       >
         {#snippet icon()}<Upload size={14} />{/snippet}
-        Import DAT
+        Import DATs
+      </Button>
+      <Button
+        variant="primary"
+        disabled={redumpSyncing || redumpSystems.length === 0}
+        loading={redumpSyncing}
+        title={redumpSystems.length
+          ? `Download Redump's DATs for ${redumpSystems.map((s) => s.name).join(', ')}`
+          : 'None of your Libraries has a disc Platform Redump covers'}
+        onclick={handleRedumpSync}
+      >
+        {#snippet icon()}<Download size={14} />{/snippet}
+        Sync Redump{redumpSystems.length ? ` (${redumpSystems.length})` : ''}
       </Button>
       {#if syncing}
         <Button variant="destructive" onclick={handleCancelSync}>
@@ -204,7 +245,7 @@
           Cancel sync
         </Button>
       {:else}
-        <Button variant="primary" onclick={handleSync}>
+        <Button variant="secondary" onclick={handleSync}>
           {#snippet icon()}<Download size={14} />{/snippet}
           Sync MAMERedump
         </Button>
@@ -214,6 +255,40 @@
 
   <!-- Hasheous state rides on /api/dat/stats (app/routes/dat.py:get_dat_stats)
        rather than a second endpoint, since this view already fetches it. -->
+  {#if hasheousUndecided}
+  <article class="panel hasheous ask" aria-labelledby="hasheous-ask">
+    <div class="hasheous-head">
+      <Globe size={16} aria-hidden="true" />
+      <div class="hasheous-title">
+        <strong id="hasheous-ask">Identify files your DATs don't know, online?</strong>
+        <span class="hasheous-sub">
+          Hasheous checks a file's hashes against Redump, No-Intro, TOSEC and
+          more. Only the hashes are sent, never names or paths, and your own
+          DATs are always checked first. You can change this later.
+        </span>
+      </div>
+      <div class="hasheous-actions">
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={savingHasheous}
+          onclick={() => handleToggleHasheous(false)}
+        >
+          No, stay offline
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          loading={savingHasheous}
+          disabled={savingHasheous}
+          onclick={() => handleToggleHasheous(true)}
+        >
+          Yes, look them up
+        </Button>
+      </div>
+    </div>
+  </article>
+  {:else}
   <article class="panel hasheous" class:is-on={hasheousOn}>
     <div class="hasheous-head">
       <Globe size={16} aria-hidden="true" />
@@ -243,7 +318,7 @@
           size="sm"
           loading={savingHasheous}
           disabled={savingHasheous}
-          onclick={handleToggleHasheous}
+          onclick={() => handleToggleHasheous()}
         >
           {hasheousOn ? 'Turn off' : 'Turn on'}
         </Button>
@@ -283,6 +358,7 @@
       </p>
     {/if}
   </article>
+  {/if}
 
   <!-- Stats response shape (app/services/dat_store.py:get_stats):
        total_dats, total_sha1_hashes, total_md5_hashes,
@@ -370,7 +446,7 @@
     {:else if dats.length === 0}
       <EmptyState
         title="No DATs imported"
-        description="Import a .dat / .xml file from No-Intro, Redump, or MAMERedump, or sync MAMERedump above."
+        description="Sync Redump for your disc Platforms, or import DATs: pick several .dat files, or a whole zip such as No-Intro's daily pack."
         glyph="≣"
       />
     {:else}
@@ -436,7 +512,9 @@
   .hasheous { display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-sm); color: var(--text-2); line-height: 1.5; }
   .hasheous-head { display: flex; align-items: flex-start; gap: var(--space-3); }
   .hasheous-head > :global(svg) { flex: none; margin-top: 0.15em; color: var(--text-3); }
-  .hasheous.is-on .hasheous-head > :global(svg) { color: var(--accent); }
+  .hasheous.is-on .hasheous-head > :global(svg),
+  .hasheous.ask .hasheous-head > :global(svg) { color: var(--accent); }
+  .hasheous.ask { border-color: var(--accent); }
   .hasheous-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
   .hasheous-title strong { color: var(--text-1); }
   .hasheous-sub { color: var(--text-2); }
