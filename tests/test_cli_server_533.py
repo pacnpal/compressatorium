@@ -28,13 +28,28 @@ FIXTURES = (_volume, _dolphin)
 
 
 class _Stub:
-    """``/health``, ``POST /api/jobs/batch``, ``GET``/``DELETE /api/jobs/{id}``."""
+    """``/health``, ``GET /api/tools``, ``POST /api/jobs/batch``,
+    ``GET``/``DELETE /api/jobs/{id}``.
 
-    def __init__(self, *, finish: bool = True) -> None:
+    ``max_depth`` is the server's ``MAX_QUEUE_DEPTH`` (429 past it), and
+    ``busy`` how many batches it turns away first, as when other clients have
+    filled its queue. ``available`` is what ``/api/tools`` says can run.
+    """
+
+    def __init__(
+        self, *, finish: bool = True, max_depth: int = 0, busy: int = 0,
+        available: list[str] | None = None,
+    ) -> None:
+        from services.tools import registry
+
         self.batches: list[dict] = []
+        self.refused = 0
         self.cancelled: list[str] = []
         self.jobs: dict[str, ConversionJob] = {}
         self.finish = finish
+        self.max_depth = max_depth
+        self.busy = busy
+        self.available = [t.id for t in registry.all()] if available is None else available
         stub = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -52,6 +67,8 @@ class _Stub:
             def do_GET(self):
                 if self.path == "/health":
                     return self._send(200, {"status": "healthy"})
+                if self.path == "/api/tools":
+                    return self._send(200, {"available": stub.available})
                 job = stub.jobs.get(self.path.rsplit("/", 1)[-1])
                 if job is None:
                     return self._send(404, {"detail": "Job not found"})
@@ -59,6 +76,15 @@ class _Stub:
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                active = sum(
+                    1 for job in stub.jobs.values()
+                    if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
+                )
+                too_deep = stub.max_depth and active + len(body["file_paths"]) > stub.max_depth
+                if stub.busy or too_deep:
+                    stub.busy = max(0, stub.busy - 1)
+                    stub.refused += 1
+                    return self._send(429, {"detail": "Conversion queue full. Retry later."})
                 stub.batches.append(body)
                 made = []
                 for i, path in enumerate(body["file_paths"]):
@@ -252,3 +278,49 @@ def test_a_server_names_its_port_on_health(server_lock):
         scheduler_lock.check()
 
     assert held.value.holder["port"] == 8123
+
+
+def _isos(volume, count):
+    return [_iso(volume, f"gc/Game {n}.iso") for n in range(count)]
+
+
+def test_a_server_with_a_shallow_queue_still_gets_every_input(
+    volume, dolphin, capsys, server_lock, monkeypatch,
+):
+    """A server whose MAX_QUEUE_DEPTH is below the CLI's window (Codex
+    4650363719): a refused batch is split until it fits, never failed."""
+    from config import settings
+
+    monkeypatch.setattr(settings, "max_concurrent_jobs", 2)  # a window of 4
+    stub = _Stub(max_depth=1)
+    server_lock.note_port(stub.port)
+    isos = _isos(volume, 3)
+    try:
+        code, lines = _cli(capsys, "convert", str(volume), "--to", "rvz", "--json")
+    finally:
+        stub.close()
+
+    assert code == 0, lines
+    assert stub.refused, "the server turned the first batch away"
+    assert all(len(b["file_paths"]) == 1 for b in stub.batches)
+    assert sorted(line["path"] for line in lines) == sorted(map(str, isos))
+    assert {line["status"] for line in lines} == {"completed"}
+
+
+def test_a_full_server_queue_is_waited_for(volume, dolphin, capsys, server_lock, monkeypatch):
+    """Other clients have the server's queue full: the run waits its turn."""
+    import cli
+
+    monkeypatch.setattr(cli, "_REMOTE_POLL_S", 0.01)
+    stub = _Stub(busy=3)
+    server_lock.note_port(stub.port)
+    iso = _iso(volume)
+    try:
+        code, lines = _cli(capsys, "convert", str(volume), "--to", "rvz", "--json")
+    finally:
+        stub.close()
+
+    assert code == 0, lines
+    assert stub.refused == 3
+    assert [(line["path"], line["status"]) for line in lines] == [(str(iso), "completed")]
+

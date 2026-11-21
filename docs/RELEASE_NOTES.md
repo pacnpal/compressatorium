@@ -54,7 +54,9 @@
   server is running on the same `/config`, the command finds it there and
   hands it the jobs: they show in the web UI's queue, share its limit on
   parallel jobs and land in its Ledger, and the command prints each line as
-  its job ends. Ctrl-C cancels the run's own jobs on the server. With no
+  its job ends. A server whose queue is full (its own `MAX_QUEUE_DEPTH`, or
+  other clients' jobs) is fed smaller batches and waited for, so no input
+  fails for it. Ctrl-C cancels the run's own jobs on the server. With no
   server running, the command runs the jobs itself, and a server started
   meanwhile waits until it is done, so a command and the server never work
   on the same file. A server in another container is found by its host name;

@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
 import contextlib
 import dataclasses
 import json
@@ -57,6 +58,7 @@ import signal
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from http import HTTPStatus
 from pathlib import Path
 
 from logging_setup import get_logger
@@ -981,7 +983,8 @@ def _finish(item: Item, job) -> None:
         item.path = job.filename
 
 
-# How often `_run_remote` asks the server about the jobs it follows.
+# How often `_run_remote` asks the server about the jobs it follows, and
+# offers it a batch its full queue turned away.
 _REMOTE_POLL_S = 1.0
 
 
@@ -1027,7 +1030,9 @@ async def _run_remote(server, prepared: list[tuple], printer: Printer, state: Ru
             await asyncio.sleep(_REMOTE_POLL_S)
 
     window = _in_flight_window(settings)
-    for batch, planned in _chunks(prepared, window):
+    pending = collections.deque(_chunks(prepared, window))
+    while pending:
+        batch, planned = pending.popleft()
         while not state.stopping and watching and len(watching) + len(batch.plans) > window:
             await a_turn()
         if state.stopping:
@@ -1040,7 +1045,26 @@ async def _run_remote(server, prepared: list[tuple], printer: Printer, state: Ru
         )
         try:
             jobs, skipped = await server.queue(request.model_dump(mode="json"))
-        except (ServerUnreachable, ServerRefused) as exc:
+        except ServerRefused as exc:
+            if exc.status != HTTPStatus.TOO_MANY_REQUESTS:
+                for plan in batch.plans:
+                    if (item := planned.get(plan.file_path)) is not None:
+                        end(item, "failed", str(exc))
+                continue
+            # The server's queue has no room (its MAX_QUEUE_DEPTH, which may be
+            # below this run's window, or other clients' jobs): split the batch
+            # until it fits, and wait with one job for room to come.
+            half = len(batch.plans) // 2
+            if half:
+                pending.extendleft([
+                    (dataclasses.replace(batch, plans=batch.plans[half:]), planned),
+                    (dataclasses.replace(batch, plans=batch.plans[:half]), planned),
+                ])
+            else:
+                pending.appendleft((batch, planned))
+                await (a_turn() if watching else asyncio.sleep(_REMOTE_POLL_S))
+            continue
+        except ServerUnreachable as exc:
             for plan in batch.plans:
                 if (item := planned.get(plan.file_path)) is not None:
                     end(item, "failed", str(exc))

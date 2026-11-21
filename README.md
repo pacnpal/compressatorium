@@ -2959,7 +2959,9 @@ still convert. When `MAX_QUEUE_DEPTH` is set, jobs are fed in batches below it.
 directory at a time. When the server is running on the same `/config`,
 `convert` finds it there and hands it the jobs: they show in the web UI's job
 queue, share its `MAX_CONCURRENT_JOBS` limit and land in its Ledger, and the
-command prints each line as its job ends. Ctrl-C cancels this run's jobs on the
+command prints each line as its job ends. When the server's queue is full (its
+own `MAX_QUEUE_DEPTH`, or other clients' jobs), the command feeds it smaller
+batches and waits for room instead of failing. Ctrl-C cancels this run's jobs on the
 server. With no server running, `convert` runs the jobs itself, and a server
 started meanwhile waits until it is done. Either way a command and the server
 never work on the same file. A server in another container is found the same

@@ -5789,7 +5789,11 @@ On a server, `cli._run_remote` queues each chunk with the server's batch
 route (the CLI's own plan names the files; the server plans them again with
 the same planner, and its `report_skipped` list marks what it left out),
 follows each job with `GET /api/jobs/{id}` once a second, and prints each
-line from the job it reads back (`_finish`, as in-process). A stop cancels
+line from the job it reads back (`_finish`, as in-process). A chunk the
+server turns away with 429 (its queue full: its own `MAX_QUEUE_DEPTH`, which
+may be below the CLI's window, or other clients' jobs) is never failed: it is
+split in half until it fits, and a single job waits a poll, following this
+run's jobs, and is offered again. A stop cancels
 this run's jobs there (`DELETE /api/jobs/{id}`) and waits for them to end. A
 server that stops answering fails the jobs still followed. The auth token,
 when the server has one, comes from the same place the server reads it
