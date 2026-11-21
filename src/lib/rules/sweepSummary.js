@@ -9,7 +9,9 @@ const STOPPED = {
   stopped: 'the run was stopped',
 };
 
-const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+function plural(n, one, many) {
+  return `${n} ${n === 1 ? one : many}`;
+}
 
 /** Why a run queued and checked nothing. */
 export function nothingReason(r) {
