@@ -52,12 +52,15 @@
   const importing = $derived(datMatching.importingDat);
   const syncing = $derived(datMatching.syncing);
   const syncStatus = $derived(datMatching.syncStatus);
+  const redumpSystems = $derived(datMatching.redump?.systems ?? []);
+  const redumpSyncing = $derived(datMatching.redumpSyncing);
 
   let fileInputEl;
   let syncPollTimer = null;
 
   onMount(() => {
     datMatching.loadDATs();
+    datMatching.loadRedump();
     // Poll sync status whenever syncing flips on; an $effect handles
     // restart, this onMount just primes the initial status.
     datMatching.pollSyncStatus();
@@ -80,24 +83,39 @@
     }
   });
 
+  // The files (or zip members) the server refused, three named in one toast.
+  function reportRefused(errors) {
+    if (!errors?.length) return;
+    const shown = errors.slice(0, 3).map((e) => `${e.file}: ${e.error}`).join('\n');
+    const more = errors.length > 3 ? `\n…and ${errors.length - 3} more` : '';
+    toast.error(`${errors.length} not imported`, { description: shown + more });
+  }
+
   async function handleImport(event) {
     const files = Array.from(event.currentTarget?.files ?? []);
     if (!files.length) return;
-    let done = 0;
     try {
-      // One at a time: each import rebuilds the match cache.
-      for (const file of files) {
-        await datMatching.importDAT(file);
-        done += 1;
-      }
-      toast.success(`Imported ${done} game ${done === 1 ? 'list' : 'lists'}`);
+      // .dat and .xml files, or zips of them (No-Intro's daily pack), in one request.
+      const result = await datMatching.importDATs(files);
+      if (result?.imported?.length) toast.success(result.message);
+      reportRefused(result?.errors);
     } catch (e) {
-      toast.error(e?.message ?? "Couldn't import the game list", {
-        description: done ? `${done} imported before it stopped.` : undefined,
-      });
+      toast.error(e?.message ?? "Couldn't import the game lists");
     } finally {
       // Reset so the same file can be picked again.
       if (fileInputEl) fileInputEl.value = '';
+    }
+  }
+
+  async function handleRedumpSync() {
+    try {
+      const result = await datMatching.syncRedump();
+      if (!result) return;
+      const failed = (result.systems ?? []).filter((s) => s.status === 'failed');
+      if (failed.length) reportRefused(failed.map((s) => ({ file: s.system, error: s.error })));
+      else toast.success(result.message ?? 'Redump lists up to date');
+    } catch (e) {
+      toast.error(e?.message ?? "Couldn't get the Redump lists");
     }
   }
 
@@ -157,7 +175,7 @@
   <!-- `hidden`, not visually hidden: the button below is the one control. -->
   <input
     type="file"
-    accept=".dat,.xml"
+    accept=".dat,.xml,.zip"
     multiple
     hidden
     bind:this={fileInputEl}
@@ -171,6 +189,18 @@
   >
     {#snippet icon()}<Upload size={14} />{/snippet}
     Import game lists…
+  </Button>
+  <Button
+    variant="secondary"
+    disabled={redumpSyncing || redumpSystems.length === 0}
+    loading={redumpSyncing}
+    title={redumpSystems.length
+      ? `Downloads Redump's lists for ${redumpSystems.map((s) => s.name).join(', ')}`
+      : 'None of your Libraries has a disc console Redump covers'}
+    onclick={handleRedumpSync}
+  >
+    {#snippet icon()}<Download size={14} />{/snippet}
+    Get Redump lists for my consoles
   </Button>
   {#if syncing}
     <Button variant="destructive" onclick={handleCancelSync}>
@@ -215,7 +245,7 @@
 {:else if dats.length === 0}
   <EmptyState
     title="No game lists yet"
-    description="Import a .dat or .xml from No-Intro or Redump, or press Update MAME Redump."
+    description="Get the Redump lists for your disc consoles, or import game lists: several .dat files at once, or a whole zip such as No-Intro's daily pack."
     glyph="≣"
   />
 {:else}

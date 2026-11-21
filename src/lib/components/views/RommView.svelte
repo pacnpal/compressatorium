@@ -42,14 +42,12 @@
   // Connection. Each maps to this view's own tab.
   const TAB_OF_ROUTE = { browse: 'library', automation: 'automation', connection: 'settings' };
   const ROUTE_OF_TAB = { library: 'browse', automation: 'automation', settings: 'connection' };
-  let tab = $state(TAB_OF_ROUTE[ui.libraryTab] ?? 'library');
-  $effect(() => {
-    const routed = TAB_OF_ROUTE[ui.libraryTab];
-    if (routed) tab = routed;
-  });
+  // A bare `#/libraries/romm` shows Browse, or Connection while RomM isn't
+  // set up. Derived, never kept: Back to the bare URL shows that tab again.
+  let defaultTab = $state('library');
+  const tab = $derived(TAB_OF_ROUTE[ui.libraryTab] ?? defaultTab);
 
   function openTab(id) {
-    tab = id;
     ui.navigate('libraries', { id: 'romm', tab: ROUTE_OF_TAB[id] });
   }
 
@@ -265,7 +263,7 @@
       await Promise.all([romm.loadStatus(), romm.loadSettings()]);
       if (!alive) return;
       if (!romm.configured) {
-        tab = 'settings';
+        defaultTab = 'settings';
         return;
       }
       // Only touch the library once RomM answers AND its folder is visible
@@ -400,8 +398,12 @@
   {:else if !romm.configured}
     <EmptyState
       title="RomM is not connected yet"
-      description="Add your RomM URL, API token and library path in Settings — it takes about a minute."
-    />
+      description="Add your RomM URL, API token and library path. It takes about a minute."
+    >
+      {#snippet actions()}
+        <Button onclick={() => openTab('settings')}>Connect RomM</Button>
+      {/snippet}
+    </EmptyState>
   {:else if !romm.connected}
     <div class="notice error">
       <TriangleAlert size={16} />
@@ -413,7 +415,7 @@
       <span>
         The library path ({status.libraryRoot || 'unset'}) is not a directory
         here. Mount RomM's library folder into this container and check the path
-        in Settings.
+        on the Settings tab.
       </span>
     </div>
   {:else}
@@ -517,7 +519,7 @@
           <span>
             RomM cannot hash-match <strong>{activeMode?.outputExt}</strong> files,
             and the metadata settings could not be read, so whether a snapshot
-            is taken is unknown. Check Settings → Metadata before converting
+            is taken is unknown. Check the Metadata card on the Settings tab before converting
             anything you cannot re-identify by hand.
           </span>
         {:else}
@@ -528,8 +530,8 @@
                the only file that carried the metadata. -->
           <span>
             RomM cannot hash-match <strong>{activeMode?.outputExt}</strong> files,
-            and <strong>metadata preservation is switched off</strong> (Settings →
-            Metadata). These conversions will lose their RomM match and need
+            and <strong>metadata preservation is switched off</strong> (the Metadata
+            card on the Settings tab). These conversions will lose their RomM match and need
             re-identifying by hand. CHD and ZIP/7z keep their match automatically.
           </span>
         {/if}

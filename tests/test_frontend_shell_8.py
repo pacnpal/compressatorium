@@ -115,3 +115,69 @@ def test_the_folder_picker_never_takes_a_typed_path():
     assert "No folders in here." in src and "Couldn't open this folder." in src
     modal = _read("modals/FolderPickerModal.svelte")
     assert "<FolderPicker" in modal and "<BaseModal" in modal
+
+
+def test_the_nearest_library_owns_a_folder(tmp_path):
+    """Files' Library chip and Set console share `folderLibraryFor`; with
+    nested Libraries (#514) the nearest root owns the folder."""
+    from tests.test_frontend_rules_view import _run
+
+    data = _run(tmp_path, """
+const loading = libraries.load();
+await tick();
+__calls[0].resolve([
+  { id: 'romm', kind: 'romm' },
+  { id: 'folder:1', kind: 'folder', name: 'all', root: '/v' },
+  { id: 'folder:2', kind: 'folder', name: 'roms', root: '/v/roms/' },
+]);
+await loading;
+const at = (p) => libraries.folderLibraryFor(p)?.id ?? null;
+process.stdout.write(JSON.stringify([at('/v/roms/psx'), at('/v/other'), at('/w')]));
+""")
+    assert data == ["folder:2", "folder:1", None], data
+
+
+def test_findings_refresh_without_the_needs_attention_tab():
+    """Codex 4651470866: the badge and Activity's default tab read the findings
+    count, so it is refreshed when a run finishes and on entering Activity, not
+    only while Needs attention is mounted."""
+    app = (_SRC / "App.svelte").read_text(encoding="utf-8")
+    effect = re.search(
+        r"const finishedRuns = \$derived\(terminalJobIds\(jobs\.jobs\)\.join\(','\)\);"
+        r"\s*\$effect\(\(\) => \{\s*void finishedRuns;\s*findings\.load\(\);",
+        app,
+    )
+    assert effect, "App does not reload findings when runs finish"
+    activity = _read("views/ActivityView.svelte")
+    assert "onMount(() => {\n    findings.load()" in activity
+
+
+def test_one_url_shows_one_tab():
+    """Codex 4651470868: Back to a bare `#/libraries/romm` shows Browse again.
+    The tab is derived from the route, never kept from an earlier one."""
+    romm = _read("views/RommView.svelte")
+    assert "const tab = $derived(TAB_OF_ROUTE[ui.libraryTab] ?? defaultTab);" in romm
+    assert "let tab = $state(" not in romm and "tab = routed" not in romm
+    activity = _read("views/ActivityView.svelte")
+    assert "ui.activityTab ??" in activity
+
+
+def test_the_chd_badge_scan_has_a_home_in_settings():
+    """Codex 4651580103: the Dashboard's CHD metadata card was the only caller
+    of the scan. The file list only reads the cache, so a CHD added outside the
+    UI got no CD/DVD badge until a scan; Settings → Converters runs it now."""
+    scan = _read("settings/ChdMetadataScan.svelte")
+    assert "chdMetadata.startScan({ force })" in scan
+    assert "chdMetadata.pollStatus()" in scan
+    assert "<ProgressBar" in scan and "processed} / {total}" in scan
+    assert "Scan CHDs" in scan
+    assert "Force rescan" in scan
+    settings = _read("views/SettingsView.svelte")
+    # The sections are drawn from one list; the scan rides in the Converters one.
+    assert "<Converters />\n              <ChdMetadataScan />" in settings
+
+
+def test_converters_read_the_stores_not_ready_list():
+    """#519's Not ready here list moved from the Dashboard card to Converters."""
+    src = _read("settings/Converters.svelte")
+    assert "ui.unavailableTools" in src

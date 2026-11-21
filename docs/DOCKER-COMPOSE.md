@@ -217,12 +217,13 @@ Volume behavior:
 | `CHD_METADATA_STORE` | *(deprecated)* | Legacy JSON path; auto-migrated to SQLite on first startup (custom path honored if set) |
 | `CHD_VERIFICATION_STORE` | *(deprecated)* | Legacy JSON path; auto-migrated to SQLite on first startup (custom path honored if set) |
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` (CLI mode) |
+| *(any `*_PATH` below)* | | **Found on its own** (#515): each fixed path is where the image installs the program. When it isn't there and the variable is unset, the program is looked up on `PATH` by name (a Homebrew or distro install works with nothing set). A path you set is used as is. A program found nowhere leaves its tool listed as not ready on the dashboard, with what to install or set |
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to the z3ds_compressor binary (3DS) |
 | `NSZ_PATH` | `nsz` | Path to the nsz binary (Switch); resolved on PATH by default |
 | `MAXCSO_PATH` | `/usr/local/bin/maxcso` | Path to maxcso binary (PSP/PS2 CSO/CSO v2/ZSO/DAX) |
-| `SEVENZIP_PATH` | `7z` | Path to the 7z binary (handheld ROM `.gb`/`.gbc`/`.gba`/`.nds` ↔ `.7z`/`.zip`). Ships via `p7zip-full`; set to `7zz` on distros that provide the newer `7zip` package |
+| `SEVENZIP_PATH` | `7z` | Path to the 7z binary (handheld ROM `.gb`/`.gbc`/`.gba`/`.nds` ↔ `.7z`/`.zip`). Ships via `p7zip-full`; with no `7z` on `PATH`, a `7zz` (the newer `7zip` package) is used on its own |
 | `UNAR_PATH` | `unar` | Path to the unar binary (a multi-part RAR4/RAR5 set → the one file inside it, `rar_extract`). Ships via the Debian `unar` package |
 | `MAKEPS3ISO_PATH` | `/usr/local/bin/makeps3iso` | Path to the makeps3iso binary (PS3 decrypted folder → ISO) |
 | `JWUDTOOL_PATH` | `/usr/local/bin/jwudtool` | Path to the JWUDTool launcher (Wii U `.wud` ↔ `.wux`). The image ships a launcher that execs the bundled jar with a headless JRE |
@@ -258,7 +259,6 @@ Volume behavior:
 | `CHD_PATCH_MAX_ROM_SIZE` | `536870912` | Max size in bytes of a ROM to patch, and of the patched ROM (0 disables) |
 | `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
 | `LOG_PATH` | (none) | Path to log file (stdout only if unset). Legacy alias: `CHD_DEBUG_LOG_PATH` |
-| `CHD_DEBUG_HEARTBEAT` | `30` | Maintenance loop interval (seconds) |
 | `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | Debug progress log interval |
 | `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | Debug progress timeout |
 | `CHD_PROGRESS_TIMEOUT` | `600` | Fail a conversion if progress and output size do not advance for this many seconds (0 disables) |

@@ -55,6 +55,19 @@ async def test_an_unreadable_stored_row_answers_the_safe_defaults(store) -> None
     assert (await preferences_routes.get_defaults_preferences())["delete_on_verify"] is False
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stored", [["verify_after"], "true", 3])
+async def test_a_stored_value_that_is_not_an_object_answers_the_safe_defaults(store, stored):
+    """CodeRabbit 4651507790: a list or string stored under the key must not
+    raise before the fallback."""
+    await store.put("defaults", stored)
+    assert await preferences_routes.get_defaults_preferences() == {
+        "verify_after": True,
+        "delete_on_verify": False,
+        "container_only": False,
+    }
+
+
 def test_unknown_or_wrong_typed_fields_are_refused() -> None:
     with pytest.raises(ValidationError):
         preferences_routes.DefaultsPreferences.model_validate({"verify_after": "maybe"})

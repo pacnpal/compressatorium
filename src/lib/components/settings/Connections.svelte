@@ -142,7 +142,7 @@
   .what { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); min-width: 0; }
   .name { font-weight: var(--weight-medium); color: var(--text-1); }
   .muted { color: var(--text-2); }
-  .good { color: var(--success); }
+  .good { color: var(--success-text); }
   .bad { color: var(--error); overflow-wrap: anywhere; }
   .state { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--text-2); }
   .test { margin: 0; font-size: var(--text-sm); }

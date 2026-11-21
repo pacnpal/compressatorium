@@ -102,21 +102,37 @@
   async function loadRetention() {
     retentionError = null;
     try {
-      retention = asOption(await api.getLedgerSettings());
+      retentionStored = asOption(await api.getLedgerSettings());
+      retention = retentionStored;
     } catch (e) {
       retentionError = e?.message ?? 'Request failed';
     }
   }
 
-  async function setRetention(value) {
-    const before = retention;
+  // Saves go one at a time, in the order picked, and only the newest one's
+  // answer (or failure) is shown: an older save landing last never puts its
+  // value back on screen.
+  let retentionSaves = 0;
+  let retentionChain = Promise.resolve();
+  // What the server last said it stores; a failed save falls back to it.
+  let retentionStored = null;
+
+  function setRetention(value) {
+    const ticket = ++retentionSaves;
     retention = value;
-    try {
-      retention = asOption(await api.putLedgerSettings({ retention_days: value ? Number(value) : null }));
-    } catch (e) {
-      retention = before;
-      toast.error(e?.message ?? "Couldn't save the History setting");
-    }
+    retentionChain = retentionChain.then(async () => {
+      try {
+        retentionStored = asOption(
+          await api.putLedgerSettings({ retention_days: value ? Number(value) : null }),
+        );
+        if (ticket === retentionSaves) retention = retentionStored;
+      } catch (e) {
+        if (ticket !== retentionSaves) return;
+        retention = retentionStored;
+        toast.error(e?.message ?? "Couldn't save the History setting");
+      }
+    });
+    return retentionChain;
   }
 
   onMount(() => {

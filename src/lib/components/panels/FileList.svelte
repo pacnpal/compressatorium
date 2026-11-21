@@ -566,16 +566,24 @@
 <style>
   .filelist { display: flex; flex-direction: column; min-width: 0; gap: var(--space-3); }
 
+  /* The breadcrumb gets a row of its own: squeezed into a column beside the
+     search box, a deep path drew over it. */
   .toolbar {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    gap: var(--space-3);
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--space-2) var(--space-3);
     align-items: center;
   }
   @media (max-width: 700px) {
-    .toolbar { grid-template-columns: 1fr; }
+    .toolbar { grid-template-columns: minmax(0, 1fr); }
   }
-  .crumbs { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
+  .crumbs {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+  }
 
   .search {
     position: relative;

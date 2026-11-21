@@ -12,6 +12,7 @@
   import NotificationSettings from './NotificationSettings.svelte';
   import Defaults from '$lib/components/settings/Defaults.svelte';
   import Converters from '$lib/components/settings/Converters.svelte';
+  import ChdMetadataScan from '$lib/components/settings/ChdMetadataScan.svelte';
 
   const SECTIONS = [
     { id: 'connections', title: 'Connections' },
@@ -63,6 +64,7 @@
               <Defaults />
             {:else}
               <Converters />
+              <ChdMetadataScan />
             {/if}
           </section>
         {/if}

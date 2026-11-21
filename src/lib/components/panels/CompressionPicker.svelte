@@ -321,7 +321,7 @@
     color: var(--text-3);
     font-size: var(--text-xs);
   }
-  .cap-note { color: var(--warning); margin-left: var(--space-1); }
+  .cap-note { color: var(--warning-text); margin-left: var(--space-1); }
   .compat-warning {
     margin: 0;
     padding: var(--space-2);

@@ -75,6 +75,7 @@
   select:focus-visible {
     outline: none;
     border-color: var(--accent);
+    box-shadow: var(--focus-ring);
   }
   .disabled select {
     opacity: 0.55;

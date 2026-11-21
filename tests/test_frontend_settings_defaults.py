@@ -133,6 +133,11 @@ def test_the_defaults_section_edits_the_remembered_compression_and_history():
     assert "api.getLedgerSettings()" in src and "api.putLedgerSettings(" in src
     for label in ("Forever", "30 days", "90 days", "1 year"):
         assert label in src, label
+    # Retention saves run in order and only the newest one's answer shows.
+    assert "retentionChain = retentionChain.then(" in src
+    assert "if (ticket === retentionSaves) retention = retentionStored;" in src
+    # Compression saves are chained too, never two PUTs racing.
+    assert "saveChain = saveChain.then(" in src
     endpoints = (_SRC / "api" / "endpoints.js").read_text(encoding="utf-8")
     assert "getLedgerSettings:" in endpoints and "putLedgerSettings(" in endpoints
     assert "/ledger/settings" in endpoints
@@ -151,6 +156,11 @@ def test_settings_is_five_sections_with_deep_links():
         assert part in src, part
     # The in-page nav is sticky on a wide screen.
     assert "position: sticky" in src and "1100px" in src
+    # ...which needs <main> not to be a scroll box: the page scrolls, and a
+    # sticky child sticks to its nearest scroll box.
+    app = (_ROOT / "src" / "App.svelte").read_text(encoding="utf-8")
+    main_rule = re.search(r"\n  \.main \{([^}]*)\}", app).group(1)
+    assert "overflow-y: auto" not in main_rule and "overflow-x: clip" in main_rule
 
 
 def test_hasheous_lives_in_connections_and_identification_is_trimmed():
@@ -167,3 +177,72 @@ def test_hasheous_lives_in_connections_and_identification_is_trimmed():
     assert 'aria-label="Import DAT file"' not in ident
     assert "<summary>Name order</summary>" in ident
     assert not (_COMPONENTS / "views" / "DATView.svelte").exists()
+
+
+def test_identification_imports_packs_and_syncs_redump():
+    """#527's DAT-screen pieces live in Settings → Game identification."""
+    ident = _read("settings/Identification.svelte")
+    assert "datMatching.importDATs(files)" in ident
+    assert 'accept=".dat,.xml,.zip"' in ident and "multiple" in ident
+    assert "Get Redump lists for my consoles" in ident
+    assert "datMatching.syncRedump()" in ident and "datMatching.loadRedump()" in ident
+    # The first-run question moved to Connections (HasheousQuestion).
+    assert "hasheousUndecided" not in ident and "Yes, look them up" not in ident
+
+
+_REDUMP_STUBS = """
+class SvelteMap extends Map {}
+const untrack = (fn) => fn();
+const pending = [];
+let syncCalls = 0;
+const api = {
+  getRedump: () => new Promise((resolve) => pending.push(resolve)),
+  syncRedump: () => { syncCalls += 1; return new Promise((resolve) => pending.push(resolve)); },
+  getDATStats: async () => ({ total_dats: 0 }),
+  getDATRanking: async () => ({ custom: false, dats: [] }),
+};
+"""
+
+_REDUMP_SCENARIO = """
+const out = {};
+// Two loads answer out of order: the older answer is dropped.
+const a = datMatching.loadRedump();
+const b = datMatching.loadRedump();
+pending[1]({ systems: [{ name: 'new' }] });
+await b;
+pending[0]({ systems: [{ name: 'old' }] });
+await a;
+out.redump = datMatching.redump.systems[0].name;
+pending.length = 0;
+// A second click while a sync runs starts nothing.
+const first = datMatching.syncRedump();
+out.second = await datMatching.syncRedump();
+out.calls = syncCalls;
+pending[0]({ systems: [], message: 'ok' });
+// The sync reloads the systems once it's done; answer that too.
+for (let i = 0; i < 20 && pending.length < 2; i += 1) await new Promise((r) => setTimeout(r, 0));
+pending[1]({ systems: [{ name: 'new' }] });
+await first;
+console.log(JSON.stringify(out));
+"""
+
+
+def test_redump_loads_keep_the_newest_and_a_sync_never_runs_twice():
+    node = _find_node()
+    if node is None:
+        pytest.skip("Node is not installed")
+    script = "\n".join([
+        _REDUMP_STUBS,
+        _plain(_STORES / "latestSaveQueue.js"),
+        _plain(_STORES / "datMatching.svelte.js"),
+        "(async () => {",
+        _REDUMP_SCENARIO,
+        "})().catch((e) => { console.error(e); process.exit(1); });",
+    ])
+    done = subprocess.run(
+        [node, "--input-type=module", "-e", script],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    assert out == {"redump": "new", "second": None, "calls": 1}
