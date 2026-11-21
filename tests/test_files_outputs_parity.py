@@ -35,6 +35,7 @@ FILEENTRY_KEYS = {
     "romm_identified", "dat_match",
     # The Source a companion row belongs to (#504); None for any other row.
     "companion_of",
+    "disc_of",
 }
 # On-disk search hits mirror the file schema minus the listing-only archive
 # summary / media / split fields, plus the ``in_archive`` marker.

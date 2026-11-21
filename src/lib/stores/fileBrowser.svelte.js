@@ -28,6 +28,68 @@ function loadPageSize() {
   return PAGE_SIZE_OPTIONS.includes(n) ? n : DEFAULT_PAGE_SIZE;
 }
 
+/**
+ * The listing as games: a row another row owns is folded under it. A sheet's
+ * tracks, a split dump's parts and a RAR set's later volumes (`companion_of`)
+ * fold under their head; a playlist's discs (`disc_of`) under the `.m3u`, each
+ * disc keeping its own tracks. A head's `size` is its own plus its parts';
+ * `parts` holds the folded rows and `part_kind` says whether they are
+ * `'files'` or `'discs'`. Rows that fold nothing come back as they are.
+ */
+function foldGameRows(entries) {
+  // Plain objects as maps: a store module's Map/Set reads as reactive state.
+  const listed = Object.fromEntries(entries.map((e) => [e?.path, true]));
+  const folds = { partsOf: {}, discsOf: {}, folded: {} };
+  for (const e of entries) {
+    if (!e?.path) continue;
+    if (e.companion_of && e.companion_of !== e.path && listed[e.companion_of]) {
+      foldUnder(folds, folds.partsOf, e.companion_of, e);
+    } else if (e.disc_of && e.disc_of !== e.path && listed[e.disc_of]) {
+      foldUnder(folds, folds.discsOf, e.disc_of, e);
+    }
+  }
+  if (Object.keys(folds.folded).length === 0) return entries;
+  const rows = [];
+  for (const e of entries) {
+    if (!folds.folded[e?.path]) rows.push(gameRow(e, folds));
+  }
+  return rows;
+}
+
+/** File *entry* under the row at *key* in *into* (a part or a disc). */
+function foldUnder(folds, into, key, entry) {
+  if (!into[key]) into[key] = [];
+  into[key].push(entry);
+  folds.folded[entry.path] = true;
+}
+
+/** *e* with its folded parts (a disc keeps its own), or *e* as it is. */
+function gameRow(e, folds) {
+  const discRows = folds.discsOf[e.path];
+  const discs = discRows ? discRows.map((d) => gameRow(d, folds)) : null;
+  const parts = discs ?? folds.partsOf[e.path];
+  if (!parts) return e;
+  const size = (e.size ?? 0) + parts.reduce((n, p) => n + (p.size ?? 0), 0);
+  return { ...e, size, own_size: e.size ?? 0, parts, part_kind: discs ? 'discs' : 'files' };
+}
+
+/** Index *row* and every row folded under it by path. */
+function indexRow(row, into) {
+  if (!row?.path) return;
+  into[row.path] = row;
+  for (const part of row.parts ?? []) indexRow(part, into);
+}
+
+/** Add *entry* and its folded parts to *found*, skipping any part of a set. */
+function addDeletable(entry, found) {
+  if (!entry?.path || entry.path.includes('::') || entry.split_parts != null) return;
+  if (!found.seen[entry.path]) {
+    found.seen[entry.path] = true;
+    found.out.push(entry);
+  }
+  for (const part of entry.parts ?? []) addDeletable(part, found);
+}
+
 class FileBrowserStore {
   // Volumes
   volumes = $state([]);
@@ -77,9 +139,19 @@ class FileBrowserStore {
 
   // Selection
   selectedFiles = new SvelteMap();
+  // The playlists whose discs are selected, path -> row. Convert, check and
+  // rename act on the discs (in `selectedFiles`); only Delete takes these too.
+  selectedPlaylists = new SvelteMap();
   lastSelectedIndex = $state(-1);
 
-  // Search
+  // Search: 'folder' filters the open folder's games by name; 'everywhere'
+  // lists every game under it, inside archives too.
+  searchScope = $state('folder');
+  // Bumped by every search started and every exit from search mode.
+  _searchGeneration = 0;
+  // The words of the search still on its way, for a refresh meanwhile.
+  _pendingSearchQuery = null;
+  folderQuery = $state('');
   searchMode = $state(false);
   searchResults = $state(null);
   searchQuery = $state('');
@@ -148,8 +220,17 @@ class FileBrowserStore {
     });
   }
 
+  /**
+   * The rows to show: `sourceEntries` with each multi-file game folded into
+   * one row (`foldGameRows`), before sort and paging, so both count games.
+   * `entries` stays the raw listing.
+   */
+  get rows() {
+    return foldGameRows(this.sourceEntries);
+  }
+
   get sortedEntries() {
-    const list = this.sourceEntries.slice();
+    const list = this.rows.slice();
     const order = this.sortOrder === 'asc' ? 1 : -1;
     list.sort((a, b) => {
       // Directories first
@@ -200,9 +281,13 @@ class FileBrowserStore {
   }
 
   get filteredEntries() {
-    if (!this.filter) return this.sortedEntries;
+    const q = !this.searchMode ? (this.folderQuery ?? '').trim().toLowerCase() : '';
+    const named = q
+      ? this.sortedEntries.filter((e) => (e.display_name || e.name || '').toLowerCase().includes(q))
+      : this.sortedEntries;
+    if (!this.filter) return named;
     const f = this.filter.toLowerCase();
-    return this.sortedEntries.filter((e) => {
+    return named.filter((e) => {
       if (e.type !== 'file') return true;
       // Suffix match on the row's NAME, not equality against `extension`.
       // The filter values come from `registry.allFilterableExts()`, which
@@ -233,7 +318,7 @@ class FileBrowserStore {
     // are never selectable.
     const visible = this.visibleEntries.filter((e) => this._isSelectable(e));
     if (visible.length === 0) return false;
-    return visible.every((e) => this.selectedFiles.has(e.path));
+    return visible.every((e) => this.isRowSelected(e));
   }
 
   /**
@@ -255,7 +340,7 @@ class FileBrowserStore {
   get allFilteredSelected() {
     const all = this.selectableEntries;
     if (all.length === 0) return false;
-    return all.every((e) => this.selectedFiles.has(e.path));
+    return all.every((e) => this.isRowSelected(e));
   }
 
   // ─── Volumes ──────────────────────────────────────────────────────────
@@ -319,6 +404,7 @@ class FileBrowserStore {
     this.exitSearch();
     this.selectedVolume = volume;
     this.currentPath = volume.path;
+    this.folderQuery = '';
     this.currentArchivePath = null;
     this.clearSelection();
     this.page = 1;                       // reset paging, new listing
@@ -355,6 +441,7 @@ class FileBrowserStore {
     }
     this.currentPath = path;
     this.currentArchivePath = null;
+    this.folderQuery = '';               // a name filter is for the folder it was typed in
     this.clearSelection();
     this.page = 1;                       // smaller folder shouldn't strand on page N>1
     await this.refresh({ force: true });
@@ -452,7 +539,8 @@ class FileBrowserStore {
       // re-fetch on any forced refresh rather than gating on a non-empty
       // query (the legacy "Search All" behaviour).
       if (force && this.currentPath) {
-        await this._enterSearch(this.searchQuery);
+        // The newest words asked for, even while their search is still out.
+        await this._enterSearch(this._pendingSearchQuery ?? this.searchQuery);
       }
       return;
     }
@@ -644,10 +732,11 @@ class FileBrowserStore {
    */
   async _enterSearch(query) {
     if (!this.currentPath) return;
-    // Drop overlapping searches, a second in-flight call would clear the
-    // `searching` flag when it finishes and let the busy state lift while
-    // an earlier request is still running.
-    if (this.searching) return;
+    // The newest search wins: one started earlier, or left behind by a scope
+    // change or a navigation (`exitSearch`), never applies its answer or
+    // lifts the busy state of the one after it.
+    const generation = ++this._searchGeneration;
+    this._pendingSearchQuery = query;
     this.searching = true;
     // Clear any stale error from a prior failed search/load, symmetric
     // with the directory load paths. Otherwise the error banner survives
@@ -655,6 +744,7 @@ class FileBrowserStore {
     this.entriesError = null;
     try {
       const data = await api.searchFiles(this.currentPath, true, true);
+      if (generation !== this._searchGeneration) return;
       // Flip into search mode only on success. If the request fails,
       // leaving searchMode false keeps the user looking at the current
       // directory's entries instead of an empty search view.
@@ -669,10 +759,14 @@ class FileBrowserStore {
       // cleanup the X button does on exitSearch.
       this.clearSelection();
     } catch (e) {
+      if (generation !== this._searchGeneration) return;
       this.entriesError = e?.message ?? 'Search failed';
       // Stay out of search mode so the directory listing remains visible.
     } finally {
-      this.searching = false;
+      if (generation === this._searchGeneration) {
+        this.searching = false;
+        this._pendingSearchQuery = null;
+      }
     }
   }
 
@@ -682,6 +776,12 @@ class FileBrowserStore {
    * (the X / clear-search contract).
    */
   async search(query) {
+    // This folder: a name filter over the open folder's games, no request.
+    if (this.searchScope !== 'everywhere') {
+      this.folderQuery = query ?? '';
+      this.page = 1;
+      return;
+    }
     // /api/files/search has no query parameter, it returns every
     // convertible file under the current path. The `query` is used
     // client-side to filter the returned set (see sourceEntries).
@@ -690,6 +790,19 @@ class FileBrowserStore {
       return;
     }
     await this._enterSearch(query);
+  }
+
+  /** Search this folder or everywhere under it, keeping the words typed. */
+  async setSearchScope(scope, query = this.searchMode ? this.searchQuery : this.folderQuery) {
+    this.searchScope = scope === 'everywhere' ? 'everywhere' : 'folder';
+    if (this.searchScope === 'everywhere') {
+      this.folderQuery = '';
+      await this._enterSearch(query ?? '');
+      return;
+    }
+    this.exitSearch();
+    this.folderQuery = query ?? '';
+    this.page = 1;
   }
 
   /**
@@ -702,6 +815,10 @@ class FileBrowserStore {
   }
 
   exitSearch() {
+    // A search still on its way belongs to the view being left.
+    this._searchGeneration += 1;
+    this._pendingSearchQuery = null;
+    this.searching = false;
     this.searchMode = false;
     this.searchResults = null;
   }
@@ -819,8 +936,9 @@ class FileBrowserStore {
   _isSelectable(entry) {
     if (!entry) return false;
     // Part of another row's set (#504: a later RAR volume, a split dump's
-    // part): converted, checked and deleted with its Source, never alone.
-    if (entry.companion_of) return false;
+    // part, a sheet's track): converted, checked and deleted with its Source,
+    // never alone. A playlist's disc is ticked through its playlist's row.
+    if (entry.companion_of || entry.disc_of) return false;
     if (entry.type === 'directory') {
       // Directories are navigation-only EXCEPT under a directory-input mode
       // (makeps3iso folder_to_iso), where a folder the backend marked
@@ -845,10 +963,33 @@ class FileBrowserStore {
     return this._isSelectable(entry);
   }
 
+  /** Whether a row is ticked: a playlist when all its discs are. */
+  isRowSelected(row) {
+    if (row?.part_kind === 'discs') {
+      return row.parts.length > 0 && row.parts.every((d) => this.selectedFiles.has(d.path));
+    }
+    return this.selectedFiles.has(row?.path);
+  }
+
+  /** Tick or untick one row; a playlist ticks its discs and is kept for Delete. */
+  #setRow(row, on) {
+    if (row?.part_kind === 'discs') {
+      for (const disc of row.parts) {
+        if (on) this.selectedFiles.set(disc.path, disc);
+        else this.selectedFiles.delete(disc.path);
+      }
+      if (on) this.selectedPlaylists.set(row.path, row);
+      else this.selectedPlaylists.delete(row.path);
+      return;
+    }
+    if (on) this.selectedFiles.set(row.path, row);
+    else this.selectedFiles.delete(row.path);
+  }
+
   /**
    * The subset of the current selection that the active conversion
    * mode would accept as input. ConvertPanel filters through this
-   * before calling `conversion.submit()` so the worker never sees
+   * before calling `conversion.submitAuto()` so the worker never sees
    * paths it would reject.
    */
   get convertibleSelection() {
@@ -880,13 +1021,9 @@ class FileBrowserStore {
       // threw on `visible[i].path` (TypeError), losing the click entirely.
       const anchor = Math.min(this.lastSelectedIndex, visible.length - 1);
       const [start, end] = idx > anchor ? [anchor, idx] : [idx, anchor];
-      for (let i = start; i <= end; i += 1) {
-        this.selectedFiles.set(visible[i].path, visible[i]);
-      }
-    } else if (this.selectedFiles.has(entry.path)) {
-      this.selectedFiles.delete(entry.path);
+      for (let i = start; i <= end; i += 1) this.#setRow(visible[i], true);
     } else {
-      this.selectedFiles.set(entry.path, entry);
+      this.#setRow(entry, !this.isRowSelected(entry));
     }
     this.lastSelectedIndex = idx;
   }
@@ -898,11 +1035,8 @@ class FileBrowserStore {
     // CHDMAN createcd). Filter to rows the active conversion mode
     // actually accepts.
     const visible = this.visibleEntries.filter((e) => this._isSelectable(e));
-    if (this.allVisibleSelected) {
-      for (const e of visible) this.selectedFiles.delete(e.path);
-    } else {
-      for (const e of visible) this.selectedFiles.set(e.path, e);
-    }
+    const on = !this.allVisibleSelected;
+    for (const e of visible) this.#setRow(e, on);
   }
 
   /**
@@ -915,12 +1049,12 @@ class FileBrowserStore {
    * so this can only ever grow the set. The inverse is `clearSelection()`.
    */
   selectAllFiltered() {
-    for (const e of this.selectableEntries) this.selectedFiles.set(e.path, e);
+    for (const e of this.selectableEntries) this.#setRow(e, true);
   }
 
   /** Deselect every row in the current view (all pages), leaving others intact. */
   deselectAllFiltered() {
-    for (const e of this.selectableEntries) this.selectedFiles.delete(e.path);
+    for (const e of this.selectableEntries) this.#setRow(e, false);
     // Drop the shift-click range anchor, the same way clearSelection() does.
     // This action is only reachable once the whole view is selected, so it always
     // empties the view; an anchor left pointing into it is stale, and the next
@@ -929,8 +1063,39 @@ class FileBrowserStore {
     this.lastSelectedIndex = -1;
   }
 
+  /**
+   * The files Delete takes for the selection: every file of each ticked game
+   * (its tracks, its discs and theirs) and each ticked playlist. Never part of
+   * a set: a folded split output (`split_parts`) and an archive member are
+   * left out, with everything under them.
+   */
+  filesToDelete() {
+    // Each ticked game as the listing has it now: a refresh can change its
+    // files, and a game no longer listed is left alone.
+    const current = {};
+    for (const row of this.rows) indexRow(row, current);
+    const found = { out: [], seen: {} };
+    for (const path of [...this.selectedFiles.keys(), ...this.selectedPlaylists.keys()]) {
+      if (current[path]) addDeletable(current[path], found);
+    }
+    return found.out;
+  }
+
+  /**
+   * Untick *paths* only (a finished run's games), and any playlist whose discs
+   * are no longer all ticked; everything else stays selected.
+   */
+  deselect(paths) {
+    for (const path of paths ?? []) this.selectedFiles.delete(path);
+    for (const [path, row] of [...this.selectedPlaylists]) {
+      if (!this.isRowSelected(row)) this.selectedPlaylists.delete(path);
+    }
+    if (this.selectedFiles.size === 0) this.lastSelectedIndex = -1;
+  }
+
   clearSelection() {
     this.selectedFiles.clear();
+    this.selectedPlaylists.clear();
     this.lastSelectedIndex = -1;
   }
 

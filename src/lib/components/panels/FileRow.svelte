@@ -6,7 +6,10 @@
   import { formatSize } from '$lib/api/format.js';
   import { iconForEntry } from '$lib/util/fileIcon.js';
   import { registry } from '$lib/tools/registry.js';
+  import { ui } from '$lib/stores/ui.svelte.js';
+  import { formatOfPath, likelyFormat } from '$lib/tools/convertTargets.js';
   import CircleCheck from '@lucide/svelte/icons/circle-check';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import BadgeCheck from '@lucide/svelte/icons/badge-check';
   import Badge from '$lib/components/ui/Badge.svelte';
   import RowActionsMenu from './RowActionsMenu.svelte';
@@ -19,16 +22,19 @@
   const isArchive = $derived(entry?.type === 'archive');
   const isFile = $derived(!isDirectory && !isArchive);
 
-  const selected = $derived(fileBrowser.selectedFiles.has(path));
+  // A playlist row reads as ticked when all its discs are.
+  const selected = $derived(fileBrowser.isRowSelected(entry));
   // Files are always selectable; archives only when the active mode takes the
   // archive directly (e.g. romz_extract on .7z/.zip); directories only under a
   // folder-input mode (makeps3iso) and only when the backend marked them
   // convertible. Drives the checkbox; the name button still navigates.
   const selectable = $derived(fileBrowser.isSelectable(entry));
-  // A row that is part of another row's set (#504: a later RAR volume, a
-  // split dump's part) names the file that leads it; it is never ticked alone.
-  const companionSource = $derived(
-    entry?.companion_of ? entry.companion_of.split(/[\\/]/).pop() : null,
+  // A multi-file game (a sheet and its tracks, a RAR set, a split dump, a
+  // playlist and its discs) is one row; its files fold under it (#504).
+  const parts = $derived(Array.isArray(entry?.parts) ? entry.parts : []);
+  let expanded = $state(false);
+  const partWord = $derived(
+    `${entry?.part_kind === 'discs' ? 'disc' : 'file'}${parts.length === 1 ? '' : 's'}`,
   );
   // A RomM listing's own matches are seeded into the store (#427), so this is
   // the one answer, and a policy change clears it everywhere at once.
@@ -76,16 +82,25 @@
   );
 
   const outputs = $derived(Array.isArray(entry?.outputs) ? entry.outputs : []);
+  const readyOutputs = $derived(outputs.filter((o) => o?.exists));
 
-  // The check badge is this file's own check only. A source .cue / .bin was
-  // not checked when its .chd was, so it doesn't read "Intact": its output
-  // badge carries the tick instead (below). Null when nothing passed.
+  // The check badge is this file's own check only. An original .cue or .bin
+  // was not checked when its .chd was, so the new file's chip carries the
+  // tick instead (below). Null when nothing passed.
   const check = $derived(verification.checkFor(path) ?? null);
   const CHECK_BADGES = {
-    round_tripped: ['Round-tripped', 'Round-tripped: decoded to the same content as its source when converted'],
-    recognized: ['Recognized', 'Recognized: Intact, and its hash is in one of your DATs or in Hasheous'],
-    intact: ['Intact', 'Intact: passed its own container check'],
+    round_tripped: ['Exact copy', 'Exact copy: reads back the same as its original'],
+    recognized: ['Known good dump', 'Known good dump: checked, and its checksum is in one of your game lists or on Hasheous'],
+    intact: ['Checked', 'Checked: passed its own check'],
   };
+
+  // "→ CHD" when this could be made smaller here and nothing has been made
+  // yet. The plan decides; this is the likely answer.
+  const ready = $derived(ui.toolsKnown ? ui.visibleTools.map((t) => t.id) : null);
+  const willBecome = $derived(
+    (isFile || isDirectory) && convertibleBy.length > 0 && readyOutputs.length === 0
+      ? likelyFormat(entry, ready) : null,
+  );
 
   // Shared file-type icon map (src/lib/util/fileIcon.js) so new formats only
   // need to be added in one place.
@@ -141,6 +156,17 @@
     {/if}
   </td>
   <td class="name">
+    <div class="name-cell">
+    {#if parts.length}
+      <button
+        type="button"
+        class="chevron"
+        class:open={expanded}
+        aria-expanded={expanded}
+        aria-label={`Show the ${parts.length} ${partWord} of ${entry?.name}`}
+        onclick={() => (expanded = !expanded)}
+      ><ChevronRight size={14} aria-hidden="true" /></button>
+    {/if}
     <button
       type="button"
       class="name-button"
@@ -157,9 +183,8 @@
         {#if entry?.display_name}
           <span class="file-name" title={entry.name}>{entry.name}</span>
         {/if}
-        {#if companionSource}
-          <!-- Beneath the name, so the row's own file name stays readable. -->
-          <span class="file-name" title={entry.companion_of}>part of {companionSource}</span>
+        {#if parts.length}
+          <span class="file-name">{parts.length} {partWord}</span>
         {/if}
         {#if appName}
           <span class="app-name" title={matchTooltip}>
@@ -172,8 +197,9 @@
         {#if summary}<span class="archive-summary">{summary}</span>{/if}
       {/if}
     </button>
+    </div>
   </td>
-  <td class="size">{isFile ? formatSize(entry?.size) : ''}</td>
+  <td class="size">{isFile || parts.length ? formatSize(entry?.size) : ''}</td>
   <td class="ext">{registry.displayExtension(entry)}</td>
   <td class="badges">
     {#if mediaType === 'cd'}<Badge tone="cd">CD</Badge>{/if}
@@ -190,28 +216,44 @@
         <BadgeCheck size={11} aria-hidden="true" /> {remoteMatch ? 'HASH' : 'DAT'}
       </Badge>
     {/if}
-    {#each outputs as out (out.tool_id)}
-      {#if out.exists}
-        {@const outCheck = out.path ? verification.checkFor(out.path) : null}
-        <Badge
-          tone="success"
-          title={`${out.tool_id} output ready${outCheck ? ` and checked (${CHECK_BADGES[outCheck]?.[0] ?? outCheck})` : ''}`}
-        >
-          {#if outCheck}<CircleCheck size={11} aria-hidden="true" />{/if}
-          {out.tool_id}{out.ready ? '' : '*'}
-        </Badge>
-      {/if}
+    {#each readyOutputs as out (out.path ?? out.tool_id)}
+      {@const outCheck = out.path ? verification.checkFor(out.path) : null}
+      {@const format = formatOfPath(out.path) ?? 'New file'}
+      <Badge
+        tone="success"
+        title={`${format} ${out.ready ? 'ready' : 'still being written'}${outCheck ? `, ${CHECK_BADGES[outCheck]?.[0] ?? 'checked'}` : ''}: ${out.path ?? ''}`}
+      >
+        {#if outCheck}<CircleCheck size={11} aria-hidden="true" />{/if}
+        {format}{out.ready ? ' ✓' : '…'}
+      </Badge>
     {/each}
-    {#if (isFile || isDirectory) && convertibleBy.length > 0}
-      <span class="convertible-hint" title={`Convertible by: ${convertibleBy.join(', ')}`}>
-        {convertibleBy.join('·')}
-      </span>
+    {#if willBecome}
+      <span class="convertible-hint" title={`Can be made smaller: ${willBecome}`}>→ {willBecome}</span>
     {/if}
   </td>
   <td class="actions">
     <RowActionsMenu {entry} />
   </td>
 </tr>
+{#if expanded}
+  {#each parts as part (part.path)}
+    <tr class="row part">
+      <td class="sel"></td>
+      <td class="name">
+        <span class="part-name" title={part.path}>
+          {part.name}
+          {#if part.parts?.length}
+            <span class="file-name">{part.parts.length} {part.parts.length === 1 ? 'file' : 'files'}</span>
+          {/if}
+        </span>
+      </td>
+      <td class="size">{formatSize(part.size)}</td>
+      <td class="ext">{registry.displayExtension(part)}</td>
+      <td class="badges"></td>
+      <td class="actions"></td>
+    </tr>
+  {/each}
+{/if}
 
 <style>
   .row {
@@ -276,10 +318,37 @@
     text-overflow: ellipsis;
     min-width: 0;
   }
+  /* A game's name is never cut: it wraps to a second line instead. */
   .name-text {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+  }
+  .name-cell { display: flex; align-items: center; gap: var(--space-1); }
+  .chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--text-2);
+    cursor: pointer;
+    transition: transform var(--dur-fast) var(--ease-out);
+  }
+  .chevron:hover { background: var(--surface-3); color: var(--text-1); }
+  .chevron:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .chevron.open { transform: rotate(90deg); }
+  .part td { color: var(--text-2); }
+  .part-name {
+    display: flex;
+    flex-direction: column;
+    padding-left: calc(20px + var(--space-6));
+    font-size: var(--text-xs);
+    overflow-wrap: anywhere;
+    min-width: 0;
   }
   .archive-summary {
     color: var(--text-3);

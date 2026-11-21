@@ -166,6 +166,7 @@ def test_every_filter_option_can_match_a_row(tmp_path):
     body = browser_src[start:end].replace("get filteredEntries() {", "", 1)
     body = body[: body.rindex("}")]
     body = body.replace("this.sortedEntries", "rows").replace("this.filter", "filter")
+    body = body.replace("this.searchMode", "false").replace("this.folderQuery", "''")
 
     script = tmp_path / "filter_eval.mjs"
     script.write_text(

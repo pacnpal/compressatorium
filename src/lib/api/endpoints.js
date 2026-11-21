@@ -333,32 +333,39 @@ export const api = {
 
   // Auto: the backend works out each Image's Platform and default target.
   // `signal` aborts the request (the convert panel unmounting mid-plan).
-  getAutoPlan(filePaths, outputDir = null, { signal } = {}) {
+  // The Convert panel's plan. `target` is its "Convert to" (null: each game's
+  // best format; a format such as `.chd`; or a mode id). `platformOverrides`
+  // maps a path to the console picked for it this session.
+  getAutoPlan(filePaths, outputDir = null, { signal, target = null, platformOverrides = {} } = {}) {
     return jsonPost(
       `${API_BASE}/jobs/auto-plan`,
-      { file_paths: filePaths, output_dir: outputDir },
+      {
+        file_paths: filePaths, output_dir: outputDir,
+        target: target || null, platform_overrides: platformOverrides,
+      },
       signal ? { signal } : {},
-      'Failed to plan Auto conversion',
+      'Failed to plan the conversion',
     );
   },
 
   // `items`: the confirmed plan's actionable rows, `{ file_path, mode }`. The
-  // server replans them and answers 409 with the new plan when one changed.
-  createAutoJobs(items, outputDir = null, duplicateAction = 'skip') {
+  // server replans them (with the same `target` and overrides) and leaves out,
+  // and reports, any whose target changed. `options` carries the panel's
+  // safety choices: `{ verifyAfter, deleteOnVerify, containerOnly, split }`.
+  createAutoJobs(items, outputDir = null, duplicateAction = 'skip', options = {}) {
     return jsonPost(
       `${API_BASE}/jobs/auto`,
-      { items, output_dir: outputDir, duplicate_action: duplicateAction },
-      {},
-      'Failed to create Auto jobs',
-    );
-  },
-
-  checkDuplicates(filePaths, outputDir = null, mode = 'createcd') {
-    return jsonPost(
-      `${API_BASE}/jobs/check-duplicates`,
-      { file_paths: filePaths, output_dir: outputDir, mode },
-      {},
-      'Failed to check duplicates',
+      {
+        items, output_dir: outputDir, duplicate_action: duplicateAction,
+        target: options.target || null,
+        platform_overrides: options.platformOverrides ?? {},
+        verify_after: !!options.verifyAfter,
+        delete_on_verify: !!options.deleteOnVerify,
+        container_only: !!options.containerOnly,
+        split: !!options.split,
+      },
+      options.signal ? { signal: options.signal } : {},
+      'Failed to start converting',
     );
   },
 

@@ -147,7 +147,9 @@
       onreset={() => layout.resetPanel('right')}
     />
 
-    <article class="right">
+    <!-- Under 900px the Convert panel is a sheet pinned to the bottom of the
+         screen while games are selected. -->
+    <article class="right" class:sheet={fileBrowser.selectedFiles.size > 0}>
       <ConvertPanel />
     </article>
   </div>
@@ -255,4 +257,24 @@
     min-width: 0;
   }
   .right { display: flex; flex-direction: column; gap: var(--space-4); }
+  /* A grid item can't stick outside its own area, so the sheet is fixed to
+     the foot of the screen; the view makes room for it below the list. */
+  @media (max-width: 899px) {
+    .right.sheet {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: var(--z-sticky);
+      max-height: 55dvh;
+      overflow-y: auto;
+      box-shadow: var(--elev-2);
+      border-bottom-left-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+    .view:has(.right.sheet) { padding-bottom: 55dvh; }
+    /* Focus scrolling stops above the sheet, so a focused row is never
+       hidden under it. */
+    :global(:is(html, main):has(.right.sheet)) { scroll-padding-bottom: 55dvh; }
+  }
 </style>

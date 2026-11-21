@@ -1482,21 +1482,45 @@ listing cache does not keep: each member's CRC, `is_plain_file`, whether a
 password is needed (for the headers or any member) and the volumes rarfile
 read.
 
-**Companion rows in the listing (#504).** `GET /api/files` marks a row that
-is one of `registry.source_companions` of another row in the same listing
-(a RAR set's later volumes, a split Wii U dump's parts, any tool's
-companions) with `FileEntry.companion_of`, the leading row's path.
-`routes.files.companion_marks(paths, progress)` asks the hook of each listed
-file and archive row in turn, skipping a row already marked, in the lenient
-form: a set whose members can't be told now (`CompanionsUnknown`, an
-unreadable or slow header read, each bounded and detached as below) marks
-nothing. The pass runs after the listing, through
+**Companion rows in the listing (#504; one row per game, restructure 2/6).**
+`GET /api/files` marks a row that is one of `image_sets.image_members` of
+another row in the same listing (a `.cue`/`.gdi`'s tracks, a RAR set's later
+volumes, a split Wii U dump's parts, any tool's `source_companions`) with
+`FileEntry.companion_of`, the leading row's path, and a row a listed
+`.m3u`/`.m3u8` names with `FileEntry.disc_of`, the playlist's path.
+`routes.files.companion_marks(paths, progress)` asks `image_members` of each
+listed file and archive row in turn, skipping a row already marked, in the
+lenient form: a set whose members can't be told now (an unreadable sheet,
+`CompanionsUnknown`, an unreadable or slow header read, each bounded and
+detached as below) marks nothing. `disc_marks` reads each playlist with
+`read_beneath` (no symlink, at most `PLAYLIST_READ_BYTES`, 64 KB), parses it
+with `referrers.m3u.entries` and resolves each entry against the playlist's
+folder; a playlist it can't read marks nothing. Both run in one pass,
+`game_row_marks`. The pass runs after the listing, through
 `run_detached_within_stall_bound` under the listing's own `WALK_STALL_SECONDS`
 with one progress report per row; a pass that stops moving gives up and the
 listing answers with no marks rather than 503. A marked row lists as before
-(a later volume is still a plain `file` row) and the SPA's `_isSelectable`
-refuses it, so it is never ticked, converted, checked or deleted alone; the
-row shows "part of <first volume>". Folder rows are never asked.
+(a later volume is still a plain `file` row). The SPA folds it under its head
+(`fileBrowser.rows`, before sort and paging, so both count games): the head's
+size is its own plus its parts', and its chevron shows them. `_isSelectable`
+refuses a marked row, so it is never ticked, converted, checked or deleted
+alone. Ticking a playlist ticks its discs (`selectedFiles`) and keeps the
+`.m3u` in `selectedPlaylists`, which only Delete reads; Delete takes every
+file of each game. Folder rows are never asked.
+
+**A file another game still names is never deleted with this one (#549
+review).** A track two sheets name, or a disc two playlists list, folds under
+neither row. Every delete then asks one question, `image_sets.owners_naming(path,
+stop_at=...)`: every file that names *path* as part of itself, whether a
+`.cue`/`.gdi` (its track, from its folder up to the Volume boundary), a
+`.m3u`/`.m3u8` (its disc, the same walk) or a file beside it whose tools read it
+(`registry.source_companions` / `split_members`: a RAR set's later volume, a
+split dump's part). It fails closed, raising `SheetOwnerUnknown` when a folder,
+a sheet, a playlist or a set can't be read. `/files/delete-batch` keeps a file
+with an owner outside the request (`still_owned`). `build_delete_plan` blocks a
+delete-on-verify whose track or companion another file names (`_other_owner`).
+The next companion type only has to answer through the registry hook to be
+covered by both.
 
 **Every RAR header read is bounded and detached.** `archive_members` reads a
 RAR header in one way only, `_bounded_header_read`: the listing
@@ -4499,10 +4523,31 @@ then the earlier in the selection) and skips the other with a reason naming the
 output. The compression is the saved per-tool value (the `conversion`
 preference) when the mode takes one, else the tool default; a saved value the
 mode would refuse also falls back to the tool default. Conflicted and Unsorted
-Images get a `skip_reason`, and so does an Image with a Platform but no target:
-"No tool converts <platform> Images" when no mode serves the Platform at all
-(Neo Geo Pocket Color, WonderSwan Color), "No <platform> target reads <ext>
-files" when the file is the problem.
+Images get a `skip_reason` ("Console unclear: …", "Unknown console: …"), and so
+does an Image with a Platform but no target: "No converter here handles
+<console> games" when no mode serves the Platform at all (Neo Geo Pocket Color,
+WonderSwan Color), "No converter here reads <ext> files for <console>" when the
+file is the problem. The reasons name the console by its display name.
+
+**A target and a picked console (restructure 2/6).** `plan_auto(paths, *,
+target=None, platform_overrides=None, …)` is the one planner for the Convert
+panel and the CLI's `--to`. `route_for(path, detection, target, registry)`
+makes the decision per Image: with no target it is Auto (`auto_route` for a
+decided Platform, skipped otherwise); with a target (a format or a mode id) a
+Conflicted Image is still skipped and any other goes to `format_route`, so an
+Unsorted Image goes ahead only to a mode that reads it. `platform_overrides`
+maps a path to the console the user picked; it replaces only a detection that
+decided nothing (`how = "chosen"`, checked with `known_slug`). Each planned row
+carries `output_name`, the basename of the file its mode would write.
+`POST /api/jobs/auto-plan` and `POST /api/jobs/auto` take `target` and
+`platform_overrides`, so the queue replans exactly what was shown. The Auto
+route also takes the panel's `verify_after`, `delete_on_verify`,
+`container_only` and `split`, and `_auto_group_request` gives each mode group
+only what it can honour: delete (and the quick check with it) where
+`supports_delete_on_verify`, the check where `mode_supports_verify`, the split
+for a folder mode. `prepare_batch` validates and snapshots every group as a
+hand-picked batch, so no check is ever weaker than the mode's own.
+`BatchJobCreateRequest.verify_after` reaches `create_jobs_atomic`.
 
 A target whose tool cannot run here is skipped too. The route awaits the
 shared, bounded `registry.ready_tool_ids()` and passes it to `plan_auto`
@@ -4512,8 +4557,8 @@ says why in the user's words; the default names a missing program, nsz names
 `prod.keys`, jwud the JWUDTool launcher and Java. Both Auto routes plan through
 this, so the plan the user confirms and the jobs queued agree.
 
-From a RomM platform listing, Auto records RomM metadata for re-pinning exactly
-as a manual submit does. Both go through one store path,
+From a RomM platform listing, Auto records RomM metadata for re-pinning. The
+Convert panel has one submit, `conversion.submitAuto`, through
 `conversion.#queueWithRepin`, which calls `planRommRepin` once per target mode
 before queueing, then reconciles the records against the jobs actually created
 (redirected outputs re-recorded under their own mode, rows for sources that
@@ -5828,7 +5873,7 @@ caller of the same seams the routes use, not a second conversion path:
 | Step | Shared seam |
 | --- | --- |
 | Find Images | `routes.files.scan_tree`: the `GET /files/search` walk (subfolders, convertible folders, archive members as `archive::member`). `purpose="verify"` also lists every file some tool can check though none converts it (`.chd`), from `tools_verifying_path` |
-| `--to <format>` | `platform_detect.format_route` / `format_candidates` (below) |
+| `--to <format>` | `platform_detect.route_for` (the Convert panel's planner's decision) over `format_route` / `format_candidates` (below) |
 | `--auto` | `routes.convert.plan_auto_targets` (`plan_auto` plus `checked_compression`), the Auto route's planner |
 | Plan | `routes.convert.prepare_batch`: `plan_job` per file; each skip a `BatchSkip` (#504) |
 | Queue and run | With a server running: `POST /api/jobs/batch?report_skipped=true` on it, each job followed with `GET /api/jobs/{id}` (`cli._run_remote`, `services.server_client`). Alone: `routes.convert.queue_prepared` into the `job_manager` singleton, started with `process_queue()`, emptied with `JobManager.drain()` and stopped with `JobManager.shutdown()`. Fed in chunks below `max_queue_depth` when it is set. A group the planner refuses is re-planned one Image at a time, so only the Image at fault fails |
@@ -5837,7 +5882,8 @@ caller of the same seams the routes use, not a second conversion path:
 | Verify | `ToolPlugin.verify` bounded by `verify_timeout`, then `verification_store.mark_verified`, or `clear` on a conclusive failure only |
 
 **`format_route(path, target, platform, registry)`** returns `(mode, None)` or
-`(None, reason)`. The CLI calls it after `detect_platform`: a Conflicted Image
+`(None, reason)`. The CLI reaches it through `route_for` after
+`detect_platform`: a Conflicted Image
 is skipped with the detection reason (Auto's wording), a decided Platform is
 passed in, an Unsorted Image passes None. `--any-platform` (the `CHD_MODE=cli`
 alias) passes None for every Image. `target` is a format (`chd`, `.rvz`) or a mode id. For a
