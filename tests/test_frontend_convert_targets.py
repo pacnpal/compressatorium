@@ -168,7 +168,7 @@ def test_the_mode_list_keeps_to_a_romm_platforms_formats():
     RomM catalog it is narrowed to that platform's tool_ids and mode_ids."""
     src = (_SRC / "components" / "panels" / "ModeSelect.svelte").read_text(encoding="utf-8")
     assert "fileBrowser.rommPlatformId === null" in src
-    assert "romm.platforms.find((p) => p.id === romm.selectedPlatformId)" in src
+    assert "romm.platforms.find((p) => p.id === fileBrowser.rommPlatformId)" in src
     assert "modeIds: platform?.mode_ids ?? null" in src
     assert "toolIds: platform?.tool_ids ?? null" in src
 

@@ -15,11 +15,12 @@
   const platform = $derived(
     fileBrowser.rommPlatformId === null
       ? null
-      : (romm.platforms.find((p) => p.id === romm.selectedPlatformId) ?? null),
+      : (romm.platforms.find((p) => p.id === fileBrowser.rommPlatformId) ?? null),
   );
-  // A catalog whose platform isn't loaded yet offers nothing rather than all.
+  // A catalog whose platform or rows are still loading (a platform switch
+  // leaves the old rows on screen until the new ones land) offers nothing.
   const groups = $derived(
-    fileBrowser.rommPlatformId !== null && !platform ? [] : convertTargets({
+    fileBrowser.rommPlatformId !== null && (!platform || fileBrowser.loading) ? [] : convertTargets({
       perMode: true,
       ready: ui.toolsKnown ? ui.visibleTools.map((t) => t.id) : null,
       modeIds: platform?.mode_ids ?? null,

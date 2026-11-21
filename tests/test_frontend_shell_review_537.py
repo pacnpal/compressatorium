@@ -78,8 +78,7 @@ def test_a_closed_add_library_dialog_ignores_its_late_answer():
 def test_activitys_opening_tab_holds_for_the_visit():
     src = (_SRC / "components" / "views" / "ActivityView.svelte").read_text(encoding="utf-8")
     assert "const tab = $derived(ui.activityTab ?? opening ?? live);" in src
-    assert "if (opening === null && read) opening = live;" in src
-    assert "findings.load().finally(() => {" in src
+    assert "if (opening === null && settled) opening = live;" in src
 
 
 def _defaults_store(tmp_path: Path, scenario: str):
@@ -87,7 +86,8 @@ def _defaults_store(tmp_path: Path, scenario: str):
     body = re.sub(r"^import[^\n]*\n", "", src, flags=re.MULTILINE)
     body = body.replace("$state(", "(").replace("export ", "")
     stub = "const api = { putDefaultsPrefs: (v) => globalThis.__api.putDefaultsPrefs(v) };\n"
-    return _node(tmp_path, stub + scenario.split("//BODY", 1)[0] + body + scenario.split("//BODY", 1)[1])
+    before, after = scenario.split("//BODY", 1)
+    return _node(tmp_path, stub + before + body + after)
 
 
 def test_defaults_saves_run_one_at_a_time(tmp_path):
@@ -95,7 +95,9 @@ def test_defaults_saves_run_one_at_a_time(tmp_path):
     got = _defaults_store(tmp_path, """
 const calls = [];
 globalThis.__api = {
-  putDefaultsPrefs: (v) => new Promise((resolve, reject) => calls.push({ v: { ...v }, resolve, reject })),
+  putDefaultsPrefs: (v) => new Promise(
+    (resolve, reject) => calls.push({ v: { ...v }, resolve, reject }),
+  ),
 };
 //BODY
 const tick = () => new Promise((r) => setImmediate(r));

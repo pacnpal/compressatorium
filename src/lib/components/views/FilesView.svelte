@@ -51,6 +51,7 @@
   let making = $state(false);
 
   async function makeLibrary() {
+    if (making) return;
     making = true;
     try {
       const library = await libraries.register(path);

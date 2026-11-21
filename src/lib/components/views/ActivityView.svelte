@@ -21,13 +21,15 @@
   const running = $derived(jobs.activeCount);
   // The bare route opens on what matters now: Needs attention when anything
   // does, else Running when anything runs, else History. Decided once per
-  // visit, after this visit's findings read, so a job ending doesn't swap the
-  // tab (and its list) out from under you. A tab in the URL always wins.
+  // visit, after the findings read that counts (one a newer read superseded
+  // doesn't) and the first jobs snapshot, so a job ending doesn't swap the tab
+  // (and its list) out from under you. A tab in the URL always wins.
   const live = $derived(attention > 0 ? 'attention' : running > 0 ? 'running' : 'history');
-  let read = $state(false);
+  const readsAtMount = findings.reads;
+  const settled = $derived(findings.reads > readsAtMount && jobs.hydrated);
   let opening = $state(null);
   $effect(() => {
-    if (opening === null && read) opening = live;
+    if (opening === null && settled) opening = live;
   });
   const tab = $derived(ui.activityTab ?? opening ?? live);
   const TABS = $derived([
@@ -48,9 +50,7 @@
   // Entering Activity reads what needs you now, so the opening tab is right
   // even when nothing has finished since the last read.
   onMount(() => {
-    findings.load().finally(() => {
-      read = true;
-    });
+    findings.load();
   });
 </script>
 

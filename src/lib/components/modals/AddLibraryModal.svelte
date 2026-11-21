@@ -20,8 +20,12 @@
   // Bumped when the dialog closes: an answer for an earlier opening keeps its
   // Library (registered all the same) but no longer closes or navigates.
   let session = 0;
+  // A second confirm while one registers would register twice.
+  let pending = false;
 
   async function pick(path) {
+    if (pending) return;
+    pending = true;
     error = '';
     const mine = ++session;
     try {
@@ -32,11 +36,14 @@
     } catch (e) {
       if (mine !== session) return;
       error = e?.status === 409 ? 'This folder is already a Library.' : (e?.message ?? "Couldn't add it.");
+    } finally {
+      if (mine === session) pending = false;
     }
   }
 
   function close() {
     session++;
+    pending = false;
     error = '';
     onClose();
   }
