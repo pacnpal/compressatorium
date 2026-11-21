@@ -456,7 +456,8 @@ async def totals() -> dict:
     these.
     """
     by_status, _bytes_in, _bytes_out = await run_in_threadpool(_metrics_sync)
-    return {"jobs": {s: by_status.get(s, 0) for s in sorted(set(_METRIC_STATUSES) | set(by_status))}}
+    statuses = sorted(set(_METRIC_STATUSES) | set(by_status))
+    return {"jobs": {s: by_status.get(s, 0) for s in statuses}}
 
 
 async def metrics_text(queue_depth: int) -> str:
