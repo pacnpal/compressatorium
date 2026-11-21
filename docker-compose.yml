@@ -24,14 +24,15 @@ services:
       - COMPRESSATORIUM_TOOL_NICE=10
       - COMPRESSATORIUM_TOOL_IOPRIO_CLASS=2
       - COMPRESSATORIUM_TOOL_IOPRIO_LEVEL=6
-      # Nintendo Switch (nsz): directory holding your own prod.keys. Source of
-      # truth when set; required for Switch compress/decompress. When unset, the
-      # app best-effort looks in ~/.switch and your mounted volumes. No keys
-      # ship with the image.
+      # Nothing here has to be set: every folder under /data is a Volume, and a
+      # tool that can't run is listed on the dashboard with its fix.
+      # Nintendo Switch (nsz): directory holding your own prod.keys. Usually not
+      # needed: a prod.keys anywhere on a mounted volume, or in ~/.switch, is
+      # found on its own. No keys ship with the image.
       # - SWITCH_KEYS=/keys
-      # eXoDOS repack for RomM: your eXoDOS !dos folder (holding
-      # <Game>/dosbox.conf). Must be inside one of your mounted volumes. Unset
-      # hides the tool.
+      # eXoDOS repack for RomM: nothing to set. Each game's template is found
+      # in the !dos folder beside its zip, or in a parent folder up to the
+      # volume. Optional override, searched first (inside a mounted volume):
       # - EXODOS_DOS_DIR=/data/eXoDOS/eXo/eXoDOS/!dos
     volumes:
       # Required: Persistent config storage

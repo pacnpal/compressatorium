@@ -7,10 +7,13 @@ scheduler asks :func:`all_libraries` on every tick, so a change takes effect
 without a restart.
 
 Registering checks the folder with the same path-safety rules the file browser
-uses (inside a configured Volume, resolved, a real folder) and refuses a folder
-that is, contains or sits inside another Library's root (a registered folder,
-or RomM's library folder): the same Image under two Libraries would have two
-Rules. The check and the insert happen under one lock, and the database's
+uses (inside a configured Volume, resolved, a real folder). Libraries may
+overlap (#514): a folder inside RomM's library folder, or inside or around
+another folder Library, registers. A file belongs to the Library with the
+nearest root (:func:`library_for`), and an outer Library's listing leaves out
+what an inner one owns (:func:`inner_folders`), so no file is swept by two
+Libraries' Rules. Still refused: the same root twice, and a root overlapping an
+Inbox. The check and the insert happen under one lock, and the database's
 unique root is the backstop. Removing a Library drops its Rules and run state
 and never touches a file.
 """
@@ -21,7 +24,7 @@ import asyncio
 import os
 import threading
 import time
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -34,6 +37,7 @@ from services.libraries.folder import ID_PREFIX, LAYOUTS, FolderLibrary
 from services.rules.library import (
     ES_FRONTEND_REFERRER,
     GAMELISTS_FOLDER,
+    LibrariesChanged,
     Library,
     duplicate_actions,
 )
@@ -54,6 +58,9 @@ __all__ = [
     "describe",
     "folder_libraries",
     "get",
+    "hidden_staging",
+    "inner_folders",
+    "ownership_generation",
     "library_for",
     "register",
     "remove",
@@ -249,7 +256,7 @@ class AmbiguousLibrary(Exception):
 
 
 def library_for(path: str) -> Library | None:
-    """The Library that holds *path*, or None when no Library does (#383, #413).
+    """The Library that owns *path*, or None when no Library does (#383, #413, #514).
 
     Found from the path as listed first: a folder Library's system folder may
     be a symlink pointing outside its root (``ROMs/psx -> ../elsewhere/psx``),
@@ -264,9 +271,11 @@ def library_for(path: str) -> Library | None:
     4588646131), and a file reached from outside every Library through a link
     into one still belongs to it.
 
-    The two agree, or one of them finds nothing: that Library. When they name
-    two different Libraries it raises :class:`AmbiguousLibrary` rather than
-    pick one. Roots never overlap, so each lookup matches at most one.
+    Libraries may overlap (#514), so each lookup takes the nearest root: the
+    longest spelling that holds the listed path, and the deepest resolved root
+    that holds where it lives. The two agree, or one of them finds nothing:
+    that Library. When they name two different Libraries it raises
+    :class:`AmbiguousLibrary` rather than pick one.
 
     Which Library holds a file decides only which Referrers run. It never
     widens what may be written: containment stays on resolved paths (the job
@@ -281,22 +290,144 @@ def library_for(path: str) -> Library | None:
     """
     listed = os.path.normpath(os.path.abspath(os.path.expanduser(path)))
     target = _resolved(path)
-    candidates = without_a_database() if _db.SessionLocal is None else all_libraries()
     by_listing = by_location = None
-    for library in candidates:
+    listing_depth = location_depth = -1
+    for library in _candidates():
         root = library.root
         if not root:
             continue
         canonical = _canonical_root(root)
-        if by_listing is None and any(
-            _lexically_holds(spelling, listed) for spelling in (root, str(canonical))
-        ):
-            by_listing = library
-        if by_location is None and target.is_relative_to(canonical):
-            by_location = library
+        for spelling in (root, str(canonical)):
+            depth = _depth(spelling)
+            if depth > listing_depth and _lexically_holds(spelling, listed):
+                by_listing, listing_depth = library, depth
+        if len(canonical.parts) > location_depth and target.is_relative_to(canonical):
+            by_location, location_depth = library, len(canonical.parts)
     if by_listing is not None and by_location is not None and by_listing is not by_location:
         raise AmbiguousLibrary(path, by_listing, by_location)
     return by_listing or by_location
+
+
+def _candidates() -> list[Library]:
+    """Every Library a lookup asks: RomM alone with no database open."""
+    return without_a_database() if _db.SessionLocal is None else all_libraries()
+
+
+def _depth(spelling: str) -> int:
+    return len(Path(os.path.normpath(os.path.abspath(os.path.expanduser(spelling)))).parts)
+
+
+def hidden_staging(path: str) -> bool:
+    """Whether *path* is inside any Library that hides in-progress files from
+    its scanner (``HIDDEN_STAGING``, RomM), as listed or as it lives (#398).
+
+    Not only the owner's: RomM scans its whole folder, a folder Library inside
+    it included (#514). Blocking, like :func:`library_for`; a root that can't
+    be resolved raises, and the caller stages or refuses.
+    """
+    from services.rules.library import HIDDEN_STAGING
+
+    listed = os.path.normpath(os.path.abspath(os.path.expanduser(path)))
+    target = _resolved(path)
+    for library in _candidates():
+        if HIDDEN_STAGING not in library.capabilities or not library.root:
+            continue
+        canonical = _canonical_root(library.root)
+        if target.is_relative_to(canonical) or any(
+            _lexically_holds(spelling, listed) for spelling in (library.root, str(canonical))
+        ):
+            return True
+    return False
+
+
+def inner_folders(library: Library) -> list[str]:
+    """The roots of the other Libraries inside *library*'s, relative to it (#514).
+
+    What *library*'s listing leaves out: a file there belongs to the inner
+    Library (the nearest root), so only its Rules sweep it. Compared resolved.
+    Blocking (resolves roots the first time); a root that can't be resolved
+    raises :class:`LibraryUnreadable`, so the listing fails rather than take an
+    inner Library's files.
+    """
+    from services.rules.library import LibraryUnreadable
+
+    if not library.root:
+        return []
+    try:
+        mine = _canonical_root(library.root)
+        out = []
+        for other in _candidates():
+            if other.id == library.id or not other.root:
+                continue
+            theirs = _canonical_root(other.root)
+            if theirs != mine and theirs.is_relative_to(mine):
+                out.append(str(theirs.relative_to(mine)))
+        return out
+    except (OSError, RuntimeError) as exc:
+        raise LibraryUnreadable(
+            f"which Libraries sit inside {library.root} can't be told ({exc})",
+        ) from exc
+
+
+def is_inner(rel: str, inner: list[str]) -> bool:
+    """Whether *rel* (a path relative to a Library root) is in one of *inner*."""
+    return any(rel == folder or rel.startswith(folder + os.sep) for folder in inner)
+
+
+# Moves whenever which Libraries sit inside which may have changed (#514). A
+# sweep reads it when it lists and again before it queues: a listing taken
+# before an inner Library was registered may hold that Library's files.
+_ownership_generation = 0
+
+
+# Held while a Library is published or dropped and the counter moves, and by
+# :func:`owned_as_listed` while a sweep admits work, so no registration lands
+# between a sweep's check and its queueing (CodeRabbit PR #518). Never held
+# across an await or a disk read. Taken before ``_lock``, never after.
+_ownership_lock = threading.Lock()
+
+
+def ownership_generation() -> int:
+    """The counter :func:`_forget_walks` moves. Never waits on the disk."""
+    with _lock:
+        return _ownership_generation
+
+
+@contextmanager
+def owned_as_listed(owned_at: int):
+    """Hold ownership still while work from a listing is admitted.
+
+    Raises :class:`LibrariesChanged` when a Library was registered or removed,
+    or RomM's folder moved, since the listing read *owned_at*; else holds the
+    ownership lock until the block ends, so none can land mid-admission. The
+    block must not await. Never waits on the disk."""
+    with _ownership_lock:
+        if ownership_generation() != owned_at:
+            raise LibrariesChanged
+        yield
+
+
+@contextmanager
+def _changing_ownership():
+    """Publish or drop a Library and move the counter as one step: every
+    folder Library's walk and every cached resolved root are out of date
+    (#514; CodeRabbit PR #518: an ancestor of a root may have been relinked).
+    Never waits on the disk."""
+    global _ownership_generation
+    with _ownership_lock:
+        yield
+        with _lock:
+            _ownership_generation += 1
+            _canonical_roots.clear()
+            folders = list(_cache.values()) if _cache is not None else []
+        for library in folders:
+            library.invalidate()
+
+
+def _forget_walks() -> None:
+    """:func:`_changing_ownership` with nothing to publish. Never waits."""
+    with _changing_ownership():
+        pass
 
 
 def _lexically_holds(root: str, listed: str) -> bool:
@@ -313,6 +444,23 @@ _canonical_roots: dict[str, Path] = {}
 _canonical_generation: int | None = None
 
 
+def _reseed_romm_root() -> None:
+    """Cache RomM's root resolved again, after an ownership change dropped
+    every cached root. Blocking (resolves it); best effort."""
+    from services.romm.library import romm_library
+
+    if romm_library.root:
+        with suppress(OSError, RuntimeError):
+            _canonical_root(romm_library.root)
+
+
+def _remember_root(root: str | None, canonical: Path) -> None:
+    """Cache *root*'s resolved path, already worked out. Never waits."""
+    if root:
+        with _lock:
+            _canonical_roots[root] = canonical
+
+
 def _canonical_root(root: str) -> Path:
     """*root* resolved, cached until RomM's settings are next saved. Blocking
     the first time; a root that can't be resolved raises and isn't cached."""
@@ -325,11 +473,15 @@ def _canonical_root(root: str) -> Path:
             _canonical_roots.clear()
             _canonical_generation = generation
         cached = _canonical_roots.get(root)
+        owned_at = _ownership_generation
     if cached is not None:
         return cached
     canonical = Path(root).resolve()
     with _lock:
-        if _canonical_generation == generation:
+        # Not cached when the cache was cleared while this resolved (a save,
+        # or an ownership change, CodeRabbit PR #551): the caller still gets
+        # it, but a later lookup resolves again.
+        if _canonical_generation == generation and _ownership_generation == owned_at:
             _canonical_roots[root] = canonical
     return canonical
 
@@ -343,23 +495,20 @@ def _record_id(library_id: str) -> int | None:
         return None
 
 
-def _overlaps(a: Path, b: Path) -> bool:
-    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
+def same_root(root: Path, others: list[tuple[str, Path]]) -> str | None:
+    """The name of the Library in *others* whose root is *root*, or None.
 
-
-def find_overlap(root: Path, others: list[tuple[str, Path]]) -> tuple[str, Path] | None:
-    """The first Library in *others* whose root equals, holds, or sits inside *root*.
-
-    The one non-overlap rule for Library roots, run in both directions:
+    The one rule left for Library roots (#514), run in both directions:
     registering a folder checks it against every folder Library and RomM's
     root, and saving RomM's root checks it against every folder Library. Two
-    overlapping roots would put the same Images under two Rule sets. *others*
-    is ``(name, resolved root)`` pairs. Callers hold the registration lock
-    (:func:`register`, :func:`romm_root_claim`), so no save races the check.
+    Libraries on one root would both be nearest to every file in it. Nested
+    roots are fine: the nearest owns a file. *others* is ``(name, resolved
+    root)`` pairs. Callers hold the registration lock (:func:`register`,
+    :func:`romm_root_claim`), so no save races the check.
     """
     for other_name, other_root in others:
-        if _overlaps(root, other_root):
-            return other_name, other_root
+        if root == other_root:
+            return other_name
     return None
 
 
@@ -411,7 +560,8 @@ def _refuse_inbox(root: Path, *, what: str = "A Library") -> None:
 
 
 def check_romm_root(path: str) -> None:
-    """Refuse RomM's library root at *path* if it overlaps a folder Library.
+    """Refuse RomM's library root at *path* if it is a folder Library's root
+    or overlaps an Inbox. Around or inside a folder Library is fine (#514).
 
     Raises :class:`LibraryPathError` (409) naming the Library. Blocking
     (resolves the path); the caller holds the registration lock.
@@ -419,13 +569,12 @@ def check_romm_root(path: str) -> None:
     root = _resolved(path)
     _refuse_inbox(root, what="RomM's library folder")
     others = [(lib.name, Path(lib.root)) for lib in folder_libraries()]
-    hit = find_overlap(root, others)
-    if hit is not None:
-        other_name, other_root = hit
+    other_name = same_root(root, others)
+    if other_name is not None:
         raise LibraryPathError(
             409,
-            f"RomM's library folder overlaps the folder Library {other_name!r} at "
-            f"{other_root}; remove that Library or pick another folder",
+            f"RomM's library folder is already the folder Library {other_name!r}; "
+            "remove that Library or pick another folder",
         )
 
 
@@ -514,6 +663,14 @@ async def romm_root_claim(path: str | None):
                     "saved. Try again later.",
                 ) from None
         yield
+        # Which folder Libraries sit inside or around RomM's may have changed.
+        _forget_walks()
+        # RomM's root (the one saved, or kept when the save didn't touch it)
+        # resolved again now, so the Rules view's nesting reads it before any
+        # scan (CodeRabbit PR #518, Codex PR #551). Best effort: a root that
+        # can't be resolved just now is resolved on first use, as before.
+        with suppress(Exception):
+            await run_admitted(_reseed_romm_root, timeout=ROOT_CHECK_SECONDS)
     finally:
         _register_lock.release()
 
@@ -530,7 +687,7 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
         raise LibraryPathError(404, "Folder not found")
     label = (name or "").strip() or root.name or str(root)
     _loaded()
-    # Check and insert as one step, so two registrations of nested folders
+    # Check and insert as one step, so two registrations of the same folder
     # cannot both pass the check. `_register_lock`, not `_lock`: this resolves
     # RomM's root and writes the database, and `_lock` is taken by the loop.
     # Bounded: a registration stuck on a dead RomM mount must not queue every
@@ -543,19 +700,14 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
         if romm_root is not None:
             others.append((romm_library.name, romm_root))
         _refuse_inbox(root)
-        hit = find_overlap(root, others)
-        if hit is not None:
-            other_name, other_root = hit
-            if root == other_root:
-                # Most often a retry after a 504: the first registration went
-                # on and finished.
-                raise LibraryPathError(
-                    409,
-                    f"Already the Library {other_name!r}: an earlier registration "
-                    "of this folder has finished",
-                )
+        other_name = same_root(root, others)
+        if other_name is not None:
+            # Most often a retry after a 504: the first registration went on
+            # and finished.
             raise LibraryPathError(
-                409, f"Overlaps the Library {other_name!r} at {other_root}",
+                409,
+                f"Already the Library {other_name!r}: an earlier registration "
+                "of this folder has finished",
             )
         with _session() as session:
             row = _db.FolderLibraryRecord(
@@ -570,9 +722,14 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
                 session.rollback()
                 raise LibraryPathError(409, "Already a Library") from None
             library = _from_row(row)
-        with _lock:
+        # A Library around this one must stop listing its files.
+        with _changing_ownership(), _lock:
             if _cache is not None:
                 _cache[library.record_id] = library
+        if romm_root is not None:
+            # Seeded again, so the Rules view's nesting reads RomM's root
+            # resolved before any scan (CodeRabbit PR #518).
+            _remember_root(romm_library.root, romm_root)
     finally:
         _register_lock.release()
     return library
@@ -780,13 +937,18 @@ async def _remove(library: FolderLibrary, library_id: str, record_id: int) -> No
                     if row is not None:
                         session.delete(row)
                         session.commit()
-                with _lock:
+                # A Library around this one lists its files again.
+                with _changing_ownership(), _lock:
                     if _cache is not None:
                         _cache.pop(record_id, None)
             finally:
                 _register_lock.release()
 
         await run_in_threadpool(_delete)
+        # After the registration lock is let go, and bounded: RomM's mount
+        # may not answer (Codex PR #551). Best effort, as on a settings save.
+        with suppress(Exception):
+            await run_admitted(_reseed_romm_root, timeout=ROOT_CHECK_SECONDS)
     finally:
         with guard:
             mine = not run["started"]
@@ -795,9 +957,40 @@ async def _remove(library: FolderLibrary, library_id: str, record_id: int) -> No
             _register_lock.release()
 
 
+def _ownership(library: Library) -> dict[str, Any]:
+    """Which Library *library* sits inside, and which sit inside it (#514).
+
+    For the Rules view, so a person sees who owns the files where Libraries
+    overlap. Compared on the roots as stored and as already resolved (the
+    cache :func:`library_for` fills), never touching the disk: the list route
+    must not hang on a dead mount. A folder Library's root is stored resolved.
+    """
+    def spelled(lib: Library) -> Path:
+        with _lock:
+            cached = _canonical_roots.get(lib.root)
+        return cached or Path(os.path.normpath(os.path.abspath(lib.root)))
+
+    within, contains = None, []
+    if library.root:
+        mine = spelled(library)
+        for other in _candidates():
+            theirs = spelled(other) if other.root and other.id != library.id else mine
+            if theirs == mine:
+                continue
+            entry = {"id": other.id, "name": other.name}
+            if theirs.is_relative_to(mine):
+                contains.append(entry)
+            elif mine.is_relative_to(theirs) and (
+                within is None or len(theirs.parts) > within[0]
+            ):
+                within = (len(theirs.parts), entry)
+    return {"within": within[1] if within else None, "contains": contains}
+
+
 def describe(library: Library) -> dict[str, Any]:
     """A Library as the API lists it."""
     return {
+        **_ownership(library),
         "id": library.id,
         "kind": library.kind,
         "name": library.name,

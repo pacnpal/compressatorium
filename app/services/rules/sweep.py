@@ -71,6 +71,7 @@ from services.rules.library import (
     CONVERTED_HISTORY,
     FAILED_HOLD,
     Image,
+    LibrariesChanged,
     Library,
     LibraryUnreadable,
     QueuedImage,
@@ -2167,6 +2168,8 @@ async def _sweep_locked(
     # their runs to record then. Both are dropped if a stop comes first.
     picked: list = []
     check_runs: list = []
+    # What `picked` is checked against before its job starts (PR #518).
+    sweep_owned_at = _ownership_generation()
     if not dry_run:
         await _clear_vanished(library)
         planned_deletes = await _plan_kept_deletes(
@@ -2269,6 +2272,7 @@ async def _sweep_locked(
             continue
 
         listed_at = _walk_generation(library)
+        owned_at = _ownership_generation()
         images = await _list_images(library, platform_id, result, stopping)
         if images is None:
             if _sweep_ends(result):
@@ -2546,6 +2550,10 @@ async def _sweep_locked(
                     output_paths=destinations,
                     allow_overwrite=rule["duplicate_action"] == "overwrite",
                     owner=owner,
+                    # Checked and held under the queue lock as the batch goes
+                    # in: a Library registered since the listing refuses it,
+                    # and none can land mid-admission (PR #518).
+                    admission=functools.partial(_owned_as_listed, owned_at),
                 )
                 summary["queued"] = len(jobs)
                 result["queued"] += len(jobs)
@@ -2632,6 +2640,15 @@ async def _sweep_locked(
                 # cannot queue the same source twice. Already resolved during
                 # selection, so this costs no further disk work.
                 active_paths.update(resolved_by_path.values())
+            except LibrariesChanged:
+                # The listing may hold a new inner Library's files: queue none
+                # of them under these Rules; the next run lists again.
+                result["errors"].append(
+                    {"platform_id": platform_ref, "error": "libraries_changed"},
+                )
+                summary["libraries_changed"] = True
+                result["platforms"].append(summary)
+                continue
             except QueueBackpressureError:
                 # The queue is full. Stop rather than spin: the next sweep
                 # resumes exactly here, because the filesystem still reports
@@ -2744,11 +2761,25 @@ async def _sweep_locked(
             # One job and, if anything fails, one notification for the sweep.
             # The check Rules' runs are recorded once it has checked them all,
             # so a check cut short (a stop, a restart) leaves its Rule due.
-            _active_check_runs.update(reserved)
-            checks.start(
-                library, picked, generation=_generations.get(library.id, 0),
-                on_finished=check_run_ended,
-            )
+            try:
+                # Held while the job starts: a Library registered since any
+                # Platform was listed drops the whole pick, so no Image a new
+                # inner Library owns is checked here (CodeRabbit PR #518).
+                with _owned_as_listed(sweep_owned_at):
+                    _active_check_runs.update(reserved)
+                    checks.start(
+                        library, picked, generation=_generations.get(library.id, 0),
+                        on_finished=check_run_ended,
+                    )
+            except LibrariesChanged:
+                # Against each Platform whose pick it was (CodeRabbit PR
+                # #551); nothing is checked and no run is recorded.
+                for run in check_runs:
+                    summary = run[1]
+                    summary["libraries_changed"] = True
+                    result["errors"].append(
+                        {"platform_id": summary["platform_id"], "error": "libraries_changed"},
+                    )
         else:
             await record_check_runs()
     result.update(await library.sweep_extras())
@@ -2792,6 +2823,29 @@ def forget_checks_locked(library: Library) -> None:
 
     _generations[library.id] = _generations.get(library.id, 0) + 1
     library_records.forget(library.id)
+
+
+def _ownership_generation() -> int:
+    from services import libraries
+
+    return libraries.ownership_generation()
+
+
+def _owned_as_listed(owned_at: int):
+    from services import libraries
+
+    return libraries.owned_as_listed(owned_at)
+
+
+def _ownership_moved(owned_at: int, platform_ref: Any, result: dict) -> bool:
+    """Whether a Library was registered or removed, or RomM's folder moved,
+    since the listing read *owned_at* (Codex PR #518): the listing may then
+    hold files another Library now owns, so nothing of it is queued. Says so
+    in *result*'s errors."""
+    if _ownership_generation() == owned_at:
+        return False
+    result["errors"].append({"platform_id": platform_ref, "error": "libraries_changed"})
+    return True
 
 
 def _walk_generation(library: Library) -> int:
@@ -2902,6 +2956,7 @@ async def _sweep_check(
     """
     platform_ref = library.platform_value(platform_id)
     listed_at = _walk_generation(library)
+    owned_at = _ownership_generation()
     images = await _list_images(library, platform_id, result, stopping)
     if images is None:
         return _sweep_ends(result)
@@ -3013,6 +3068,11 @@ async def _sweep_check(
     }
     if unresponsive:
         summary["library_unresponsive"] = True
+    if not dry_run and _ownership_moved(owned_at, platform_ref, result):
+        # As for a conversion Rule: nothing of a stale listing is checked.
+        summary["libraries_changed"] = True
+        result["platforms"].append(summary)
+        return False
     result["platforms"].append(summary)
     if not dry_run:
         picked.extend(chosen)

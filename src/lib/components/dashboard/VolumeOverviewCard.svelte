@@ -21,7 +21,7 @@
     {#if loading && volumes.length === 0}
       <p class="muted">Loading…</p>
     {:else if volumes.length === 0}
-      <EmptyState title="No volumes" description="Configure COMPRESSATORIUM_VOLUMES to expose paths." glyph="∅" />
+      <EmptyState title="No volumes" description="Mount your game folders under /data (each one becomes a Volume), or set COMPRESSATORIUM_VOLUMES." glyph="∅" />
     {:else}
       <ul class="vol-list">
         {#each volumes.slice(0, 4) as v (v.path)}

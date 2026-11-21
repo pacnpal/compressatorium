@@ -568,6 +568,9 @@
     library_unresponsive:
       'the library stopped responding while reading this platform — stopped '
       + 'partway',
+    libraries_changed:
+      'a Library was added or removed inside this one while it ran — nothing was '
+      + 'queued for this platform, the next run lists it again',
   };
 
   function sweepErrorLabel(code) {
