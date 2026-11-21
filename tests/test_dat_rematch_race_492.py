@@ -287,7 +287,7 @@ async def test_an_index_change_that_starts_before_the_write_lock_refuses_local_v
 def _change_started_before_the_lock(store, current: int) -> None:
     """An index change began before the writer took the write lock: the
     generation the writer reads under the lock has moved."""
-    store.index_generation = lambda: current + 1
+    store.index_generation = lambda session=None: current + 1
 
 
 def _remote_hit(path: str, generation) -> dict:

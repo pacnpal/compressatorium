@@ -31,7 +31,7 @@ A game image converter that wraps twelve tools: **CHDMAN** (MAME), **dolphin-too
 | **NKit** | NKit-shrunk GameCube / Wii discs | .nkit.iso, .nkit.gcz | .iso, .rvz (via the `nkit_to_rvz` chain) | None (fixed) | None | `nkit2iso` (+ dolphin-tool for `nkit_to_rvz`) |
 | **Xbox** | Xbox / Xbox 360 disc images | .iso (only images holding an Xbox filesystem) | .xiso.iso | None (fixed) | None | `extract-xiso` |
 | **rom-converto** | Xbox 360 disc images for Xenia; PSP PBPs; 3DS CIA and CCI | .iso, .xiso.iso (only images holding an Xbox 360 filesystem), .pbp (PSP games only), .cia, .cci, .3ds | .zar, .iso, .cci, .cia | None (fixed) | None (keys built into rom-converto; the app never downloads or ships any) | `rom-converto` v0.24.0 |
-| **eXoDOS** | eXoDOS DOS game zips, for RomM | .zip (only zips holding one game folder with a template in `EXODOS_DOS_DIR`) | .dosz | None (fixed) | Your own eXoDOS `!dos` folder (`EXODOS_DOS_DIR`) | none (built in) |
+| **eXoDOS** | eXoDOS DOS game zips, for RomM | .zip (only zips holding one game folder that has a template or a DOS program) | .dosz | None (fixed) | Nothing to set: templates are found in your eXoDOS `!dos` folder | none (built in) |
 | **RAR sets** | Multi-part RAR sets (usenet downloads), RAR4 and RAR5 | the set's first volume: .rar (with .r00, .r01, …) or .part01.rar (with .part02.rar, …) | the one file inside the set, under its own name | None (fixed) | None | `unar` |
 
 Most conversions above are lossless and fully reversible, including **3DS**, which
@@ -85,7 +85,10 @@ Compressatorium can sync [MAME Redump](https://github.com/MetalSlug/MAMERedump) 
 - **Dolphin RVZ/WIA/GCZ**: Matched via the game image's content SHA1 reconstructed by `dolphin-tool verify` — the same hash MAME Redump records for GameCube/Wii discs — so compressed Dolphin outputs match without the container bytes having to be identical
 - **Everything else** (3DS/Switch/CSO·ZSO·DAX/`.iso`/`.bin`): Matched via file-level SHA1
 - **Library scan**: The background scan discovers and DAT-matches tool outputs by extension (CHD, Dolphin RVZ/WIA/GCZ, 3DS, Switch, CSO/ZSO, `.iso`, and the `.bin` data track from CHDMAN extract), not just CHDs, so non-CHD libraries get cached match results too. A single PS3-packed `.iso` is matched like any other `.iso`; a 4 GB split set is not, since its `.iso.0`/`.iso.1` parts aren't scanned extensions. Heavy Dolphin disc-hashing during the scan honors `MATCH_MAX_FILE_SIZE` and stops promptly if you cancel the scan.
-- **DAT management**: Import, list, and delete DATs via the web UI "DAT Files" button
+- **Sync Redump in one click**: **Sync Redump** in the DAT Library downloads Redump's DAT for each disc Platform in your Libraries (PlayStation, PS2, GameCube, Saturn, Dreamcast, Xbox and more), one request at a time. A system synced in the last day isn't asked again. DATs only: never keys, BIOS or games
+- **Import packs**: **Import DATs** takes several `.dat`/`.xml` files at once, and zips of them, such as No-Intro's daily pack (No-Intro's site can't be scripted, so download the pack there and drop the zip in). Re-importing a DAT replaces the older copy
+- **DAT management**: Import, list, reorder and delete DATs in the DAT Library
+- **From a shell**: `compressatorium dat import PATH...` and `compressatorium dat sync` (see [Command line](#command-line-compressatorium))
 - **Match badges**: Files matching a DAT entry show a blue "DAT" badge in the file list
 - **Wider coverage without curating DATs**: see [Hasheous Integration](#hasheous-integration-optional) to fall back on 14 preservation databases for anything your imported DATs don't recognise
 
@@ -374,8 +377,8 @@ When you open the Web UI, you'll see the tool options at the top:
 * **Xbox** - For trimming an Xbox / Xbox 360 disc image to XISO
 * **rom-converto** - For packing an Xbox 360 disc image to ZAR, a PSP PBP back to ISO,
   or 3DS CIA to CCI and back
-* **eXoDOS** - For repacking an eXoDOS DOS game zip to `.dosz` for RomM (needs
-  `EXODOS_DOS_DIR`)
+* **eXoDOS** - For repacking an eXoDOS DOS game zip to `.dosz` for RomM (no setup:
+  point it at your eXoDOS collection)
 * **RAR sets** - For extracting a multi-part RAR set to the one file inside it
 
 **Choose the tool that matches your files.** The interface then shows only the modes and file types that tool can use.
@@ -483,9 +486,14 @@ Nothing leaves the server until you add a destination. You get:
 - one message when a sweep finishes, with its counts and the space it saved;
   anything that failed inside the sweep is listed in that message, not sent
   separately;
-- one message when a job you started by hand fails;
+- one message when a job you started by hand fails, and, if you choose it,
+  one when it succeeds;
 - one message when a [check Rule](#check-rules) finds Images that are not
   Intact, listing them.
+
+Each destination picks which of these messages it gets, so a phone can hear
+only about failures while a dashboard hears everything. A new destination gets
+all of them except the success message.
 
 There are three destination types. A **generic webhook** gets a JSON `POST`:
 
@@ -494,6 +502,19 @@ There are three destination types. A **generic webhook** gets a JSON `POST`:
  "message": "Queued 3. Space saved: 1.2 GB.",
  "data": {"queued": 3, "completed": 3, "failed": 0, "cancelled": 0, "saved_bytes": 1288490188,
           "failures": [], "errors": []}}
+```
+
+A generic webhook can have a **signing secret**. Each message then carries
+`X-Compressatorium-Signature: sha256=<hex>`, the HMAC-SHA256 of the raw request
+body keyed with the secret, so your endpoint can check the message came from
+here. Like the URL, the secret is never shown again once saved. To check it:
+
+```python
+import hashlib, hmac
+
+def is_from_compressatorium(body: bytes, header: str, secret: str) -> bool:
+    want = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(want, header)
 ```
 
 A **Discord webhook** takes any https URL that speaks Discord's webhook format
@@ -594,10 +615,12 @@ and the job ends as `converted, source kept: couldn't update <playlist>
 kept the source and why.
 
 **EmulationStation gamelists follow the conversion too, if you say so.** ES-DE,
-Batocera, Knulli and muOS keep each game's artwork, description, favourite flag
-and play count in the Platform folder's `gamelist.xml`, keyed on the game's
-`<path>`. Tick **Used by an EmulationStation frontend** at the top of a
-Library's Rules (RomM's included) and, before a source in that Library is
+Batocera and Knulli keep each game's artwork, description, favourite flag and
+play count in a `gamelist.xml`, keyed on the game's `<path>`. Pick your
+**Frontend** at the top of a Library's Rules (RomM's included): **ES-DE**, or
+**Batocera or Knulli** (their gamelist sits in each Platform folder). muOS needs
+nothing: it keeps its artwork in its own catalogue by game name, which a
+conversion doesn't change. Then, before a source in that Library is
 deleted, the matching `<path>` is pointed at the new file: `./Game.iso` becomes
 `./Game.chd`, and `./Multi Disc/Game.cue` keeps its folder. It's off by
 default, and the app never edits a gamelist in a Library without it. Only the
@@ -609,11 +632,15 @@ entry count. A gamelist that can't be parsed or written keeps the source, as
 a playlist does. **Close ES-DE before converting**: it rewrites its gamelist
 when it exits, which would put the old paths back.
 
-ES-DE keeps its gamelists in a folder of its own by default
-(`ES-DE/gamelists`), one subfolder per system named like the system's ROM
-folder: the games in `ROMs/ps2` are listed in `gamelists/ps2/gamelist.xml`.
-For that layout, set **ES-DE gamelists folder** under the switch (it must be
-inside a Volume, so mount it into the container). An Image's system is its
+ES-DE 2.0 and later read gamelists only from a folder of their own
+(`ES-DE/gamelists`), never from the ROM folders, one subfolder per system named
+like the system's ROM folder: the games in `ROMs/ps2` are listed in
+`gamelists/ps2/gamelist.xml`. Picking **ES-DE** searches the Volumes for that
+folder (up to four folders deep) and offers each one it finds with **Use this
+folder**; you can also type the path. It must be inside a Volume, so mount it
+into the container. Nothing is turned on until the folder is chosen. A Library
+set to Batocera or Knulli whose Volumes hold an ES-DE gamelists folder is
+offered it too. An Image's system is its
 Platform folder: the folder directly under a folder Library
 (`ROMs/ps2/Multi Disc/Game.cue` is `ps2`), or under RomM's `roms` folder
 (`roms/ps2/...`, or `ps2/roms/...` in RomM's other layout). Only that
@@ -1073,7 +1100,17 @@ them on in Automation once you've switched RomM's converter off.
 
 You don't need RomM to automate conversions. Open any folder inside a Volume in
 the Workspace, and pick **Register as a Library** from its row menu. The folder
-becomes a Library, and the **Rules** view (in the sidebar) shows it:
+becomes a Library, and the **Rules** view (in the sidebar) shows it.
+
+Any folder can be registered, even one inside RomM's library folder or inside
+or around another Library. Where Libraries overlap, each file belongs to the
+Library with the nearest folder: that Library's Rules and settings (its
+gamelist, for one) apply to it, and the Library around it leaves it alone, so
+no file is ever converted twice. The Rules view says which Library sits inside
+which. Only the same folder twice, and a Library overlapping an Inbox, are
+refused.
+
+What a folder Library shows and does:
 
 - **Images** are what gets converted, not files: a `.cue` or `.gdi` and the
   tracks it lists are one Image (the sheet), and a split Wii U dump is one Image
@@ -1208,6 +1245,45 @@ long a file must stay unchanged before it's taken (60 seconds by default).
   Rule sweep, under the same lock, so intake works without the server.
 
 Unpacking archives and naming from a DAT are on the way (#432).
+
+### Sonarr / Radarr / ROMarr
+
+Sonarr, Radarr and [ROMarr](https://github.com/BlizzHacker/romarr) can tell
+the app the moment they import a file, so an Inbox takes it in at once, with
+no polling and no settle wait. Point the *arr's root (or completed downloads)
+folder at an [Inbox](#inboxes), then in the *arr open **Settings →
+Connect → + → Webhook** and set:
+
+- **On Import** (and **On Upgrade**) ticked; the other triggers are ignored.
+- **URL**: the one shown in the Rules view under **Sonarr, Radarr and ROMarr**
+  (with a Copy button), `http://<this app>:8080/api/hooks/arr`.
+- **Method** POST, and one **Header**: `X-Chd-Action-Confirm` = `scan`.
+- When the app's login is on: **Username** as set (`admin` by default) and
+  **Password** your API token.
+
+Press **Test** in the *arr: it passes once the URL, header and login are right.
+
+**Different folder names.** When the *arr sees a folder under another name
+(it sees `/downloads`, this app sees `/data/downloads`), add a **path
+rewrite** in the same card: the longest matching folder wins, as in Autoscan.
+Type a path as the *arr sees it into **Test a path**: the card says where it
+lands and whether an Inbox takes it, and when it can find the file under one
+of your Volumes it suggests the rewrite, one click to add. Paths the *arrs
+sent lately are listed with the same answer. A rewritten path must still be
+inside a Volume and inside an Inbox; anything else is refused and left alone.
+
+**Scripts, and ROMarr's custom script.** `POST /api/scan` with
+`{"path": "/data/downloads/ps2/Game.iso"}` (a file or a folder) or
+`{"paths": [...]}`, and the same header, does the same thing:
+
+```bash
+curl -X POST http://localhost:8080/api/scan \
+  -H 'X-Chd-Action-Confirm: scan' -H 'Content-Type: application/json' \
+  -d '{"path": "/data/downloads/ps2/Game.iso"}'
+```
+
+The answer (202 when something was taken) lists what was accepted and what
+was skipped, with why.
 
 ### Check Rules
 
@@ -1539,7 +1615,7 @@ selected tool understands.
   default format. Images it can't place are skipped and listed.
 * **The Switch tool is missing or jobs ask for prod.keys** — it needs your own
   keys; see [Nintendo Switch Support](#nintendo-switch-support). Without keys the
-  tool is hidden.
+  tool is listed on the dashboard under **Not ready here** with the fix.
 
 ---
 
@@ -1698,9 +1774,17 @@ A folder registered as a Library, with the Platforms found in it, its Unsorted a
 |-------|------|
 | ![Rules view on a folder Library, light](docs/screenshots/rules-folder-light.png) | ![Rules view on a folder Library, dark](docs/screenshots/rules-folder-dark.png) |
 
+#### Sonarr / Radarr / ROMarr webhook
+
+The webhook URL and header to copy, and a path tested as the *arr sees it, with the rewrite suggested from the Volumes. See [Sonarr / Radarr / ROMarr](#sonarr--radarr--romarr).
+
+| Light | Dark |
+|-------|------|
+| ![Webhook card, light](docs/screenshots/arr-hook-light.png) | ![Webhook card, dark](docs/screenshots/arr-hook-dark.png) |
+
 #### EmulationStation frontend switch
 
-The same folder Library marked as used by an EmulationStation frontend, so conversions update its `gamelist.xml`. The note says to close ES-DE first.
+The same folder Library with its **Frontend** set to Batocera or Knulli, so conversions update the `gamelist.xml` in each Platform folder. The note says to close ES-DE first.
 
 | Light | Dark |
 |-------|------|
@@ -1708,7 +1792,7 @@ The same folder Library marked as used by an EmulationStation frontend, so conve
 
 #### ES-DE gamelists folder
 
-The ES-DE gamelists folder field under the switch, with a folder typed in and ready to save.
+ES-DE picked in the Frontend select: the Volumes are searched for ES-DE's gamelists folder (none in this demo), and a folder is typed in and ready to save.
 
 | Light | Dark |
 |-------|------|
@@ -1721,6 +1805,14 @@ The folder Library's layout picker and where new Images of each of its Platforms
 | Light | Dark |
 |-------|------|
 | ![Library layout, light](docs/screenshots/rules-folder-layout-light.png) | ![Library layout, dark](docs/screenshots/rules-folder-layout-dark.png) |
+
+#### A Library inside a Library
+
+A folder Library registered inside another one: its Rules view says which Library it sits inside, and that its files are its own. See [Folder Libraries and the Rules view](#folder-libraries-and-the-rules-view).
+
+| Light | Dark |
+|-------|------|
+| ![Nested folder Library, light](docs/screenshots/rules-folder-nested-light.png) | ![Nested folder Library, dark](docs/screenshots/rules-folder-nested-dark.png) |
 
 #### Inboxes
 
@@ -1779,6 +1871,12 @@ Notification destinations for finished sweeps and failed jobs.
 | Light | Dark |
 |-------|------|
 | ![Settings, light](docs/screenshots/settings-light.png) | ![Settings, dark](docs/screenshots/settings-dark.png) |
+
+A new generic webhook's form: its signing secret and the messages it gets.
+
+| Light | Dark |
+|-------|------|
+| ![Notification destination form, light](docs/screenshots/settings-notification-form-light.png) | ![Notification destination form, dark](docs/screenshots/settings-notification-form-dark.png) |
 
 #### Help
 
@@ -1993,7 +2091,7 @@ in Tinfoil and DBI.
 > decompression rebuilds a byte-identical original. That decrypt step needs your
 > console's keys. **This app ships no keys and nsz ships no keys.** You supply
 > your own, dumped from a console you own, for games you own. Without keys, the
-> Switch tool is hidden from the UI entirely. See the legal note at the bottom
+> Switch tool is listed on the dashboard under **Not ready here** with the fix. See the legal note at the bottom
 > of this section.
 
 ### How to Use
@@ -2512,8 +2610,8 @@ the release and checked against its SHA-256 for amd64 and arm64.
   or in a Rule.
 - **Off the network.** Every call passes `--no-update-check`, so rom-converto
   never looks for a newer release.
-- If the binary is missing or won't run, the tool is hidden and the reason is
-  logged; the rest of the app keeps working.
+- If the binary is missing or won't run, the tool is listed on the dashboard under **Not ready here** with the fix;
+  the rest of the app keeps working.
 
 Whether a ZAR made here boots in a current Xenia build has not been checked yet
 (it needs a disc the owner dumped).
@@ -2579,6 +2677,18 @@ DOSBox setup in a separate `!dos` folder, at `!dos/Abaron/dosbox.conf`. That con
 mounts paths inside the whole collection (`mount c .\eXoDOS\Abaron`), so a game zip
 copied into RomM alone does not start.
 
+**No setup.** Point the app at your eXoDOS collection and tick the game zips. For
+each zip the repack finds the game's template by itself: it looks for
+`!dos/<Game>/dosbox.conf` beside the zip (`eXo/eXoDOS/Abaron.zip` next to
+`eXo/eXoDOS/!dos/Abaron/dosbox.conf`), then in each parent folder, up to the volume.
+The nearest `!dos` that holds the game wins. A `!dos` folder is only used when it
+resolves inside a volume, and the template must be a plain file inside it (no
+links). `EXODOS_DOS_DIR` is an optional override: when set, that folder is searched
+first.
+
+**Each job says what the game got.** It finishes with "Repacked with its
+dosbox.conf from `<path>`", or with a warning naming why there is none.
+
 - **What the repack writes.** The repack moves the game's files out of their
   folder to the root of the file, and writes the game's template there as the
   file's first entry, `dosbox.conf`, with its mount paths rewritten (`mount c .\eXoDOS\Abaron` becomes `mount c .\`,
@@ -2603,15 +2713,22 @@ copied into RomM alone does not start.
   name and moved into place only once it is complete, so a cancelled or failed job
   leaves nothing that looks finished. There is no delete-after-verify option: the
   product differs from the source by design, and the source is your eXoDOS install.
+- **A game with no template is still repacked.** Its files move to the root of
+  the `.dosz` and no `dosbox.conf` is written. The job finishes with a warning
+  saying no template was found, and that DOSBox Pure's start menu will offer the
+  program to run. A template that is there but refused (a link) or unreadable
+  just now fails the job instead: the app never quietly leaves a config out.
 - **Checked before it is kept.** Every repack tests every member's CRC, checks
-  the member names, and checks that `dosbox.conf` sits at the root before the
-  file is moved into place; a file that fails is removed and the job fails.
-  The same check runs from **Verify** on any `.dosz` row.
-- **Only eXoDOS game zips are queued.** Any `.zip` can be ticked in this mode; one
-  is queued when it holds one game folder and that game's template is in
-  `EXODOS_DOS_DIR`, and skipped with the reason otherwise. Member names are checked
-  with the same rules as archive extraction (no absolute paths, no `..`), the
-  archive size limits apply, and the template must resolve inside `EXODOS_DOS_DIR`.
+  the member names, and checks that `dosbox.conf` sits at the root (when the game
+  had a template) before the file is moved into place; a file that fails is
+  removed and the job fails. The same check runs from **Verify** on any `.dosz`
+  row, where a file with no `dosbox.conf` must hold a DOS program instead.
+- **Only eXoDOS game zips are queued.** Any `.zip` can be ticked in this mode. One
+  is queued when it holds exactly one game folder and either a template is found
+  for that game or the folder holds a DOS program (`.exe`, `.com` or `.bat`). Any
+  other zip (loose files, two folders, a folder of photos) is skipped with the
+  reason. Member names are checked with the same rules as archive extraction (no
+  absolute paths, no `..`), and the archive size limits apply.
 - **Not from archives**: the repack needs the zip itself and the `!dos` folder.
 - **Manual only.** Run it from the file browser. Rules never offer it, a
   stored Rule that names it is refused, and Auto leaves a `dos` folder's zips
@@ -2649,7 +2766,7 @@ can be added later. The behaviour is modelled on
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `EXODOS_DOS_DIR` | *(unset)* | Your eXoDOS `!dos` folder (the one holding `<Game>/dosbox.conf`). Must be inside a volume. Unset hides the tool. Nothing from eXoDOS ships with the image. |
+| `EXODOS_DOS_DIR` | *(unset)* | Optional. A `!dos` folder (holding `<Game>/dosbox.conf`) to search first. Not needed: the tool finds `!dos` beside each game zip or above it. Must be inside a volume; a value that is not is skipped. Nothing from eXoDOS ships with the image. |
 
 ## RAR Sets (multi-part .rar → the file inside)
 
@@ -2713,7 +2830,7 @@ From the command line:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `UNAR_PATH` | `unar` | Path to the `unar` binary. Ships in the image; outside it, the tool is hidden until `unar` is there. |
+| `UNAR_PATH` | `unar` | Path to the `unar` binary. Ships in the image; outside it, the tool is listed as not ready until `unar` is on `PATH`. |
 
 ## Command line (`compressatorium`)
 
@@ -2799,6 +2916,15 @@ of a run is moved to `processed/` by the next run. If what intake remembers
 between runs can't be saved, the pass is still reported and the run exits
 `1`.
 `--dry-run` polls no Inbox and says so (`skipped`, `dry_run`).
+
+**`dat import PATH...`** imports DATs: `.dat`/`.xml` files and `.zip` files of
+them (No-Intro's daily pack, a Redump zip). Each DAT replaces an earlier
+import of itself. **`dat sync [--platform SLUG]... [--force]`** downloads
+Redump's DATs for the disc Platforms in your Libraries (or just the ones
+named), skipping a system synced in the last day unless `--force`. Both print
+one line per DAT or system (`--json` for the whole result) and exit `1` when
+any was refused or failed. Both re-match the files a changed DAT may name
+(locally, as the server does) before they exit.
 
 Before it sweeps RomM, `run-rules` does the RomM upkeep the server does in the
 background: it finishes an identity cleanup a crash left owed (otherwise RomM
@@ -3002,7 +3128,7 @@ All actions are queued and processed by the job queue (FIFO). The queue is the o
 
 **eXoDOS**
 - `exodos_repack` (an eXoDOS game .zip → .dosz, with the game's `dosbox.conf` from
-  `EXODOS_DOS_DIR`)
+  the `!dos` folder beside it or above it, or with none and a warning)
 
 **RAR sets**
 - `rar_extract` (a multi-part RAR set's first volume → the one file inside it; with delete-source, every volume is deleted once the Round-trip passes)
@@ -3301,6 +3427,7 @@ no info route.
 | `CHD_VERIFICATION_STORE` | *(deprecated)* | Legacy JSON path. Ignored at runtime; auto-migrated into the SQLite DB on first startup (custom path honored if set) and renamed to `verified_chds.json.migrated.bak` |
 | `CHD_DAT_STORE` / `CHD_DAT_SYNC_STORE` | *(deprecated)* | Legacy JSON paths for `dat_store.json` and `dat_sync.json`, migrated the same way |
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` (CLI mode only) |
+| *(any `*_PATH` below)* | | **Found on its own** (#515): each fixed path is where the image installs the program. When it isn't there and the variable is unset, the program is looked up on `PATH` by name (a Homebrew or distro install works with nothing set). A path you set is used as is. A program found nowhere leaves its tool listed as not ready on the dashboard, with what to install or set |
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary (for custom builds) |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
@@ -3309,14 +3436,14 @@ no info route.
 | `NKIT2ISO_PATH` | `/usr/local/bin/nkit2iso` | Path to the nkit2iso binary (NKit → ISO) |
 | `NKIT2ISO_RECOVERY` | `none` | What nkit2iso does with a Wii image whose update partition was removed: `none` zero-fills it (offline; playable but not redump-verifiable), `download` fetches the archived recovery partition for a bit-exact restore. `download` is the only path on which the tool uses the network. |
 | `NSZ_PATH` | `nsz` | Path to the nsz binary (Nintendo Switch); resolved on PATH by default |
-| `SEVENZIP_PATH` | `7z` | Path to the 7z binary (handheld ROM archives); resolved on PATH by default (set an absolute path or `7zz` if your distro ships the newer `7zip` package) |
+| `SEVENZIP_PATH` | `7z` | Path to the 7z binary (handheld ROM archives); resolved on PATH by default; when there is no `7z` but there is a `7zz` (the newer `7zip` package, Homebrew's `sevenzip`), that is used on its own |
 | `JWUDTOOL_PATH` | `/usr/local/bin/jwudtool` | Path to the JWUDTool launcher (Wii U WUD ↔ WUX); the image ships a launcher that execs the bundled jar with a headless JRE |
 | `EXTRACT_XISO_PATH` | `/usr/local/bin/extract-xiso` | Path to the extract-xiso binary (Xbox / Xbox 360 XISO trim) |
 | `ROM_CONVERTO_PATH` | `/usr/local/bin/rom-converto` | Path to the rom-converto binary (Xbox 360 ZAR, PBP, CIA/CCI) |
 | `UNAR_PATH` | `unar` | Path to unar, the RAR sets tool's extractor; resolved on PATH by default |
 | `SWITCH_KEYS` | *(unset)* | Directory holding your Switch `prod.keys`. See [Switch Environment Variables](#switch-environment-variables) |
 | `NSZ_COMPRESSION_LEVEL` | `18` | zstandard level for nsz compression (1-22) |
-| `EXODOS_DOS_DIR` | *(unset)* | Your eXoDOS `!dos` folder. Must be inside a volume. Unset hides the eXoDOS tool |
+| `EXODOS_DOS_DIR` | *(unset)* | Optional `!dos` folder to search first. Not needed: templates are found beside each game zip. Must be inside a volume |
 | `MAMEREDUMP_REPO` | `MetalSlug/MAMERedump` | GitHub repo the DAT sync pulls from |
 | `MAMEREDUMP_AUTO_SYNC` | `false` | Sync DATs on startup when none are loaded |
 | `MAMEREDUMP_GITHUB_TOKEN` | *(unset)* | Optional GitHub token for the DAT sync's API calls |

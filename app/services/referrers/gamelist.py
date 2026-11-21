@@ -1,6 +1,6 @@
 """The ``gamelist.xml`` Referrer: EmulationStation frontends' game lists (#386).
 
-ES-DE, Batocera, Knulli, muOS and legacy EmulationStation key each game in a
+ES-DE, Batocera, Knulli and legacy EmulationStation key each game in a
 Platform's ``gamelist.xml`` on its ``<path>``, and hang the artwork, the
 description, the favourite flag and the play count off that entry. When the
 file a ``<path>`` names is replaced, the entry is rewritten to the output
@@ -12,8 +12,10 @@ EmulationStation frontend. File phase, like ``.m3u``.
 
 **Where.** A ``gamelist.xml`` directly in the replaced file's folder or in
 any folder above it up to its Volume root (``files.search_dirs``): that is the
-Platform folder, where Batocera, Knulli, muOS and legacy EmulationStation keep
-it, with the Image beside it or in a subfolder. Each entry is read relative to
+Platform folder, where Batocera, Knulli and legacy EmulationStation keep it,
+with the Image beside it or in a subfolder. (muOS reads no gamelist: it keeps
+artwork and text in its own catalogue, ``MUOS/info/catalogue/<System>/``, by
+game name.) Each entry is read relative to
 its gamelist's folder.
 
 **Which entries.** The ``<path>`` of each ``<game>`` or ``<folder>`` under the

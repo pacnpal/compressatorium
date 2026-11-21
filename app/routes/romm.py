@@ -218,12 +218,18 @@ def _safe_error(exc: RommError) -> str:
     """
     status = getattr(exc, "status", None)
     if status in (401, 403):
-        return "RomM rejected the API token. Pair again, or paste a new token."
+        return (
+            "RomM rejected the API token. On the RomM page, pair again or paste a "
+            "new token."
+        )
     if status == 404:
-        return "RomM returned 404. Check the RomM URL: it's the address you open RomM at."
+        return (
+            "RomM returned 404. On the RomM page, check the RomM URL: it's the "
+            "address you open RomM at."
+        )
     if status is not None:
         return f"RomM returned HTTP {status}."
-    return "Could not reach RomM. Check the RomM URL and that RomM is running."
+    return "Could not reach RomM. On the RomM page, check the RomM URL, and that RomM is running."
 
 
 def _romm_call(exc: RommError, *, context: str) -> HTTPException:
@@ -1817,8 +1823,9 @@ async def put_romm_settings(patch: RommSettingsPatch) -> dict:
     # but slow, and a refusal must change nothing.
     if submitted.get("swap_keep_rom_id") is True:
         await _require_swap_permissions(submitted)
-    # RomM's root must not overlap a folder Library, or two Rule sets act on
-    # the same Images. Checked and saved under the registration lock
+    # RomM's root must not be a folder Library's root or overlap an Inbox
+    # (inside or around a folder Library is fine, #514: the nearest root owns
+    # a file). Checked and saved under the registration lock
     # (`libraries.romm_root_claim`), so a folder registration cannot race it,
     # and refused before anything is persisted. Taken first, before the settle
     # lock and the sweep pause: the check is bounded (503 past it), and a root

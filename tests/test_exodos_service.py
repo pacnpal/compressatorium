@@ -51,33 +51,33 @@ def _game_zip(tree, names=None, name="Abaron (1995).zip"):
     return _zip(tree["games"] / name, names)
 
 
-# --- gating ----------------------------------------------------------------
+# --- finding the template tree (#513) ---------------------------------------
 
 
-def test_the_template_tree_comes_from_exodos_dos_dir(tree):
-    assert ExodosService().dos_dir() == os.path.realpath(tree["dos"])
+def test_the_override_is_checked_first(tree, monkeypatch):
+    override = tree["volume"] / "mine" / "!dos"
+    (override / "Abaron").mkdir(parents=True)
+    (override / "Abaron" / "dosbox.conf").write_bytes(b"[autoexec]\r\n")
+    monkeypatch.setattr(exodos_module.settings, "exodos_dos_dir", str(override))
+
+    plan = ExodosService().inspect(_game_zip(tree))
+
+    assert plan.template == os.path.realpath(override / "Abaron" / "dosbox.conf")
 
 
-def test_no_template_tree_when_the_variable_is_unset(tree, monkeypatch):
-    monkeypatch.setattr(exodos_module.settings, "exodos_dos_dir", None)
-
-    assert ExodosService().dos_dir() is None
-
-
-def test_a_template_tree_outside_every_volume_is_refused(tree, tmp_path, monkeypatch):
+@pytest.mark.parametrize("where", ["unset", "outside", "missing"])
+def test_without_a_usable_override_the_tree_beside_the_zip_is_found(
+    tree, tmp_path, monkeypatch, where,
+):
     outside = tmp_path / "elsewhere" / "!dos"
-    outside.mkdir(parents=True)
-    monkeypatch.setattr(exodos_module.settings, "exodos_dos_dir", str(outside))
+    (outside / "Abaron").mkdir(parents=True)
+    (outside / "Abaron" / "dosbox.conf").write_bytes(b"[autoexec]\r\n")
+    value = {"unset": None, "outside": str(outside), "missing": str(tree["volume"] / "nope")}
+    monkeypatch.setattr(exodos_module.settings, "exodos_dos_dir", value[where])
 
-    assert ExodosService().dos_dir() is None
+    plan = ExodosService().inspect(_game_zip(tree))
 
-
-def test_a_missing_template_tree_is_refused(tree, monkeypatch):
-    monkeypatch.setattr(
-        exodos_module.settings, "exodos_dos_dir", str(tree["volume"] / "nope"),
-    )
-
-    assert ExodosService().dos_dir() is None
+    assert plan.template == os.path.realpath(tree["dos"] / "Abaron" / "dosbox.conf")
 
 
 # --- inspection ------------------------------------------------------------
@@ -109,10 +109,10 @@ def test_inspect_refuses_zips_that_are_not_one_safe_game_folder(tree, names, rea
         ExodosService().inspect(path)
 
 
-def test_inspect_refuses_a_game_with_no_template(tree):
-    path = _game_zip(tree, ["Zork/ZORK.EXE"], name="Zork.zip")
+def test_inspect_refuses_a_folder_with_no_template_and_no_dos_program(tree):
+    path = _game_zip(tree, ["Photos/IMG_0001.JPG"], name="Photos.zip")
 
-    with pytest.raises(NotRepackable, match="no template"):
+    with pytest.raises(NotRepackable, match="no DOS program"):
         ExodosService().inspect(path)
 
 
@@ -134,12 +134,13 @@ def test_inspect_applies_the_archive_entry_limit(tree, monkeypatch):
         ExodosService().inspect(_game_zip(tree))
 
 
-def test_inspect_refuses_when_no_template_tree_is_configured(tree, monkeypatch):
+def test_inspect_needs_no_setting(tree, monkeypatch):
     path = _game_zip(tree)
     monkeypatch.setattr(exodos_module.settings, "exodos_dos_dir", None)
 
-    with pytest.raises(NotRepackable, match="EXODOS_DOS_DIR"):
-        ExodosService().inspect(path)
+    assert ExodosService().inspect(path).template == os.path.realpath(
+        tree["dos"] / "Abaron" / "dosbox.conf",
+    )
 
 
 def test_is_repackable_answers_without_raising(tree):
@@ -305,14 +306,20 @@ def test_a_member_with_a_bad_crc_fails_verify(tree, tmp_path):
     assert "GAME.EXE" in result["message"]
 
 
-def test_a_product_without_a_root_conf_fails_verify(tree, tmp_path):
+def test_a_product_with_neither_a_root_conf_nor_a_program_fails_verify(tree, tmp_path):
     service = ExodosService()
-    path = _zip(tmp_path / "vol" / "noconf.dosz", ["GAME.EXE"])
+    path = _zip(tmp_path / "vol" / "noconf.dosz", ["README.TXT"])
 
     result = _verify(service, path)
 
     assert result["valid"] is False
     assert "dosbox.conf" in result["message"]
+
+
+def test_a_product_with_no_conf_but_a_dos_program_verifies(tree, tmp_path):
+    path = _zip(tmp_path / "vol" / "noconf.dosz", ["BIN/GAME.EXE"])
+
+    assert _verify(ExodosService(), path)["valid"] is True
 
 
 def test_a_product_with_an_unsafe_member_fails_verify(tree, tmp_path):
@@ -356,10 +363,10 @@ def test_a_product_that_fails_its_check_is_never_kept(tree, monkeypatch):
     output = service.get_output_path(source)
     real_check = ExodosService._check_product
 
-    def corrupt_then_check(self, path, *args):
+    def corrupt_then_check(self, path, *args, **kwargs):
         with open(path, "r+b") as handle:
             handle.truncate(os.path.getsize(path) // 2)
-        return real_check(self, path, *args)
+        return real_check(self, path, *args, **kwargs)
 
     monkeypatch.setattr(ExodosService, "_check_product", corrupt_then_check)
 
@@ -402,7 +409,7 @@ def test_convert_warns_about_folder_mounts_on_other_drives(tree):
 
 def test_a_template_added_later_is_seen_without_a_restart(tree):
     service = ExodosService()
-    path = _game_zip(tree, ["Zork/ZORK.EXE"], name="Zork.zip")
+    path = _game_zip(tree, ["Zork/ZORK.DAT"], name="Zork.zip")
 
     assert service.is_repackable(path) is False
     (tree["dos"] / "Zork").mkdir()
@@ -441,7 +448,8 @@ def test_the_warning_reads_as_sentences(tree):
 
     message = _convert(service, source, service.get_output_path(source))[-1]["message"]
 
-    assert message.startswith("Repacked, but it may not start. The conf still points")
+    assert message.startswith("Repacked with its dosbox.conf from ")
+    assert ", but it may not start. The conf still points" in message
     assert message.endswith(".")
 
 
@@ -453,9 +461,9 @@ def test_a_cancel_during_the_check_keeps_nothing(tree, monkeypatch):
     cancel = asyncio.Event()
     real_check = ExodosService._own_check
 
-    def cancel_then_check(self, path, is_cancelled):
+    def cancel_then_check(self, path, is_cancelled, **kwargs):
         cancel.set()
-        return real_check(self, path, is_cancelled)
+        return real_check(self, path, is_cancelled, **kwargs)
 
     monkeypatch.setattr(ExodosService, "_own_check", cancel_then_check)
 
@@ -783,7 +791,7 @@ def test_a_template_added_to_an_existing_game_folder_ends_a_cached_miss(tree, mo
     calls = _count_inspections(monkeypatch)
     service = ExodosService()
     (tree["dos"] / "Zork").mkdir()
-    path = _game_zip(tree, ["Zork/ZORK.EXE"], name="Zork.zip")
+    path = _game_zip(tree, ["Zork/ZORK.DAT"], name="Zork.zip")
     assert service.is_repackable(path) is False
 
     conf = tree["dos"] / "Zork" / "dosbox.conf"
@@ -843,7 +851,7 @@ def test_a_template_made_while_the_probe_runs_is_not_cached_as_missing(tree, mon
     service = ExodosService()
     template = tree["dos"] / "Abaron" / "dosbox.conf"
     template.unlink()
-    path = _game_zip(tree)
+    path = _game_zip(tree, ["Abaron/CD/ABARON.CUE"])
     real = ExodosService._read_template
 
     def racing(self, root, top):
@@ -877,3 +885,182 @@ def test_a_zip_that_cannot_be_read_for_a_moment_is_not_remembered(tree, monkeypa
 
     assert service.is_repackable(path) is False
     assert service.is_repackable(path) is True
+
+
+# --- no setting, and no template (#513) -------------------------------------
+
+
+@pytest.fixture
+def bare(tree, monkeypatch):
+    """The eXoDOS layout with EXODOS_DOS_DIR unset, as a fresh install has it."""
+    monkeypatch.setattr(exodos_module.settings, "exodos_dos_dir", None)
+    return tree
+
+
+def test_the_tree_is_found_in_a_parent_folder(bare):
+    sub = bare["games"] / "Adventure"
+    sub.mkdir()
+    path = _zip(sub / "Abaron.zip", ["Abaron/ABARON.EXE"])
+
+    plan = ExodosService().inspect(path)
+
+    assert plan.template == os.path.realpath(bare["dos"] / "Abaron" / "dosbox.conf")
+
+
+def test_the_nearest_tree_holding_the_game_wins(bare):
+    sub = bare["games"] / "Adventure"
+    (sub / "!dos" / "Abaron").mkdir(parents=True)
+    (sub / "!dos" / "Abaron" / "dosbox.conf").write_bytes(b"[autoexec]\r\n")
+    path = _zip(sub / "Abaron.zip", ["Abaron/ABARON.EXE"])
+
+    plan = ExodosService().inspect(path)
+
+    assert plan.template == os.path.realpath(sub / "!dos" / "Abaron" / "dosbox.conf")
+
+
+def test_a_nearer_tree_without_the_game_is_passed_over(bare):
+    sub = bare["games"] / "Adventure"
+    (sub / "!dos" / "Other").mkdir(parents=True)
+    path = _zip(sub / "Abaron.zip", ["Abaron/ABARON.EXE"])
+
+    plan = ExodosService().inspect(path)
+
+    assert plan.template == os.path.realpath(bare["dos"] / "Abaron" / "dosbox.conf")
+
+
+def test_the_walk_stops_at_the_volume(bare, monkeypatch):
+    """A !dos folder above the Volume is never read."""
+    games = bare["games"] / "inner"
+    games.mkdir()
+    monkeypatch.setattr(exodos_module.settings, "chd_volumes", str(games))
+    path = _zip(games / "Abaron.zip", ["Abaron/ABARON.EXE"])
+
+    plan = ExodosService().inspect(path)
+
+    assert plan.template is None
+
+
+def test_a_dos_folder_linked_out_of_the_volume_is_not_used(bare, tmp_path):
+    outside = tmp_path / "elsewhere" / "!dos"
+    (outside / "Abaron").mkdir(parents=True)
+    (outside / "Abaron" / "dosbox.conf").write_bytes(b"[autoexec]\r\n")
+    sub = bare["games"] / "Adventure"
+    sub.mkdir()
+    (sub / "!dos").symlink_to(outside)
+    path = _zip(sub / "Abaron.zip", ["Abaron/ABARON.EXE"])
+
+    plan = ExodosService().inspect(path)
+
+    assert plan.template == os.path.realpath(bare["dos"] / "Abaron" / "dosbox.conf")
+
+
+def test_a_game_with_no_template_is_repacked_without_a_conf(bare):
+    service = ExodosService()
+    source = _game_zip(bare, ["Zork/", "Zork/ZORK.EXE", "Zork/DATA/ZORK.DAT"], name="Zork.zip")
+    before = Path(source).read_bytes()
+    output = service.get_output_path(source)
+
+    assert service.is_repackable(source) is True
+    updates = _convert(service, source, output)
+
+    assert _members(output) == {
+        "ZORK.EXE": b"data:Zork/ZORK.EXE",
+        "DATA/ZORK.DAT": b"data:Zork/DATA/ZORK.DAT",
+    }
+    assert Path(source).read_bytes() == before
+    assert updates[-1]["progress"] == 100
+    assert updates[-1]["warning"] is True
+    assert "no dosbox.conf" in updates[-1]["message"]
+    assert "start menu" in updates[-1]["message"]
+    assert _verify(service, output)["valid"] is True
+
+
+def test_a_game_with_its_template_says_where_its_conf_came_from(bare):
+    service = ExodosService()
+    source = _game_zip(bare)
+
+    updates = _convert(service, source, service.get_output_path(source))
+
+    assert not updates[-1].get("warning")
+    assert os.path.join("!dos", "Abaron", "dosbox.conf") in updates[-1]["message"]
+
+
+def test_a_template_that_cannot_be_read_does_not_fall_back_to_no_conf(bare, monkeypatch):
+    """Fail closed: a template that is there but unreadable just now is no
+    licence to repack without it."""
+    def denied(*_args, **_kwargs):
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(exodos_module, "read_beneath", denied)
+
+    with pytest.raises(NotRepackable, match="could not be read"):
+        ExodosService().inspect(_game_zip(bare))
+
+
+def test_a_game_with_no_template_leaves_out_its_own_untouched_conf(bare):
+    """Codex PR #517: the zip's own ``<Game>/dosbox.conf`` was never
+    rewritten, so it would land at the root and DOSBox Pure would load it
+    (``dosbox_pure_conf: inside``) instead of the start menu promised."""
+    service = ExodosService()
+    source = _game_zip(
+        bare, ["Zork/", "Zork/ZORK.EXE", "Zork/dosbox.conf", "Zork/SUB/dosbox.conf"],
+        name="Zork.zip",
+    )
+    output = service.get_output_path(source)
+
+    updates = _convert(service, source, output)
+
+    assert set(_members(output)) == {"ZORK.EXE", "SUB/dosbox.conf"}
+    assert "no dosbox.conf" in updates[-1]["message"]
+    assert "left out" in updates[-1]["message"]
+    assert _verify(service, output)["valid"] is True
+
+
+def test_a_tree_that_cannot_be_statted_just_now_is_not_skipped(tree, monkeypatch):
+    """CodeRabbit PR #517: ``isdir`` hid an I/O error, so the tree was
+    skipped and the game planned (and cached) as one with no template."""
+    from services.exodos import ProbeUnavailable
+
+    real_stat = os.stat
+    dos = os.path.realpath(tree["dos"])
+
+    def flaky(path, *args, **kwargs):
+        if os.fspath(path) == dos:
+            raise OSError(errno.EIO, "Input/output error")
+        return real_stat(path, *args, **kwargs)
+
+    source = _game_zip(tree)
+    monkeypatch.setattr(os, "stat", flaky)
+
+    with pytest.raises(ProbeUnavailable):
+        ExodosService().inspect(source)
+
+
+def test_a_game_with_no_template_leaves_out_its_own_conf_in_any_case(bare):
+    service = ExodosService()
+    source = _game_zip(bare, ["Zork/", "Zork/ZORK.EXE", "Zork/DOSBOX.CONF"], name="Zork.zip")
+    output = service.get_output_path(source)
+
+    _convert(service, source, output)
+
+    assert set(_members(output)) == {"ZORK.EXE"}
+
+
+def test_the_last_update_reads_no_folder_on_the_event_loop(bare, monkeypatch):
+    """CodeRabbit PR #517: the no-template reason is worked out during the
+    bounded inspection, never by statting the override on the loop."""
+    service = ExodosService()
+    source = _game_zip(bare, ["Zork/", "Zork/ZORK.EXE"], name="Zork.zip")
+    monkeypatch.setattr(exodos_module.settings, "exodos_dos_dir", str(bare["games"] / "nope"))
+    main = threading.current_thread()
+    real = ExodosService.override
+
+    def watched(self):
+        assert threading.current_thread() is not main, "override() read on the loop"
+        return real(self)
+
+    monkeypatch.setattr(ExodosService, "override", watched)
+
+    updates = _convert(service, source, service.get_output_path(source))
+
+    assert "EXODOS_DOS_DIR is set but is not a folder" in updates[-1]["message"]

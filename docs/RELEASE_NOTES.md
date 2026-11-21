@@ -20,8 +20,137 @@
   - The three RomM Settings cards are one form with one Save; the re-pin
     knobs are under **Advanced**.
   - RomM errors name the field to fix instead of an environment variable.
+- **ES-DE's gamelists are found for you** (#523). ES-DE 2.0 and later read
+  gamelists only from `ES-DE/gamelists/<system>`, never from the ROM folders,
+  so an ES-DE Library updated nothing until you typed that folder. The Rules
+  editor's **Frontend** select (None, ES-DE, Batocera or Knulli) replaces the
+  "Used by an EmulationStation frontend" checkbox. Picking ES-DE searches the
+  Volumes for the folder and offers each one found with **Use this folder**.
+  A Library already set up the old way is offered the folder too.
+- **Choose which messages each notification destination gets** (#523), and a
+  new **A job you started finished** message (off unless chosen).
+- **Signed webhooks** (#523). A generic webhook can have a signing secret; each
+  message then carries `X-Compressatorium-Signature: sha256=<hex>`, the
+  HMAC-SHA256 of the body.
+- **DATs made easy** (#524). **Import DATs** takes several `.dat`/`.xml` files
+  at once, and zips of them: No-Intro's daily pack or a Redump zip imports
+  every DAT inside in one go. A zip is read under the same caps and member-name
+  rules as an archive an Inbox takes in, and each DAT is capped at 100 MB.
+  Re-importing a DAT replaces the older copy instead of doubling it. One bad
+  or unreadable DAT is reported and the rest still import. The whole upload
+  is capped at 1 GB while it arrives, and the 100 MB cap holds for a loose
+  DAT from the CLI too. A DAT imported from the CLI while the server is
+  matching makes it re-check what it was deciding.
+- **Sync Redump in one click** (#524). Downloads Redump's DAT for each disc
+  Platform in your Libraries, one request at a time, and leaves a system
+  synced in the last day alone. Only DATs: never keys, BIOS sets or games.
+  It asks over HTTPS only, with the certificate checked, so a DAT can't be
+  swapped on the way in; while redump.org answers only plain HTTP, each
+  system reports that it couldn't connect. A Redump DAT you replace by hand
+  is fetched again on the next sync. No-Intro stays upload-only, because its
+  site is gated.
+- **Online identification is a single yes/no** (#524). Until you answer, the
+  DAT Library asks once whether to look up unknown files on Hasheous.
+- **CLI:** `compressatorium dat import PATH...` and `compressatorium dat sync`.
+- **Sonarr, Radarr and ROMarr webhook, and "scan this path now"** (#522).
+  `POST /api/hooks/arr` takes the *arr's Webhook connection: its Test answers
+  ok, and each file an import names is taken in by the Inbox that holds it at
+  once, with no poll and no settle wait, through the same intake as always.
+  `POST /api/scan` with a `path` (a file or folder) does the same for scripts.
+  Both use the app's login when it is on and the header
+  `X-Chd-Action-Confirm: scan`. When the *arr sees a folder under another name
+  (`/downloads` here is `/data/downloads`), add a path rewrite in the new
+  **Sonarr, Radarr and ROMarr** card in the Rules view; **Test a path** says
+  where a path lands, and suggests the rewrite when it finds the file under a
+  Volume. A rewritten path must still be inside a Volume and an Inbox.
+
+### Changed
+
+- **A Rule turns on when you pick its target, and an empty run says why**
+  (#520). Picking "Convert to" for a console now enables that Rule, so Preview
+  and Run now no longer answer "0 queued" for a Rule that was silently off.
+  When nothing runs, Preview and Run now say why: the Rule is off, no files
+  match, all of them are already converted or already in the queue, or a Rule
+  could not run.
+- **A batch never fails over one file** (#520). A file whose output another
+  job is already writing is skipped and named in the result; the rest of the
+  batch is queued. Auto queues every Image whose plan is unchanged since you
+  confirmed it and names the ones that changed, instead of refusing the whole
+  run and asking again; if one target's group can't be queued, the others
+  still are. A compression level outside the codec's range is clamped to it
+  (`zstd:40` on RVZ runs as `zstd:22`) instead of refused.
+- **Works out of the box** (#515). A tool program that isn't at the path the
+  image uses (`/usr/bin/chdman`, `/usr/local/bin/maxcso`, ...) is looked up on
+  `PATH` by name when its `*_PATH` is unset, so a Homebrew or distro install
+  works with nothing set; `7zz` stands in for a missing `7z`. A path you set
+  is used as is.
+- **A tool that can't run is shown, not hidden** (#515). The dashboard's Quick
+  tools card lists it under **Not ready here** with the one thing to install
+  or set (`GET /api/tools` now carries a `reasons` map). The Switch reason says
+  a `prod.keys` anywhere on a Volume is found on its own. The empty Volume list
+  says to mount folders under `/data`. RomM errors point at the URL and token
+  on the RomM page instead of naming `ROMM_URL` / `ROMM_TOKEN`, and Help no
+  longer tells you to set environment variables for Switch keys or NKit.
+- **A folder Library with two folders for one Platform places new Images in
+  the one already holding the most** (#515), instead of refusing. The
+  placements list marks that row `guessed`; a folder mapping makes it
+  certain. Containment and the detection check still apply to the guess.
+
+- **Libraries may overlap; the nearest folder owns a file** (#514). Any
+  folder can be registered as a Library now, including one inside RomM's
+  library folder or inside or around another folder Library, and RomM's
+  library folder can be set around or inside a folder Library. A file belongs
+  to the Library with the nearest folder: its Rules convert the file and its
+  settings (its ES-DE gamelist) apply, and the Library around it leaves the
+  file out of its Rules, check Rules, Findings, find-duplicates and counts,
+  so no file is converted twice. An output written into a folder Library
+  inside RomM's folder is still hidden from RomM's scanner while it is
+  written. The Rules view says which Library a Library sits inside and which
+  sit inside it. Still refused: the same folder twice, a Library overlapping
+  an Inbox, and a file reached through one Library's folder that lives in
+  another (its Source is kept).
+
+- **eXoDOS works with no setting** (#513). Point the app at your eXoDOS
+  collection and the eXoDOS tool is there: it is no longer hidden until
+  `EXODOS_DOS_DIR` is set.
+  - Each game's template is found by itself: `!dos/<Game>/dosbox.conf` beside
+    the zip, then in each parent folder, up to the volume. The `!dos` folder
+    must resolve inside a volume, and the template must be a plain file inside
+    it.
+  - `EXODOS_DOS_DIR` is now an optional override, searched first.
+  - A game with no template is still repacked: its files move to the root of
+    the `.dosz`, no `dosbox.conf` is written (a `dosbox.conf` the zip carries
+    in the game folder is left out too, since it was never rewritten), and the
+    job finishes with a warning saying DOSBox Pure's start menu will offer the
+    program to run.
+  - Every job now says what the game got: its `dosbox.conf` and where it came
+    from, or no `dosbox.conf` and why.
+  - A zip is taken as a DOS game when it holds exactly one game folder and a
+    template is found for it or the folder holds a DOS program (`.exe`, `.com`
+    or `.bat`). Other zips are skipped with the reason, as before.
+  - Verify accepts a `.dosz` with no `dosbox.conf` when it holds a DOS program.
 
 ### Fixed
+
+- muOS is no longer listed as reading `gamelist.xml`. It keeps its artwork in
+  its own catalogue (`MUOS/info/catalogue`), by game name.
+
+- **Sync MAMERedump no longer deletes your other DATs** (#525). It used to
+  delete every DAT in the store after a successful sync, including No-Intro
+  packs and Redump DATs you had imported or synced. It now replaces only the
+  DATs it brings a new copy of (same name and family).
+
+- **A sweep queues nothing from a listing that adding or removing a Library
+  made stale** (#518 follow-up). A sweep that listed a Platform
+  before a Library was registered or removed inside it (or before RomM's
+  folder moved) now queues none of that listing and checks none of it: the
+  Platform says "a Library was added or removed inside this one while it ran",
+  its run isn't recorded, and the next run lists it again. The check and the
+  queueing are one step, so no registration can slip in between. The Rules
+  view reads the Library list again after a Library is added or removed, so
+  which Library sits inside which stays right, also for a RomM folder reached
+  through a link. A job already queued before the change still runs as it
+  was queued.
 
 - **RomM: every Platform gets a folder for new Images, even when RomM keeps
   two records for it** (#512). RomM often keeps an empty record beside the
