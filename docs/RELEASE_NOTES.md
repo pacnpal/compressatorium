@@ -73,6 +73,12 @@
   **Sonarr, Radarr and ROMarr** card in the Rules view; **Test a path** says
   where a path lands, and suggests the rewrite when it finds the file under a
   Volume. A rewritten path must still be inside a Volume and an Inbox.
+- **An *arr that imports straight into a Library converts it** (#541). When the
+  imported file lands in a Library's console folder rather than an Inbox, that
+  console's conversion Rule runs for it at once, as Run now would. Only when
+  the Library converts on its own (Convert automatically), the console is set
+  to convert and on, and its hours allow; otherwise the hook says why and the
+  next scheduled run takes it. **Test a path** names the Library.
 
 ### Changed
 

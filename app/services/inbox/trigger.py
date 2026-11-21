@@ -7,9 +7,18 @@ rewritten from how the *arr sees it to how this app does (the Autoscan
 handed to the Inbox whose folder holds it: :func:`intake.mark_ready` says it
 is finished, and that Inbox is polled at once. There is no second pipeline.
 The poll lists, checks, converts or copies, and archives exactly as the
-scheduler's does, only without the settle wait for what was named. A path no
-Inbox holds is reported with why, and with a rewrite suggested from the
-Volumes when one would find it.
+scheduler's does, only without the settle wait for what was named.
+
+A path imported straight into a Library (no Inbox holds it, a Library does,
+#541) runs that Library's conversion Rule for the console folder it landed in,
+now: the sweep's own checks (containment, the Rule's filters and duplicate
+policy, a file already converted or in the queue) decide, as for Run now. Only
+when the Library converts on its own (**Convert automatically**), the console's
+Rule is on, and its hours allow; otherwise the path is skipped with why, and
+the next scheduled run takes it. Never the console's check Rule.
+
+A path nothing holds is reported with why, and with a rewrite suggested from
+the Volumes when one would find it.
 """
 
 from __future__ import annotations
@@ -23,6 +32,7 @@ from typing import Any
 
 from logging_setup import get_logger
 from services import inbox as inbox_store
+from services.platform_detect import canonical_slug
 from services.preferences_store import preferences_store
 from services.subprocess_runner import run_detached
 from utils.path_utils import volume_containment
@@ -174,9 +184,41 @@ def _inbox_for(local: str) -> inbox_store.Inbox | None:
     return None
 
 
+def _library_for(local: str) -> tuple[Any, str | None]:
+    """The Library that owns *local*, or ``(None, why)``. Blocking."""
+    from services import libraries
+
+    try:
+        return libraries.library_for(local), None
+    except libraries.AmbiguousLibrary as exc:
+        return None, str(exc)
+    except OSError as exc:
+        return None, f"Couldn't tell which Library holds it: {exc}"
+
+
+def _platform_ids(library: Any, local: str) -> list[str]:
+    """The Library's console ids for the console folder *local* sits in:
+    its own id or folder name, or the same canonical slug. Blocking."""
+    from services.rules.library import AmbiguousFolder
+
+    try:
+        folder = library.platform_folder(local)
+    except (AmbiguousFolder, OSError):
+        return []
+    name = os.path.basename(folder) if folder else None
+    if not name:
+        return []
+    slug = canonical_slug(name)
+    return [
+        str(p.id) for p in library.platforms()
+        if name in (str(p.id), p.folder) or (slug and canonical_slug(p.slug) == slug)
+    ]
+
+
 def check(path: str, rules: list[dict[str, str]]) -> dict[str, Any]:
-    """What would happen to *path*: where it is here, the Inbox that takes
-    it, or the problem, with a suggested rewrite. Touches no file. Blocking."""
+    """What would happen to *path*: where it is here, the Inbox or Library
+    that takes it, or the problem, with a suggested rewrite. Touches no
+    file. Blocking."""
     local = rewrite(path, rules)
     result: dict[str, Any] = {
         "path": path, "local": local, "inbox_id": None, "library_id": None,
@@ -191,8 +233,12 @@ def check(path: str, rules: list[dict[str, str]]) -> dict[str, Any]:
         result["problem"] = f"Nothing is at {local}"
     else:
         box = _inbox_for(local)
+        library, why = (None, None) if box is not None else _library_for(local)
+        if library is not None:
+            result["library_id"] = library.id
+            return result
         if box is None:
-            result["problem"] = f"{local} isn't inside an Inbox"
+            result["problem"] = why or f"{local} isn't inside an Inbox or a Library"
         else:
             result["inbox_id"], result["library_id"] = box.id, box.library_id
             return result
@@ -202,13 +248,21 @@ def check(path: str, rules: list[dict[str, str]]) -> dict[str, Any]:
     return result
 
 
-def _checked(path: str, rules: list[dict[str, str]]) -> tuple[dict[str, Any], str | None]:
-    """:func:`check`, and the real path of what an Inbox takes, resolved in
-    the same bounded worker so the marker needs no disk on the event loop
-    (Codex PR #526). Blocking."""
+def _checked(
+    path: str, rules: list[dict[str, str]],
+) -> tuple[dict[str, Any], str | None, list[str]]:
+    """:func:`check`, the real path of what an Inbox takes, and the console
+    ids of a Library it landed in, worked out in the same bounded worker so
+    nothing touches the disk on the event loop (Codex PR #526). Blocking."""
+    from services import libraries
+
     found = check(path, rules)
     real = os.path.realpath(found["local"]) if found["inbox_id"] is not None else None
-    return found, real
+    ids: list[str] = []
+    if found["inbox_id"] is None and found["library_id"] is not None:
+        library = libraries.get(found["library_id"])
+        ids = _platform_ids(library, found["local"]) if library is not None else []
+    return found, real, ids
 
 
 async def check_one(path: str) -> dict[str, Any]:
@@ -233,17 +287,28 @@ async def process(paths: list[str], *, source: str) -> dict[str, Any]:
     accepted: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     boxes: dict[int, inbox_store.Inbox] = {}
+    sweeps: dict[str, tuple[Any, set[str]]] = {}
     for path in paths[:MAX_PATHS]:
         try:
-            found, real = await asyncio.wait_for(
+            found, real, ids = await asyncio.wait_for(
                 run_detached(_checked, path, rules), _STEP_SECONDS,
             )
         except (OSError, TimeoutError, ValueError) as exc:
-            found, real = {"path": path, "local": path, "inbox_id": None, "library_id": None,
-                           "problem": f"Couldn't check it: {exc}", "suggestion": None}, None
+            found, real, ids = {"path": path, "local": path, "inbox_id": None,
+                                "library_id": None, "problem": f"Couldn't check it: {exc}",
+                                "suggestion": None}, None, []
+        if found["inbox_id"] is None and found["library_id"] is not None:
+            library, due, why = await _due_in_library(found, ids)
+            if why:
+                found = {**found, "problem": why}
+            else:
+                sweeps.setdefault(library.id, (library, set()))[1].update(due)
+                accepted.append({"path": path, "local": found["local"], "inbox_id": None,
+                                 "library_id": library.id, "platform_ids": due})
         _recent.appendleft({"at": _now(), "source": source, **found})
         if found["inbox_id"] is None:
-            skipped.append(found)
+            if found["problem"]:
+                skipped.append(found)
             continue
         box = inbox_store.get(found["inbox_id"])
         if box is None:
@@ -252,11 +317,63 @@ async def process(paths: list[str], *, source: str) -> dict[str, Any]:
         intake.mark_ready(box.id, real, resolved=True)
         boxes[box.id] = box
         accepted.append({"path": path, "local": found["local"], "inbox_id": box.id})
-    for box in boxes.values():
-        task = asyncio.create_task(_poll_now(box))
+    jobs = [_poll_now(box) for box in boxes.values()]
+    jobs += [_sweep_now(library, ids) for library, ids in sweeps.values()]
+    for job in jobs:
+        task = asyncio.create_task(job)
         _tasks.add(task)
         task.add_done_callback(_tasks.discard)
     return {"accepted": accepted, "skipped": skipped}
+
+
+async def _due_in_library(
+    found: dict[str, Any], ids: list[str],
+) -> tuple[Any, list[str], str | None]:
+    """``(library, console ids to convert now, None)`` for a path imported
+    straight into a Library, or ``(library, [], why not)``. Fails closed: a
+    console is converted only when the Library converts on its own, its
+    conversion Rule is on, and now is inside its hours."""
+    from services import libraries
+    from services.rules import sweep as rules_sweep
+    from services.rules.schedule import _in_window
+
+    library = libraries.get(found["library_id"])
+    if library is None:
+        return None, [], "The Library was removed"
+    if not library.schedule_enabled():
+        return library, [], (
+            f"Its automation is off in {library.name}: turn on Convert "
+            "automatically to convert what lands there"
+        )
+    if not ids:
+        return library, [], f"{found['local']} isn't in a console folder of {library.name}"
+    stored = await rules_sweep.get_rules(library)
+    on = [pid for pid in ids if stored.get(pid, {}).get("mode") and stored[pid].get("enabled")]
+    if not on:
+        return library, [], f"This console isn't set to convert in {library.name}"
+    now = datetime.now(timezone.utc)
+    due = [pid for pid in on if _in_window(stored[pid], now)]
+    if not due:
+        return library, [], (
+            f"It's outside this console's hours in {library.name}: "
+            "the next scheduled run takes it"
+        )
+    return library, due, None
+
+
+async def _sweep_now(library: Any, platform_ids: set[str]) -> None:
+    """Run *library*'s conversion Rules for *platform_ids* now, as Run now
+    does for those consoles: never their check Rules."""
+    from services.rules import sweep as rules_sweep
+    from services.rules.rules import CONVERT
+
+    try:
+        await rules_sweep.sweep(
+            library, platform_ids=sorted(platform_ids), ignore_schedule=True,
+            kinds=(CONVERT,),
+        )
+    except Exception:
+        logger.warning("library: converting an import in %s failed", library.name, exc_info=True)
 
 
 async def _poll_now(box: inbox_store.Inbox) -> None:

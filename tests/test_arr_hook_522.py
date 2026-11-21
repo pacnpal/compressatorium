@@ -426,3 +426,99 @@ async def test_a_file_replaced_after_its_marker_settles_as_usual(vol, db):
     await t431._poll(box, now=1)
 
     assert again.exists()
+
+
+# ---- a path imported straight into a Library (#541) -------------------------
+
+
+@pytest.fixture(name="queued")
+def _queued(monkeypatch):
+    """The queue stubbed and every tool ready: records what a sweep queued."""
+    from types import SimpleNamespace
+
+    from services.job_manager import job_manager
+    from services.tools import registry
+
+    queued: list[str] = []
+
+    async def fake_batch(paths, mode, **_kwargs):
+        queued.extend(paths)
+        return [SimpleNamespace(file_path=p, id=f"job-{i}") for i, p in enumerate(paths)]
+
+    async def ready(_tool, **_kwargs):
+        return True
+
+    monkeypatch.setattr(job_manager, "create_batch_jobs", fake_batch)
+    monkeypatch.setattr(job_manager, "get_active_job_candidates", list)
+    monkeypatch.setattr(registry, "tool_is_ready", ready)
+    return queued
+
+
+async def _ps2_library(vol: Path, *, automation=True, rule=None, check=None):
+    from services import libraries
+    from services.rules import sweep as rules_sweep
+
+    from .test_platform_detect import _ps2
+
+    library = t431._library(vol)
+    game = Path(_ps2(vol / "ROMs" / "ps2" / "Game.iso"))
+    libraries.update(library.id, schedule_enabled=automation)
+    await rules_sweep.set_rules(library, {"ps2": rule or {"mode": "createdvd", "enabled": True}})
+    if check:
+        await rules_sweep.set_check_rules(library, {"ps2": check})
+    return libraries.get(library.id), game
+
+
+@pytest.mark.asyncio
+async def test_an_import_into_a_library_runs_that_consoles_rule(client, vol, queued):
+    from services.inbox import trigger
+
+    library, game = await _ps2_library(vol, check={"enabled": True})
+
+    reply = await client.post("/api/hooks/arr", headers=CONFIRM, json={
+        "eventType": "Download", "romFile": {"path": str(game)},
+    })
+
+    assert reply.status_code == 202
+    [taken] = reply.json()["accepted"]
+    assert taken == {
+        "path": str(game), "local": str(game), "inbox_id": None,
+        "library_id": library.id, "platform_ids": ["ps2"],
+    }
+    await trigger.drain()
+    # The conversion Rule ran for the console; its check Rule did not.
+    assert queued == [str(game)]
+
+
+@pytest.mark.asyncio
+async def test_the_check_names_the_library_for_a_library_path(client, vol, queued):
+    library, game = await _ps2_library(vol)
+
+    body = (await client.post("/api/hooks/arr/check", json={"path": str(game)})).json()
+
+    assert body["inbox_id"] is None
+    assert body["library_id"] == library.id
+    assert body["problem"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("setup, why", [
+    ({"automation": False}, "automation is off"),
+    # Paused by the person: naming the console must not override that.
+    ({"rule": {"mode": "createdvd", "enabled": False}}, "isn't set to convert"),
+    ({"rule": {"mode": "createdvd", "enabled": True, "days": []}}, "outside"),
+])
+async def test_an_import_a_rule_would_not_run_now_is_left_alone(
+    client, vol, queued, setup, why,
+):
+    from services.inbox import trigger
+
+    _library, game = await _ps2_library(vol, **setup)
+
+    reply = await client.post("/api/scan", headers=CONFIRM, json={"path": str(game)})
+
+    body = reply.json()
+    assert body["accepted"] == []
+    assert why in body["skipped"][0]["problem"]
+    await trigger.drain()
+    assert queued == []

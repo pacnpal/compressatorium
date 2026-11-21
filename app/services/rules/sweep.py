@@ -2014,8 +2014,13 @@ async def sweep(
     dry_run: bool = False,
     overall_limit: int | None = None,
     should_stop: Callable[[], bool] | None = None,
+    kinds: tuple[str, ...] = RULE_KINDS,
 ) -> dict:
     """Run one pass over *library*'s ruled Platforms.
+
+    *kinds* narrows it to those kinds of Rule: an *arr import into a Library
+    runs the console's conversion Rule only (``(CONVERT,)``), never a
+    budget's worth of its check Rule (#541).
 
     Returns a summary rather than raising on a partial failure: one unreachable
     platform must not abort the sweep for the others.
@@ -2060,6 +2065,7 @@ async def sweep(
                 overall_limit=overall_limit,
                 should_stop=should_stop,
                 kept_attempts=kept_attempts,
+                kinds=kinds,
             )
         await _run_kept_deletes(
             library, kept_attempts, result,
@@ -2088,6 +2094,7 @@ async def _sweep_locked(
     overall_limit: int | None,
     should_stop: Callable[[], bool] | None = None,
     kept_attempts: list | None = None,
+    kinds: tuple[str, ...] = RULE_KINDS,
 ) -> dict:
     """The sweep body. Always called with ``_sweep_lock`` held. The pending
     deletes it plans go in *kept_attempts*, for the caller to try once the
@@ -2153,7 +2160,7 @@ async def _sweep_locked(
     # first), so the order is total and a capped sweep resumes where the last
     # one stopped.
     ordered = sorted(
-        ((kind, pid) for kind in RULE_KINDS for pid in rules[kind]),
+        ((kind, pid) for kind in RULE_KINDS if kind in kinds for pid in rules[kind]),
         key=lambda item: (
             rules[item[0]][item[1]]["priority"], library.platform_value(item[1]),
             RULE_KINDS.index(item[0]),
