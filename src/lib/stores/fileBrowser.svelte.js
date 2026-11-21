@@ -130,6 +130,8 @@ class FileBrowserStore {
   // Search: 'folder' filters the open folder's games by name; 'everywhere'
   // lists every game under it, inside archives too.
   searchScope = $state('folder');
+  // Bumped by every search started and every exit from search mode.
+  _searchGeneration = 0;
   folderQuery = $state('');
   searchMode = $state(false);
   searchResults = $state(null);
@@ -710,10 +712,10 @@ class FileBrowserStore {
    */
   async _enterSearch(query) {
     if (!this.currentPath) return;
-    // Drop overlapping searches, a second in-flight call would clear the
-    // `searching` flag when it finishes and let the busy state lift while
-    // an earlier request is still running.
-    if (this.searching) return;
+    // The newest search wins: one started earlier, or left behind by a scope
+    // change or a navigation (`exitSearch`), never applies its answer or
+    // lifts the busy state of the one after it.
+    const generation = ++this._searchGeneration;
     this.searching = true;
     // Clear any stale error from a prior failed search/load, symmetric
     // with the directory load paths. Otherwise the error banner survives
@@ -721,6 +723,7 @@ class FileBrowserStore {
     this.entriesError = null;
     try {
       const data = await api.searchFiles(this.currentPath, true, true);
+      if (generation !== this._searchGeneration) return;
       // Flip into search mode only on success. If the request fails,
       // leaving searchMode false keeps the user looking at the current
       // directory's entries instead of an empty search view.
@@ -735,10 +738,11 @@ class FileBrowserStore {
       // cleanup the X button does on exitSearch.
       this.clearSelection();
     } catch (e) {
+      if (generation !== this._searchGeneration) return;
       this.entriesError = e?.message ?? 'Search failed';
       // Stay out of search mode so the directory listing remains visible.
     } finally {
-      this.searching = false;
+      if (generation === this._searchGeneration) this.searching = false;
     }
   }
 
@@ -787,6 +791,9 @@ class FileBrowserStore {
   }
 
   exitSearch() {
+    // A search still on its way belongs to the view being left.
+    this._searchGeneration += 1;
+    this.searching = false;
     this.searchMode = false;
     this.searchResults = null;
   }

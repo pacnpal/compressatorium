@@ -128,6 +128,22 @@ def owning_sheet(
     to delete *path* treats that as "it may be a track", never as "standalone".
     *progress* is called per folder and per sheet, for a stall-bounded caller.
     """
+    return next(_sheets_naming(path, stop_at, progress), None)
+
+
+def sheets_naming(
+    path: str, *, stop_at: str, progress: Callable[..., None] | None = None,
+) -> list[str]:
+    """Every ``.cue``/``.gdi`` that lists *path* as a track. Blocking.
+
+    :func:`owning_sheet`'s walk, carried on past the first sheet: two games'
+    sheets can share a track, and deleting it for one breaks the other.
+    Raises :class:`SheetOwnerUnknown` exactly as :func:`owning_sheet` does.
+    """
+    return list(_sheets_naming(path, stop_at, progress))
+
+
+def _sheets_naming(path: str, stop_at: str, progress: Callable[..., None] | None):
     from utils.sheet_text import sheet_is_readable, sheet_track_list
 
     tick = progress or (lambda *_args: None)
@@ -163,12 +179,12 @@ def owning_sheet(
                     f"{name} names a track it may not use, so its tracks are unknown",
                 )
             if any(_is_track(own, real, str(track)) for track in tracks):
-                return sheet
+                yield sheet
         if folder == boundary:
-            return None
+            return
         parent = os.path.dirname(folder)
         if parent == folder:
-            return None
+            return
         folder = parent
 
 

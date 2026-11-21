@@ -128,3 +128,27 @@ process.stdout.write(JSON.stringify({ shown: fileBrowser.visibleEntries.map((e) 
 """)
 
     assert data["shown"] == ["Saga.m3u"], data
+
+
+def test_an_everywhere_search_answering_after_this_folder_is_dropped(tmp_path):
+    """Codex 4654246817: back on This folder, a late Everywhere answer must not
+    put the view into search mode over the folder filter."""
+    data = _run(tmp_path, _LISTING + """
+fileBrowser.currentPath = '/v';
+let answer;
+api.searchFiles = () => new Promise((resolve) => { answer = resolve; });
+const everywhere = fileBrowser.setSearchScope('everywhere', 'saga');
+await fileBrowser.setSearchScope('folder', 'saga');
+answer({ files: [{ name: 'Other.iso', path: '/v/sub/Other.iso' }], archives: [] });
+await everywhere;
+process.stdout.write(JSON.stringify({
+  searchMode: fileBrowser.searchMode,
+  searching: fileBrowser.searching,
+  scope: fileBrowser.searchScope,
+  shown: fileBrowser.visibleEntries.map((e) => e.name),
+}));
+""")
+
+    assert data == {
+        "searchMode": False, "searching": False, "scope": "folder", "shown": ["Saga.m3u"],
+    }, data

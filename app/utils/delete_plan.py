@@ -4,7 +4,11 @@ import posixpath
 from pathlib import Path
 from typing import Dict, List, Sequence, Set
 
-from utils.path_utils import is_within_configured_volumes, strip_archive_path
+from utils.path_utils import (
+    is_within_configured_volumes,
+    lock_boundary_root,
+    strip_archive_path,
+)
 from utils.sheet_text import (
     cue_tracks,
     gdi_tracks,
@@ -304,6 +308,27 @@ def _archive_verdict(source_path: str) -> tuple[str, List[str]] | None:
     return ("extra", extras) if extras else None
 
 
+def _other_sheet_naming(track: str, sheet: Path) -> str | None:
+    """Why *track* stays: another ``.cue``/``.gdi`` than *sheet* names it, or
+    that could not be told (fail closed). None when only *sheet* does."""
+    from services import image_sets
+
+    if not os.path.exists(track):
+        return None  # reported as missing already
+    boundary = lock_boundary_root(track)
+    stop = str(boundary) if boundary is not None else os.path.dirname(os.path.realpath(track))
+    name = os.path.basename(track)
+    try:
+        sheets = image_sets.sheets_naming(track, stop_at=stop)
+    except image_sets.SheetOwnerUnknown as exc:
+        return f"{exc}, so whether another sheet needs {name} is unknown; it is kept"
+    own = os.path.normcase(os.path.realpath(sheet))
+    others = [s for s in sheets if os.path.normcase(os.path.realpath(s)) != own]
+    if not others:
+        return None
+    return f"{name} is also a track of {os.path.basename(others[0])}; it is kept"
+
+
 def build_delete_plan(
     source_path: str, *, confine_to_volumes: bool = False,
 ) -> Dict[str, object]:
@@ -401,6 +426,11 @@ def build_delete_plan(
                 unsafe_paths.append(str(exc))
                 continue
             _add_path(track_path)
+            # A track another game's sheet names too is never deleted with
+            # this one (#549 review): the plan is blocked instead.
+            shared = _other_sheet_naming(str(track_path), source)
+            if shared:
+                errors.append(shared)
         unsafe_paths[:] = list(dict.fromkeys(unsafe_paths))
 
         # Sources that are really a *set* of files report the rest of the set

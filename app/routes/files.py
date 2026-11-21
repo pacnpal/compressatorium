@@ -426,17 +426,22 @@ def companion_marks(
     not asked. ``progress`` is reported per path. Blocking.
     """
     listed = {os.path.normpath(p): p for p in paths}
-    marks: dict[str, str] = {}
+    heads: dict[str, list[str]] = {}
     for path in paths:
         if progress is not None:
             progress(path)
-        if path in marks:
+        if path in heads:
             continue
         for member in image_sets.image_members(path):
             companion = listed.get(os.path.normpath(member))
-            if companion is not None and companion != path and companion not in marks:
-                marks[companion] = path
-    return marks
+            if companion is not None and companion != path:
+                heads.setdefault(companion, []).append(path)
+    # A file two rows name (a track two sheets share) folds under neither: it
+    # stays its own row, so deleting one game never takes the other's track.
+    return {
+        companion: owners[0] for companion, owners in heads.items()
+        if len(set(owners)) == 1
+    }
 
 
 PLAYLIST_EXTENSIONS = (".m3u", ".m3u8")
@@ -1137,6 +1142,39 @@ async def delete_file(
         raise HTTPException(status_code=500, detail=f"Failed to delete: {e!s}") from None
 
 
+def real_path_set(paths: list[str]) -> set[str]:
+    """*paths* as normcased real paths. Blocking."""
+    return {os.path.normcase(os.path.realpath(p)) for p in paths}
+
+
+def sheet_still_needs(path: str, deleting: set[str]) -> str | None:
+    """Why *path* must stay, or None: a ``.cue``/``.gdi`` outside *deleting*
+    (normcased real paths) still names it as a track. Blocking.
+
+    Fails closed through ``image_sets.sheets_naming``: a folder on the way that
+    can't be listed, or a sheet that can't be read whole, leaves "is it still
+    needed?" unanswered, and the file is kept. A sheet itself is never a track.
+    """
+    name = os.path.basename(path)
+    if name.lower().endswith(image_sets.SHEET_EXTENSIONS):
+        return None
+    boundary = lock_boundary_root(path)
+    stop = str(boundary) if boundary is not None else os.path.dirname(os.path.realpath(path))
+    try:
+        sheets = image_sets.sheets_naming(path, stop_at=stop)
+    except image_sets.SheetOwnerUnknown as exc:
+        return f"{exc}, so whether a sheet still needs {name} is unknown; it is kept"
+    others = [
+        s for s in sheets if os.path.normcase(os.path.realpath(s)) not in deleting
+    ]
+    if not others:
+        return None
+    return (
+        f"{name} is a track of {os.path.basename(others[0])}, which isn't being "
+        "deleted; it is kept"
+    )
+
+
 @router.post("/files/delete-batch")
 async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> dict:
     """Delete multiple files at once."""
@@ -1150,6 +1188,9 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
     results = []
     success_count = 0
     failed_count = 0
+    # A track a sheet outside this request still names is kept (#549 review):
+    # deleting it with one game would break the other game.
+    requested = await off_loop_bounded(real_path_set, payload.paths)
 
     async def delete_single_file(path: str) -> dict:
         """Delete a single file and return result."""
@@ -1173,6 +1214,13 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
             await _assert_path_not_in_use(path, is_dir=is_dir)
         except HTTPException as exc:
             return {"path": path, "success": False, "error": exc.detail}
+        if not is_dir:
+            try:
+                kept = await off_loop_bounded(sheet_still_needs, path, requested)
+            except HTTPException as exc:
+                return {"path": path, "success": False, "error": exc.detail}
+            if kept:
+                return {"path": path, "success": False, "error": kept}
 
         try:
             if is_dir:

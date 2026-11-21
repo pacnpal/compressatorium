@@ -408,6 +408,10 @@ class ConversionStore {
     const controller = new AbortController();
     this.#planAbort = controller;
     try {
+      // The route plans with the saved compression: a change still inside
+      // its debounce is sent first (Codex 4654246814).
+      await this.flushCompressionPrefs();
+      if (seq !== this.#planSeq) return;
       const plan = await api.getAutoPlan(snapshot, this.outputDir || null, {
         signal: controller.signal,
         target: this.target || null,
@@ -554,6 +558,9 @@ class ConversionStore {
           stopped.aborted = true;
           throw stopped;
         }
+        // The route queues with the saved compression: send a change still
+        // inside its debounce first.
+        await this.flushCompressionPrefs();
         const result = await api.createAutoJobs(items, outputDir, 'skip', sent);
         const createdJobs = Array.isArray(result?.jobs) ? result.jobs : [];
         jobs.adopt(createdJobs);

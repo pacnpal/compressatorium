@@ -604,7 +604,8 @@ const second = store.requestPlan(['/v/b.iso'], { delay: 0 });
 const results = [await first, await second];
 process.stdout.write(JSON.stringify({
   first: results[0], second: results[1].map((r) => r.file_path),
-  aborted: signals[0].aborted,
+  // Superseded before it was sent, or aborted in flight.
+  aborted: signals.length === 1 || signals[0].aborted,
   sent: calls.autoPlan,
   current: store.hasPlanFor(['/v/b.iso']),
   stale: store.hasPlanFor(['/v/a.iso']),
@@ -615,7 +616,7 @@ process.stdout.write(JSON.stringify({
     assert data["first"] is None, data              # superseded: never shown
     assert data["aborted"] is True, data            # and its request aborted
     assert data["second"] == ["/v/b.iso"], data
-    assert data["sent"][1] == {
+    assert data["sent"][-1] == {
         "paths": ["/v/b.iso"], "target": ".chd", "overrides": {"/v/b.iso": "ps2"},
     }, data
     assert (data["current"], data["stale"], data["planning"]) == (True, False, False), data
@@ -859,3 +860,21 @@ const olderResult = await older;
 process.stdout.write(JSON.stringify({ plan: store.deletePlan.items, olderResult }));
 """)
     assert data == {"plan": ["newer"], "olderResult": None}
+
+
+def test_a_compression_change_is_saved_before_the_plan_and_the_queue_read_it(tmp_path):
+    """Codex 4654246814: the Auto routes read the saved compression, so a
+    plan or a queue sent inside the save's debounce used the old one."""
+    data = _run_in_browser(tmp_path, """
+const store = conversion;
+const order = [];
+api.putConversionPrefs = async (body) => { order.push(['put', body.chdman]); server = { ...body }; return body; };
+api.getAutoPlan = async () => { order.push(['plan', server.chdman]); return [{ file_path: '/v/a.iso', mode: 'createcd' }]; };
+api.createAutoJobs = async () => { order.push(['queue', server.chdman]); return { jobs: [], plan: [] }; };
+store.setCompressionFor('createcd', { codecs: ['lzma'] });
+const plan = await store.requestPlan(['/v/a.iso'], { delay: 0 });
+store.setCompressionFor('createcd', { codecs: ['zlib'] });
+await store.submitAuto(['/v/a.iso'], { plan });
+process.stdout.write(JSON.stringify(order));
+""")
+    assert data == [["put", "lzma"], ["plan", "lzma"], ["put", "zlib"], ["queue", "zlib"]], data
