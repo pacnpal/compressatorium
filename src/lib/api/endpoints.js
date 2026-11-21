@@ -869,6 +869,23 @@ export const api = {
       'Failed to remove the Inbox',
     ),
 
+  // The *arr webhook (#522): its setup, path rewrites and a dry-run check.
+  getArrHook: () => fetchJson(`${API_BASE}/hooks/arr`, undefined, 'Could not read the webhook setup'),
+
+  saveArrRewrites: (rewrites) =>
+    fetchJson(
+      `${API_BASE}/hooks/arr/rewrites`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rewrites }),
+      },
+      'Could not save the rewrites',
+    ),
+
+  checkArrPath: (path) =>
+    jsonPost(`${API_BASE}/hooks/arr/check`, { path }, {}, 'Could not check the path'),
+
   getLibraryRules: (id) =>
     fetchJson(
       `${API_BASE}/libraries/${encodeURIComponent(id)}/rules`,

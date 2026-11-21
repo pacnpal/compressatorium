@@ -8746,6 +8746,36 @@ own work has drained, whatever it queued meanwhile is cancelled and drained too
 memory a run keeps includes `ranked_holds` and `taken_holds` (Codex
 4608417851), so a later run lifts a hold whose ranking or name changed.
 
+**Taking a path in now (#522, `services/inbox/trigger.py`, `routes/hooks.py`).**
+`POST /api/hooks/arr` (Sonarr, Radarr, ROMarr webhooks) and `POST /api/scan`
+(`{"path"}` or `{"paths"}`) are one path into the same intake; there is no
+second pipeline. Both need the app's auth when it is on and the action
+confirmation header `X-Chd-Action-Confirm: scan`, the *arr `Test` event
+included, so its Test button proves the whole setup. `trigger.paths_in` reads
+`path`/`paths` and the `path` of every `*File` object and `*Files` list, so an
+*arr with its own field name needs no code; only `Download`/`Import` (or no
+`eventType`) take anything. Each path is rewritten by the longest whole-folder
+`from` (Autoscan's `from`/`to`, stored in the `arr_hook` preference and set in
+the UI only), then must be `volume_containment(...) is True` (a "couldn't
+tell" refuses it) and lie under an Inbox's folder. `intake.mark_ready` records
+it on that Inbox's `_State.ready`, and the Inbox is polled at once
+(`_poll_now`, waiting out a poll already running, then
+`report.after_pass`). A poll treats an Image as settled when a marker names it,
+a folder above it, or one of its files (a sheet's track): only the settle wait
+is skipped. Every marker covers only what was last written by the time it
+was named (every file of the Image, a sheet and its tracks, by mtime against
+the marker's wall-clock time), so a download still being written there, or a
+new one at a named path, settles as usual. A taken Image consumes its own
+markers (the file, its tracks), never another sheet's beside it; a folder's
+marker stays for the rest of the folder until it expires. `trigger.process` resolves the marker's path in the same bounded
+worker as the check (`_checked`) and hands it to `mark_ready(...,
+resolved=True)`, so nothing touches the disk on the event loop (PR #526). A held Image stays held, and only files the poll lists (no link,
+no `processed/`) are ever taken, so a marker can't reach anything intake
+wouldn't. Markers expire after `READY_SECONDS`. `trigger.check` is the
+dry run the UI's **Test** uses; for a path that lands nowhere,
+`trigger.suggest` looks for the same tail of folders under each Volume and
+offers the rewrite. The last 20 paths received are kept in memory for the UI.
+
 ### 3.3.26 Event streams end cleanly on shutdown (`services/event_stream.py`, #465)
 
 Every server-sent event route returns `event_stream(generator)`, never a bare
