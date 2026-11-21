@@ -284,3 +284,33 @@ def test_a_delete_on_verify_plan_takes_a_split_set_whole(vol):
     plan = build_delete_plan(str(first), confine_to_volumes=True)
 
     assert str(second.resolve()) in plan["delete_paths"], plan
+
+
+@pytest.mark.asyncio
+async def test_a_batch_keeps_a_later_split_part_without_its_first(vol):
+    _playlist, first, second = _split_disc_in_a_playlist(vol / "ps3")
+
+    response = await files_routes.delete_files_batch(
+        _confirmed(), files_routes.BulkDeleteRequest(paths=[str(second)]),
+    )
+
+    [result] = response["results"]
+    assert result["success"] is False
+    assert first.name in result["error"]
+    assert first.exists() and second.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_batch_keeps_an_old_style_rar_volume_without_its_first(vol):
+    from .rar_fixtures import RAR4_SET, copy_set
+
+    first, r00, _r01 = copy_set(RAR4_SET, vol / "usenet")
+
+    response = await files_routes.delete_files_batch(
+        _confirmed(), files_routes.BulkDeleteRequest(paths=[str(r00)]),
+    )
+
+    [result] = response["results"]
+    assert result["success"] is False
+    assert first.name in result["error"]
+    assert r00.exists()
