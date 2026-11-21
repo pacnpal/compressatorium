@@ -2105,6 +2105,9 @@ async def _sweep_locked(
         "skipped_filtered": 0,
         "skipped_unconvertible": 0,
         "skipped_missing": 0,
+        # Rules passed over because they are off: how Preview and Run now
+        # say why nothing ran (#520).
+        "skipped_paused": 0,
         "platforms": [],
         "errors": [],
         "stopped_reason": None,
@@ -2215,6 +2218,8 @@ async def _sweep_locked(
                 result["errors"].append(
                     {"platform_id": platform_ref, "error": "rule_invalid"},
                 )
+            else:
+                result["skipped_paused"] += 1
             continue
         # ignore_schedule bypasses only the clock (interval, window, weekday).
         if not ignore_schedule and not _is_due(

@@ -16,6 +16,26 @@
 - **Signed webhooks** (#523). A generic webhook can have a signing secret; each
   message then carries `X-Compressatorium-Signature: sha256=<hex>`, the
   HMAC-SHA256 of the body.
+- **DATs made easy** (#524). **Import DATs** takes several `.dat`/`.xml` files
+  at once, and zips of them: No-Intro's daily pack or a Redump zip imports
+  every DAT inside in one go. A zip is read under the same caps and member-name
+  rules as an archive an Inbox takes in, and each DAT is capped at 100 MB.
+  Re-importing a DAT replaces the older copy instead of doubling it. One bad
+  or unreadable DAT is reported and the rest still import. The whole upload
+  is capped at 1 GB while it arrives, and the 100 MB cap holds for a loose
+  DAT from the CLI too. A DAT imported from the CLI while the server is
+  matching makes it re-check what it was deciding.
+- **Sync Redump in one click** (#524). Downloads Redump's DAT for each disc
+  Platform in your Libraries, one request at a time, and leaves a system
+  synced in the last day alone. Only DATs: never keys, BIOS sets or games.
+  It asks over HTTPS only, with the certificate checked, so a DAT can't be
+  swapped on the way in; while redump.org answers only plain HTTP, each
+  system reports that it couldn't connect. A Redump DAT you replace by hand
+  is fetched again on the next sync. No-Intro stays upload-only, because its
+  site is gated.
+- **Online identification is a single yes/no** (#524). Until you answer, the
+  DAT Library asks once whether to look up unknown files on Hasheous.
+- **CLI:** `compressatorium dat import PATH...` and `compressatorium dat sync`.
 - **Sonarr, Radarr and ROMarr webhook, and "scan this path now"** (#522).
   `POST /api/hooks/arr` takes the *arr's Webhook connection: its Test answers
   ok, and each file an import names is taken in by the Inbox that holds it at
@@ -30,6 +50,19 @@
 
 ### Changed
 
+- **A Rule turns on when you pick its target, and an empty run says why**
+  (#520). Picking "Convert to" for a console now enables that Rule, so Preview
+  and Run now no longer answer "0 queued" for a Rule that was silently off.
+  When nothing runs, Preview and Run now say why: the Rule is off, no files
+  match, all of them are already converted or already in the queue, or a Rule
+  could not run.
+- **A batch never fails over one file** (#520). A file whose output another
+  job is already writing is skipped and named in the result; the rest of the
+  batch is queued. Auto queues every Image whose plan is unchanged since you
+  confirmed it and names the ones that changed, instead of refusing the whole
+  run and asking again; if one target's group can't be queued, the others
+  still are. A compression level outside the codec's range is clamped to it
+  (`zstd:40` on RVZ runs as `zstd:22`) instead of refused.
 - **Works out of the box** (#515). A tool program that isn't at the path the
   image uses (`/usr/bin/chdman`, `/usr/local/bin/maxcso`, ...) is looked up on
   `PATH` by name when its `*_PATH` is unset, so a Homebrew or distro install
@@ -85,6 +118,12 @@
 
 - muOS is no longer listed as reading `gamelist.xml`. It keeps its artwork in
   its own catalogue (`MUOS/info/catalogue`), by game name.
+
+- **Sync MAMERedump no longer deletes your other DATs** (#525). It used to
+  delete every DAT in the store after a successful sync, including No-Intro
+  packs and Redump DATs you had imported or synced. It now replaces only the
+  DATs it brings a new copy of (same name and family).
+
 - **A sweep queues nothing from a listing that adding or removing a Library
   made stale** (#518 follow-up). A sweep that listed a Platform
   before a Library was registered or removed inside it (or before RomM's

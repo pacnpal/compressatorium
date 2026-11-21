@@ -2026,6 +2026,16 @@ This is a payload field, not a schema change.
   unless its generation is the current one; `None` on either side never is. A
   local dict with no stamp makes no claim and is written as before.
 
+  The generation is two counters added together: the in-memory one above, and
+  a shared one in the database (the `preferences` row
+  `SHARED_GENERATION_KEY`, `dat_index_generation`) that each of those changes
+  moves inside its own transaction (`_bump_shared_generation`). The CLI's
+  `dat import` and `dat sync` run in their own process, with their own
+  in-memory counter, so only the shared one tells the server about them
+  (CodeRabbit on PR #527). Both only grow, so the sum moves when either does.
+  `index_generation()` reads the database (on the writer's own session at the
+  write boundary), so `_match_single_file()` calls it off the event loop.
+
   Remote verdicts take no part in the generation check, even while a change is
   in flight. A refused verdict goes to a *local-only* rematch, which cannot ask
   the remote source again, so refusing a remote hit for an unrelated import
@@ -4475,22 +4485,30 @@ only through `_is_file_within_volumes`, which confines it with
 (`SOURCE_OUTSIDE_VOLUMES`, 403 for a single job) before any filesystem call,
 and only the confined path is stat'ed. Auto prepares every group first, so
 a planning error queues nothing, then checks the whole batch against
-`max_queue_depth`, then queues the groups. Each group is its own atomic call,
-so a later group can still be refused at queue time (409 when another job took
-a destination, 503 when a volume stops answering), and earlier jobs may have
-started by then. On any failure the route withdraws the jobs this request
-queued (`job_manager.cancel_job`) and returns the error. A job that had already
-finished cannot be withdrawn: its output stays, it is logged, and the error
-returns it, for an HTTP error from the queue and for an unexpected exception
-alike (the latter logged with its traceback and returned as a 500; a
-cancellation still propagates). `/jobs/auto` queues only the plan the user
-confirmed: the client sends the confirmed plan's actionable rows as
-`items: [{file_path, mode}]` (an Image the preview skipped is never sent), the
-route replans those paths, and if any target differs (another tool, or now
-skipped) it answers 409 with `detail = {"message", "plan"}` before queueing
-anything. `conversion.runAuto` then shows the new plan and asks again.
-Queueing an Image the user never saw would also skip its RomM metadata
-snapshot. Nothing in either Auto endpoint, or in the
+`max_queue_depth`, then queues the groups. Each group is its own queue call.
+A group the queue refuses whole (503 when a volume stops answering, or an
+unexpected exception, logged with its traceback) reports each of its files as
+`queue_failed` and the other groups stay queued (#520); only a cancelled
+request (a client disconnect) withdraws what it queued (`_cancel_queued`).
+`/jobs/auto` queues only the plan the user confirmed: the client sends the
+confirmed plan's actionable rows as `items: [{file_path, mode}]` (an Image the
+preview skipped is never sent), and the route replans those paths. Each item
+whose target is unchanged is queued; one whose target changed (another tool,
+or now skipped) is not, since queueing an Image the user never saw would also
+skip its RomM metadata snapshot. `AutoBatchResponse` carries `skipped:
+[{path, reason, code}]` like the batch route: `plan_changed`, `queue_failed`,
+`output_claimed` and every `prepare_batch` skip, and each skipped file's plan
+row has `mode: null` and the reason. The SPA's shared submit toast names them.
+
+**One claimed destination skips one file (#520).** The locked reservation
+(`_reject_claimed_destinations_locked`) still never lets two live jobs write
+one file. `create_jobs_atomic(..., skipped=[...])` leaves a spec whose
+destination (or a sidecar) a live job or an earlier spec holds out of the
+batch, appends `(file_path, reason)`, and queues the rest; `queue_prepared`
+passes the list and reports each as `output_claimed`, so the batch route, Auto
+and the CLI skip that file rather than failing a Select-All of thousands over
+it. Without the list (the sweep, the Inbox, a single job) the call stays
+all-or-nothing and raises `OutputClaimedError` (409 for a single job). Nothing in either Auto endpoint, or in the
 batch preparation they share, touches a Volume on the event loop: the per-path
 Volume checks run together with planning (`_checked_auto_plan`) or on their
 own (`_check_within_volumes`) through `routes.volume_guard.off_loop_bounded`,
@@ -8020,7 +8038,9 @@ without one (chunked) is cut off the moment it passes it. Nothing is spooled.
 `save_upload` writes the bytes into a hidden temp file in
 `<data dir>/patches/` and stops at the exact
 `CHD_PATCH_MAX_PATCH_SIZE` (413, nothing kept). Any other upload route that
-must hold a size limit can use `file_upload` the same way. The header must say IPS or
+must hold a size limit can use `file_upload` the same way, or
+`file_uploads` for a form of many files (one async iterator of them, the cap
+on the whole body; `POST /dat/import-batch` uses it). The header must say IPS or
 BPS. The file is kept as `<16 hex>-<safe name>`, the `upload_id`, so the
 Ledger's path stays valid; `POST /api/patch` accepts an `upload_id` only in
 that exact shape (no separator can appear) and reads it with `read_beneath`
@@ -9404,8 +9424,10 @@ read through `ModeSpec.level_range(codec)`, from the plugin's `CODEC_LEVELS`
 (Dolphin's `DiscIO/WIABlob.cpp` `GetAllowedCompressionLevels`: bzip2, lzma and
 lzma2 1-9, zstd 1-22; zstd keeps this app's 19, the others Dolphin's dialog
 default, 5). `compression_for` gives a codec with no level its default level;
-an explicit level outside the range is refused, never clamped, by the same
-two checks (`base.compression_problem`). The frontend mirrors both per mode in `registry.js`
+an explicit level outside the range is clamped into it by the routes
+(`base.clamp_levels`, #520: `zstd:40` on RVZ runs as `zstd:22`, for a single
+job, a batch and a saved Auto preference), and one that reaches the plugin
+some other way is refused there (`base.compression_problem`). The frontend mirrors both per mode in `registry.js`
 (`compressionCodecs`, `defaultCompression` on the mode entry, read through
 `registry.codecsForMode` / `defaultCompressionForMode`), and each codec entry's
 `levelRange` (`registry.levelRangeFor(mode, codec)`), so the pickers never
@@ -10236,3 +10258,53 @@ match only) and this app's own `.compressatorium-stage` folder
 folder Library walk (which feeds sweeps, check Rules and the Platform walk) and
 the Switch key search all route through it. Add a new ignored name there, not in
 a caller.
+
+## DAT import and Redump sync (`services/dat_import.py`, #524)
+
+One path imports DATs for the batch upload (`POST /dat/import-batch`), the
+Redump sync (`POST /dat/redump/sync`) and the CLI (`dat import`, `dat sync`):
+
+- `import_files([(label, path)])` takes `.dat`/`.xml` files and `.zip` files
+  of them. `extract_dats` reads a zip under the Inbox gate
+  (`ArchiveService.check_inbox_source`: entries, declared sizes, links,
+  absolute and `..` paths, expansion ratio) and the extract path's name rules
+  (`member_segments`), counts the bytes it reads with `_UnpackBudget`, skips
+  `is_junk_path` members, and copies each DAT to `<n>.dat` in a private temp
+  folder, so a member name never reaches the disk. Any bad member refuses the
+  whole zip, and so does data that can't be read (corrupt deflate data,
+  `zlib.error`), never the rest of the batch (PR #527).
+- Each DAT is imported with `dat_store.import_dat(..., replace=True)`: an
+  earlier DAT with the same name and family is deleted in the same
+  transaction (its rank carries over). One rematch runs after the batch
+  (local-only, `routes.dat.rematch_after_dat_change`). The CLI has no server
+  to finish it later, so it waits for it (`routes.dat.wait_for_match_jobs`),
+  and `dat sync` reads RomM's saved settings (`romm_settings.load`) before it
+  asks which consoles are present (PR #527).
+- `sync_redump` maps Platform slugs (`REDUMP_SYSTEMS`) to Redump's systems,
+  asks `https://redump.org/datfile/<system>/` through `http.client` on the
+  fixed host (`HTTPSConnection` with `ssl.create_default_context()`, so the
+  certificate and host name are checked; never plain HTTP, whose answer could
+  be swapped on the way into the DAT index, Codex on PR #527; no redirect
+  followed, generic `USER_AGENT`), one system at a time with
+  `REQUEST_GAP_SECONDS` between requests, at most one sync at once. The cache
+  (preference `redump_sync`) skips a system synced within `FRESH_FOR` whose
+  DATs are still installed, sends `If-None-Match`/`If-Modified-Since` when it
+  has them, and skips re-importing an identical download (SHA-256). "Still
+  installed" is by DAT id (`dat_ids`), not name: a DAT of the same name and
+  family imported by hand replaces the synced one under a new id, and the
+  next sync then asks again, unconditionally, and re-imports (PR #527). The
+  answer's `changed` says some DAT went in, even for a system that failed
+  part-way; the UI refreshes on it.
+- A loose `.dat`/`.xml` over `MAX_DAT_SIZE` is refused before it is parsed,
+  for the CLI and Redump's bare-DAT answer as much as the upload, and a file
+  that can't be read (`OSError`, such as `PermissionError`) is that file's
+  error, never the batch's (PR #527).
+- `POST /dat/import-batch` reads its body with
+  `upload_stream.file_uploads`, the many-files form of `file_upload`: the
+  whole body is capped at `MAX_BATCH_SIZE` while it arrives (413 by its
+  `Content-Length`, or as it comes), and each file at its own cap as it is
+  written (PR #527).
+- `dat_sync.save_capped` is the capped download loop both syncs share.
+- The MAMERedump sync follows the same replace rule (#525): after a full
+  success it deletes only the existing DATs whose name and family match a DAT
+  it just staged, never DATs from another source.

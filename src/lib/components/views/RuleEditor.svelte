@@ -26,6 +26,7 @@
   import { CHECK_LEVEL, CHECK_LEVEL_LABELS } from '$lib/util/checkLevels.js';
   import { DELETE_CHECK_HINTS, deleteCheckFor } from '$lib/util/deleteCheck.js';
   import { checkSummary, newCheckRule } from '$lib/rules/checkRule.js';
+  import { nothingReason, sweepToast } from '$lib/rules/sweepSummary.js';
   import { registry } from '$lib/tools/registry.js';
   import { clampLevel, fitLevel } from '$lib/tools/levels.js';
   import { compat } from '$lib/stores/compat.svelte.js';
@@ -227,8 +228,10 @@
       // Changing the target invalidates everything that described the old one.
       // Carrying `compression: "max"` from a CSO rule into a CHDMAN one passes
       // normalization and then fails every queued job on `chdman -c max`.
+      // Picking a target is the ask to convert, so it turns the Rule on
+      // (#520). A Rule saved off stays off until its target changes.
       ...(patch.mode !== undefined && patch.mode !== current.mode
-        ? { compression: null, compression_level: null, split: false }
+        ? { compression: null, compression_level: null, split: false, enabled: true }
         : {}),
       ...patch,
     };
@@ -487,22 +490,10 @@
     try {
       const r = await source.runSweep();
       if (r?.queued || r?.checks) toast.success(sweepToast(r, 'Queued', 'Checking'));
-      else toast.info('Nothing to convert or check right now');
+      else toast.info(sweepToast(r, 'Queued', 'Checking'));
     } catch (e) {
       toast.error(e?.message ?? 'Run failed');
     }
-  }
-
-  /** "Queued 3 conversions, checking 12 Images", or what is empty. */
-  function sweepToast(r, queuedVerb, checkVerb) {
-    const parts = [];
-    const n = r?.queued ?? 0;
-    const c = r?.checks ?? 0;
-    if (n) parts.push(`${queuedVerb} ${n} conversion${n === 1 ? '' : 's'}`);
-    if (c) parts.push(`${checkVerb.toLowerCase()} ${c} Image${c === 1 ? '' : 's'}`);
-    if (!parts.length) return 'Nothing to convert or check';
-    const text = parts.join(', ');
-    return text[0].toUpperCase() + text.slice(1);
   }
 
   async function toggleAuto(enabled) {
@@ -744,9 +735,15 @@
       <strong>{r.dry_run ? 'Preview' : 'Last run'}:</strong>
       {r.queued ?? 0} queued
       {#if r.checks !== undefined}· {r.checks} to check{/if}
+      {#if !r.queued && !r.checks}
+        <span>· Nothing to convert: {nothingReason(r)}</span>
+      {/if}
       <span class="muted">
         · {r.skipped_existing ?? 0} already converted
         · {r.skipped_filtered ?? 0} filtered out
+        {#if r.skipped_paused}
+          · {r.skipped_paused} {r.skipped_paused === 1 ? 'Rule' : 'Rules'} off
+        {/if}
         {#if r.skipped_active}· {r.skipped_active} already in the queue{/if}
         {#if r.skipped_missing}· {r.skipped_missing} listed but gone from disk{/if}
         {#if r.skipped_unconvertible}

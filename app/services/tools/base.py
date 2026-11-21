@@ -62,6 +62,24 @@ def compression_problem(spec: ModeSpec, compression: str | None) -> str | None:
     return None
 
 
+def clamp_levels(spec: ModeSpec, compression: str | None) -> str | None:
+    """*compression* with each codec's level pulled into that codec's range
+    (``spec.level_range``, #520): ``zstd:99`` on RVZ runs as ``zstd:22``.
+    Everything else is returned as it is, for ``compression_problem`` to
+    judge."""
+    if not compression:
+        return compression
+    parts = []
+    for part in compression.split(","):
+        codec, sep, level = part.partition(":")
+        levels = spec.level_range(codec) if codec and level.isdigit() else None
+        if levels:
+            low, high, _default = levels
+            level = str(min(max(int(level), low), high))
+        parts.append(f"{codec}{sep}{level}")
+    return ",".join(parts)
+
+
 def without_unusable_codecs(
     spec: ModeSpec, compression: str | None,
 ) -> tuple[str | None, list[str]]:
