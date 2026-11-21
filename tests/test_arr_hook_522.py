@@ -488,6 +488,10 @@ async def test_an_import_into_a_library_runs_that_consoles_rule(client, vol, que
     await trigger.drain()
     # The conversion Rule ran for the console; its check Rule did not.
     assert queued == [str(game)]
+    from services.rules import sweep as rules_sweep
+    from services.rules.rules import CHECK
+
+    assert (await rules_sweep.get_state(library, CHECK)).get("ps2", {}) == {}
 
 
 @pytest.mark.asyncio
