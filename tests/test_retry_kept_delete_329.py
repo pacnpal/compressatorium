@@ -2715,3 +2715,19 @@ def test_a_disconnect_during_the_store_write_keeps_the_lane_until_it_lands(
     assert first["event"] == "verify_progress"
     assert held and freed
     assert _checked_outputs(kept["output"]) == ([], [])
+
+
+def test_a_kept_source_the_library_now_excludes_is_not_deleted(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """The Library came to ignore the kept Source's name (RomM's ``exclude:``,
+    #532): its retried delete leaves it alone (CodeRabbit
+    PRRT_kwDOQ9nULM66RLwD)."""
+    from .test_cli_run_rules_307 import _Shelf
+
+    monkeypatch.setattr(_Shelf, "excluded", lambda _self, name: name == "Game.iso")
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert kept["iso"].exists()

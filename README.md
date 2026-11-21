@@ -766,25 +766,38 @@ extension-matching, so a new console never leaves you with an unconvertible row.
 
 #### Setting it up
 
-1. In RomM, go to **Administration → Client API Tokens** and create one. Grant
-   `platforms.read` and `roms.read`. Add `roms.write` if you want Compressatorium
-   to restore metadata after conversion (recommended — see below). Keeping the
-   ROM id when converting (see [Keeping the ROM id](#keeping-the-rom-id)) needs
-   **both** `roms.write` (the rename) and `tasks.run` (the rehash), whether or
-   not you use metadata restoration. RomM hands out `roms.write` and `tasks.run`
-   only to an admin user (or a user in a group that has them), so create the
-   token as one.
-2. Mount RomM's library folder into the Compressatorium container, and make sure
-   it's inside a configured Compressatorium volume.
-3. Open **RomM → Settings**, paste the URL, token and library path, and press
-   **Test connection**.
+1. Open **RomM → Settings**. On first run Compressatorium looks for RomM at
+   `http://romm:8080` (RomM's own container name and port) and a couple of
+   other usual addresses, and offers **Found RomM at …: Use it**. Otherwise
+   type the address you open RomM at.
+2. In RomM, open **Client API Tokens**, create a token, and press **Pair**.
+   Type the short code into **Pairing code or API token** (RomM 4.8 and newer).
+   On an older RomM, paste the `rmm_…` token instead. Grant `platforms.read`
+   and `roms.read`, plus `roms.write` (metadata restore after converting) and
+   `tasks.run` (keeping the ROM id, Inbox scans). RomM hands out `roms.write`
+   and `tasks.run` only to an admin user (or a user in a group that has them),
+   so create the token as one. Pairing gives the token a new secret, so
+   anything else that used it needs the new one.
+3. Mount RomM's library folder into the Compressatorium container, inside a
+   configured Compressatorium volume. Leave **Library path** empty: Save finds
+   it by matching RomM's platform folders against the volumes.
+4. Press **Save**. It tests the connection first and saves only when it works.
 
 The test reports three things separately, because they fail independently and
 "it doesn't work" is useless when it could be any of them:
 
-- **RomM reachable** — the URL is right and the instance is up.
-- **Token accepted** — the token is valid and has the scopes it needs.
-- **Library folder mounted here** — Compressatorium can actually see the files.
+- **RomM reachable**: the URL is right and the instance is up.
+- **Token accepted**: the token is valid and has the scopes it needs.
+- **Library folder mounted here**: Compressatorium can actually see the files.
+
+A check that couldn't run (the token, when RomM isn't reachable) shows as
+"not checked", not failed. The message names the field to fix, with
+**Retry** and **Save anyway** (for a RomM that's down right now).
+
+Compressatorium also reads RomM's own folder structure
+(`filesystem.structure`, RomM 5.3+) and its `exclude:` settings. New games are
+placed where RomM's structure says, and Rules skip files RomM ignores, and
+refuse a target format RomM ignores (the converted game would vanish from it).
 
 **The library path is the path inside *this* container**, not the one RomM sees.
 RomM reports each ROM's location relative to its own library root, and
@@ -1738,6 +1751,12 @@ Connect a [RomM](https://romm.app) instance and browse your library by platform 
 | Light | Dark |
 |-------|------|
 | ![RomM setup, light](docs/screenshots/romm-light.png) | ![RomM setup, dark](docs/screenshots/romm-dark.png) |
+
+RomM found on first run, then a Save whose connection test names the field to fix, with **Retry**:
+
+| Light | Dark |
+|-------|------|
+| ![Connecting RomM, light](docs/screenshots/romm-connect-light.png) | ![Connecting RomM, dark](docs/screenshots/romm-connect-dark.png) |
 
 Per-platform automation — target format, schedule, queueing limits and selection filters for each platform independently:
 

@@ -1,11 +1,12 @@
 <script>
   /**
-   * RomM connection settings, editable in-app.
+   * RomM connection settings, editable in-app: one form, one Save (#532).
    *
-   * Environment variables remain first-run defaults, but nothing here requires
-   * a redeploy to change. The connection test is deliberately granular —
-   * reachable / authorised / mounted are three independent things to get right,
-   * and "it doesn't work" is useless when it could be any of them.
+   * Save tests the connection first and saves only when it works, so a typo
+   * never becomes live config. The test reports reachable / token accepted /
+   * mounted separately, a check it couldn't run as "not checked", and names
+   * the field to fix. On first run the app looks for RomM itself, and the
+   * credential field takes RomM's pairing code as well as a pasted token.
    */
   import { toast } from 'svelte-sonner';
   import { romm } from '$lib/stores/romm.svelte.js';
@@ -15,8 +16,9 @@
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import Check from '@lucide/svelte/icons/check';
   import XIcon from '@lucide/svelte/icons/x';
-  import Plug from '@lucide/svelte/icons/plug';
+  import Minus from '@lucide/svelte/icons/minus';
   import Save from '@lucide/svelte/icons/save';
+  import RotateCw from '@lucide/svelte/icons/rotate-cw';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import Import from '@lucide/svelte/icons/import';
 
@@ -27,8 +29,12 @@
   // Local edit buffer so a half-typed URL never becomes live config.
   let url = $state('');
   let libraryRoot = $state('');
-  let token = $state('');
+  // A pairing code from RomM, or a pasted `rmm_` token.
+  let credential = $state('');
   let clearToken = $state(false);
+  // The URL a pairing code was traded for: the backend holds that token
+  // until the Save that commits it with the rest (#532).
+  let pairedUrl = $state('');
   let repinEnabled = $state(true);
   let repinOnLoad = $state(true);
   let repinAbandonDays = $state(7);
@@ -37,6 +43,11 @@
   // Why the last attempt to turn the switch on was refused, kept on screen
   // (a toast is gone before anyone has read two permission names).
   let swapRefusal = $state('');
+  // What the last Save found wrong: `{ field, error, suggestion }`.
+  let problem = $state(null);
+  // RomM found at one of its usual addresses on first run.
+  let found = $state(null);
+  let busy = $state(false);
   let loaded = $state(false);
 
   $effect(() => {
@@ -49,75 +60,135 @@
       swapKeepRomId = s.swap_keep_rom_id === true;
       hasheousWriteIds = s.hasheous_write_ids === true;
       loaded = true;
+      if (!s.url) lookForRomm();
     }
   });
 
+  async function lookForRomm() {
+    try {
+      const hit = await romm.discover();
+      if (hit?.url) found = hit;
+    } catch {
+      // Nothing found is the same as nothing there: the fields stay empty.
+    }
+  }
+
+  function useFound() {
+    url = found.url;
+    if (found.library_root && !libraryRoot.trim()) libraryRoot = found.library_root;
+    found = null;
+  }
+
   const test = $derived(romm.testResult);
   const envPinned = $derived(new Set(s?.env_defaults ?? []));
+
+  // RomM's tokens are `rmm_` and 64 hex digits; anything short is a pairing
+  // code (8 letters and digits, RomM shows it with a dash).
+  function isPairCode(value) {
+    const v = value.trim();
+    return !v.startsWith('rmm_') && /^[A-Za-z0-9-]{4,16}$/.test(v);
+  }
 
   function patch() {
     const out = {
       url: url.trim(),
       library_root: libraryRoot.trim(),
-      ...metadataPatch(),
-    };
-    if (clearToken) out.clear_token = true;
-    else if (token.trim()) out.token = token.trim();
-    return out;
-  }
-
-  /**
-   * The Metadata card's fields, and only those.
-   *
-   * Saving here must never submit the connection buffers. They hold whatever
-   * is half-typed in the other card, and a URL or library root that differs
-   * from the saved one is an *identity change* on the backend: it clears the
-   * conversion history and retires every pending metadata snapshot. Toggling
-   * "re-apply on load" is not a reason to lose those.
-   */
-  function metadataPatch() {
-    return {
       repin_enabled: repinEnabled,
       repin_on_load: repinOnLoad,
       repin_abandon_days: Number(repinAbandonDays) || undefined,
       hasheous_write_ids: hasheousWriteIds,
     };
+    const typed = credential.trim();
+    if (clearToken) out.clear_token = true;
+    else if (typed && !isPairCode(typed)) out.token = typed;
+    else if (pairedUrl && pairedUrl === out.url.replace(/\/+$/, '')) out.paired = true;
+    return out;
   }
 
-  async function save(body, message) {
+  // The connection works when nothing that was checked failed.
+  const works = (r) => r && !r.error && r.reachable
+    && r.authorized !== false && r.library_root_mounted !== false;
+
+  /**
+   * Pair if a code was typed, test, then save. `force` saves without the
+   * test passing ("Save anyway"), for a RomM that is down right now.
+   */
+  async function handleSave(force = false) {
+    problem = null;
+    busy = true;
     try {
-      await romm.saveSettings(body);
-      // Reset the credential buffers only when the request actually carried
-      // them. They belong to the Connection card, and the Metadata card's Save
-      // deliberately submits neither -- so clearing them here discarded a
-      // replacement token the operator had typed and not yet saved. RomM shows
-      // an API token once, at creation, so that is frequently a token nobody
-      // can get back: the operator has to generate another one and update
-      // anything else using it. The body is the authority on what was sent,
-      // rather than a flag each call site has to remember to pass.
-      if ('token' in body || 'clear_token' in body) {
-        token = '';
-        clearToken = false;
+      if (isPairCode(credential) && !clearToken) {
+        let paired;
+        try {
+          paired = await romm.pair(url.trim(), credential.trim());
+        } catch (e) {
+          problem = { field: 'token', error: e?.message ?? 'Pairing with RomM failed' };
+          return;
+        }
+        // Single use: RomM has already spent it. Nothing is saved yet.
+        credential = '';
+        pairedUrl = paired.url;
+        const missing = paired.missing_scopes ?? [];
+        toast.success(missing.length
+          ? `Paired with RomM. The token lacks ${missing.join(', ')}, so the features that need them stay off.`
+          : 'Paired with RomM');
       }
-      toast.success(message);
-      onsaved?.();
+      // One snapshot, tested and then saved as it was: an edit made while
+      // the test runs is never saved untested.
+      let body = patch();
+      if (!force) {
+        let result = await romm.testConnection(body);
+        // RomM's library found in the Volumes and the field still empty:
+        // fill it in and check again.
+        if (result?.library_root_suggestion && !body.library_root) {
+          libraryRoot = result.library_root_suggestion;
+          body = { ...body, library_root: result.library_root_suggestion };
+          result = await romm.testConnection(body);
+        }
+        if (!works(result)) {
+          problem = {
+            field: result?.field ?? null,
+            error: result?.error ?? 'The connection test failed',
+            suggestion: result?.library_root_suggestion ?? null,
+          };
+          return;
+        }
+      }
+      await save(body);
     } catch (e) {
-      toast.error(e?.message ?? 'Failed to save settings');
+      problem = { field: null, error: e?.message ?? 'Failed to save settings' };
+    } finally {
+      busy = false;
     }
   }
 
-  const handleSave = () => save(patch(), 'RomM settings saved');
-  const handleSaveMetadata = () =>
-    save(metadataPatch(), 'Metadata settings saved');
+  async function save(body) {
+    await romm.saveSettings(body);
+    // Reset the credential buffers only when the request actually carried
+    // them, so a pairing code that failed stays there to fix.
+    if ('token' in body || 'clear_token' in body || body.paired) {
+      credential = '';
+      clearToken = false;
+      pairedUrl = '';
+    }
+    // "Keep the ROM id" (#390) is saved on its own, and only when it changed:
+    // turning it on makes the backend check the token, and a refusal names
+    // the missing permissions beside the switch without undoing the rest.
+    if (swapKeepRomId !== (s?.swap_keep_rom_id === true)) await saveSwap();
+    toast.success(test?.version ? `Connected to RomM ${test.version}` : 'RomM settings saved');
+    onsaved?.();
+  }
 
-  // "Keep the ROM id when converting" (#390). Turning it on makes the backend
-  // check the token; a refusal names the missing permissions.
+  function useSuggestion() {
+    libraryRoot = problem.suggestion;
+    handleSave();
+  }
+
   const swap = $derived(romm.status?.swap);
-  async function handleSaveSwap() {
+  async function saveSwap() {
     swapRefusal = '';
     try {
       await romm.saveSettings({ swap_keep_rom_id: swapKeepRomId });
-      toast.success(swapKeepRomId ? 'Keeping ROM ids is on' : 'Keeping ROM ids is off');
       await romm.loadStatus();
     } catch (e) {
       swapKeepRomId = s?.swap_keep_rom_id === true;
@@ -151,19 +222,6 @@
       toast.error(e?.message ?? "Could not import RomM's targets");
     } finally {
       importing = false;
-    }
-  }
-
-  async function handleTest() {
-    try {
-      const result = await romm.testConnection(patch());
-      if (result?.authorized && result?.library_root_mounted) {
-        toast.success(`Connected to RomM ${result.version ?? ''}`.trim());
-      } else if (result?.error) {
-        toast.error(result.error);
-      }
-    } catch (e) {
-      toast.error(e?.message ?? 'Connection test failed');
     }
   }
 </script>
@@ -209,7 +267,19 @@
     </section>
   {/if}
 
-  <section class="card">
+  {#if found && found.url !== url.trim()}
+    <section class="card found" role="status" aria-live="polite">
+      <p>
+        Found RomM{found.version ? ` ${found.version}` : ''} at <code>{found.url}</code>{#if found.library_root},
+          with its library at <code>{found.library_root}</code>{/if}.
+      </p>
+      <div class="actions">
+        <Button variant="secondary" onclick={useFound}>Use it</Button>
+      </div>
+    </section>
+  {/if}
+
+  <form class="card" onsubmit={(e) => { e.preventDefault(); handleSave(); }}>
     <header>
       <h2>Connection</h2>
       <p>
@@ -230,33 +300,36 @@
         placeholder="http://romm:8080"
         autocomplete="off"
         spellcheck="false"
+        aria-invalid={problem?.field === 'url'}
+        aria-describedby={problem?.field === 'url' ? 'romm-problem' : undefined}
       />
-      <span class="hint">The base URL of your RomM instance.</span>
+      <span class="hint">The address you open RomM at.</span>
     </label>
 
     <label class="field">
       <span class="label">
-        API token
+        Pairing code or API token
         {#if s?.token_set}<Badge tone="success" size="sm">set</Badge>{/if}
       </span>
       <input
         type="password"
-        bind:value={token}
-        placeholder={s?.token_set ? '•••••••• (leave blank to keep)' : 'rmm_…'}
+        bind:value={credential}
+        placeholder={s?.token_set ? '•••••••• (leave blank to keep)' : 'ABCD-2345 or rmm_…'}
         autocomplete="new-password"
         spellcheck="false"
         disabled={clearToken}
+        aria-invalid={problem?.field === 'token'}
+        aria-describedby={problem?.field === 'token' ? 'romm-problem' : undefined}
       />
       <span class="hint">
-        In RomM: <strong>Administration → Client API Tokens</strong>. Needs
-        <code>platforms.read</code> and <code>roms.read</code>; add
-        <code>roms.write</code> to let Compressatorium restore metadata after
-        converting. The token is never shown again once saved.
+        In RomM, open <strong>Client API Tokens</strong>, create a token with
+        <code>platforms.read</code>, <code>roms.read</code>, <code>roms.write</code>
+        and <code>tasks.run</code>, and press <strong>Pair</strong>. Type the code
+        here and Save before it expires. Pairing gives that token a new secret.
+        RomM before 4.8 has no Pair: paste the token instead.
       </span>
     </label>
-    <!-- Outside the <label>: a label may own exactly one control, and with the
-         checkbox inside it a click on the checkbox row could focus the password
-         input instead, while assistive tech read one ambiguous name for both. -->
+    <!-- Outside the <label>: a label may own exactly one control. -->
     {#if s?.token_set}
       <Checkbox bind:checked={clearToken} label="Remove the saved token" />
     {/if}
@@ -269,153 +342,123 @@
       <input
         type="text"
         bind:value={libraryRoot}
-        placeholder="/data/library"
+        placeholder="Found from RomM when left empty"
         autocomplete="off"
         spellcheck="false"
+        aria-invalid={problem?.field === 'library_root'}
+        aria-describedby={problem?.field === 'library_root' ? 'romm-problem' : undefined}
       />
       <span class="hint">
-        Where RomM's library folder is mounted <em>here</em> — not the path RomM
-        sees. It must also be inside a configured Compressatorium volume.
+        Where RomM's library folder is mounted <em>here</em>, inside a
+        Compressatorium volume. Leave it empty and Save finds it from RomM's
+        platform folders.
       </span>
     </label>
 
-    <div class="actions">
-      <Button variant="secondary" onclick={handleTest} loading={romm.testing} icon={plugIcon}>
-        Test connection
-      </Button>
-      <!-- Until the saved settings have loaded the buffers are empty, and
-           submitting them would blank the URL and library root -- which the
-           backend reads as a move to a different instance. -->
-      <Button
-        onclick={handleSave}
-        loading={romm.settingsSaving}
-        disabled={!loaded}
-        icon={saveIcon}
-      >
-        Save
-      </Button>
-    </div>
-
-    {#if romm.testing}
-      <div class="test"><Spinner /> Testing…</div>
+    {#if busy || romm.testing}
+      <div class="test"><Spinner /> Checking the connection…</div>
     {:else if test}
       <ul class="test-results">
-        <li class:ok={test.reachable}>
-          {#if test.reachable}<Check size={14} />{:else}<XIcon size={14} />{/if}
-          RomM reachable
-          {#if test.version}<span class="muted">(v{test.version})</span>{/if}
-        </li>
-        <li class:ok={test.authorized}>
-          {#if test.authorized}<Check size={14} />{:else}<XIcon size={14} />{/if}
-          Token accepted
-          {#if test.platform_count !== null && test.platform_count !== undefined}
-            <span class="muted">({test.platform_count} platforms)</span>
-          {/if}
-        </li>
-        <li class:ok={test.library_root_mounted}>
-          {#if test.library_root_mounted}<Check size={14} />{:else}<XIcon size={14} />{/if}
-          Library folder mounted here
-        </li>
+        {@render row(test.reachable, 'RomM reachable', test.version ? `(v${test.version})` : '')}
+        {@render row(
+          test.authorized, 'Token accepted',
+          test.platform_count != null ? `(${test.platform_count} platforms)` : '',
+        )}
+        {@render row(test.library_root_mounted, 'Library folder mounted here', '')}
       </ul>
-      {#if test.error}<p class="error">{test.error}</p>{/if}
     {/if}
-  </section>
+    {#if problem}
+      <p class="error" id="romm-problem" role="alert">{problem.error}</p>
+      <div class="actions">
+        {#if problem.suggestion && problem.suggestion !== libraryRoot.trim()}
+          <Button variant="secondary" onclick={useSuggestion}>Use {problem.suggestion}</Button>
+        {/if}
+        <Button variant="secondary" onclick={() => handleSave()} icon={retryIcon}>Retry</Button>
+        <Button variant="ghost" onclick={() => handleSave(true)}>Save anyway</Button>
+      </div>
+    {/if}
 
-  <section class="card">
-    <header>
-      <h2>Metadata</h2>
-      <p>
+    <fieldset>
+      <legend>Metadata</legend>
+      <p class="hint">
         RomM identifies a CHD by the hash inside its header and an archive by its
         largest member, so CHD, ZIP and 7z keep their Redump/No-Intro match
         automatically. Other formats are matched on the file's own hash, which
-        conversion changes — so their metadata is saved first. Where RomM
-        re-identifies the format on its own, the saved metadata is confirmed
-        against RomM's record and only re-applied if RomM didn't match it; the
-        rest are re-applied after RomM rescans.
+        conversion changes — so their metadata is saved first and re-applied
+        after RomM rescans, unless RomM re-identified the game by itself.
       </p>
-    </header>
-    <Checkbox
-      bind:checked={repinEnabled}
-      label="Save metadata before converting to a format RomM can't hash"
-    />
-    <Checkbox
-      bind:checked={repinOnLoad}
-      label="Re-apply metadata automatically when this page loads"
-    />
-    <Checkbox
-      bind:checked={hasheousWriteIds}
-      disabled={!repinEnabled}
-      label="Write Hasheous ids onto converted ROMs"
-      description="When the app's Hasheous match knows a game RomM couldn't fully identify, write its provider ids (IGDB, TheGamesDB and others) onto the ROM in RomM after converting it, so RomM shows the cover and description. Only ids the ROM doesn't already have. Off by default; it needs the snapshot above, which carries them."
-    />
-    <label class="field">
-      <span>Give up on a saved snapshot after</span>
-      <div class="days">
-        <input type="number" min="1" max="365" bind:value={repinAbandonDays} />
-        <span class="unit">days</span>
-      </div>
-      <span class="hint">
-        A snapshot waits for RomM to rescan the converted file. Raise this if
-        your conversion queue or your RomM scan schedule runs longer than that
-        — retiring a snapshot early means that ROM's metadata is gone for good.
-      </span>
-    </label>
-    <div class="actions">
-      <Button
-        onclick={handleSaveMetadata}
-        loading={romm.settingsSaving}
-        disabled={!loaded}
-        icon={saveIcon}
-      >
-        Save
-      </Button>
-    </div>
-  </section>
+      <Checkbox
+        bind:checked={repinEnabled}
+        label="Save metadata before converting to a format RomM can't hash"
+      />
+      <Checkbox
+        bind:checked={hasheousWriteIds}
+        disabled={!repinEnabled}
+        label="Write Hasheous ids onto converted ROMs"
+        description="When the app's Hasheous match knows a game RomM couldn't fully identify, write its provider ids (IGDB, TheGamesDB and others) onto the ROM in RomM after converting it, so RomM shows the cover and description. Only ids the ROM doesn't already have. Needs the snapshot above, which carries them."
+      />
+    </fieldset>
 
-  <section class="card">
-    <header>
-      <h2>Keep the ROM id</h2>
-      <p>
-        When a conversion replaces a file, rename RomM's record to the new file
-        instead of letting RomM add a new game, so the saves, states, notes and
-        collections on it stay put. Off by default. It applies when the source
-        is deleted after its check, to a single-file game converted to one file
-        beside it; anything else converts as before. If RomM refuses the rename,
-        the source is kept and the job says why.
-      </p>
-    </header>
-    <Checkbox
-      bind:checked={swapKeepRomId}
-      label="Keep the ROM id when converting"
-    />
-    <span class="hint">
-      Needs a token with <code>roms.read</code>, <code>roms.write</code> and
-      <code>tasks.run</code>. RomM only gives <code>roms.write</code> and
-      <code>tasks.run</code> to a token created by an <strong>admin user</strong>
-      (or a user in a group that can write ROMs and run tasks), so create the
-      token under <strong>Administration → Client API Tokens</strong> as one.
-      Turning this on checks the token with RomM first.
-    </span>
-    {#if swapRefusal}
-      <p class="error" role="alert">{swapRefusal}</p>
-    {:else if swap?.keepRomId && swap.error}
-      <p class="error" role="alert">{swap.error}</p>
-    {/if}
+    <fieldset>
+      <legend>Keep the ROM id</legend>
+      <Checkbox
+        bind:checked={swapKeepRomId}
+        label="Keep the ROM id when converting"
+        description="When a conversion replaces a file, rename RomM's record to the new file instead of letting RomM add a new game, so its saves, states, notes and collections stay put. For a single-file game converted to one file beside it, with the source deleted after its check. If RomM refuses the rename, the source is kept and the job says why. Needs a token with roms.read, roms.write and tasks.run, which RomM gives only to an admin's token: Save checks it with RomM first."
+      />
+      {#if swapRefusal}
+        <p class="error" role="alert">{swapRefusal}</p>
+      {:else if swap?.keepRomId && swap.error}
+        <p class="error" role="alert">{swap.error}</p>
+      {/if}
+    </fieldset>
+
+    <details class="advanced">
+      <summary>Advanced</summary>
+      <Checkbox
+        bind:checked={repinOnLoad}
+        label="Re-apply saved metadata when the RomM page opens"
+      />
+      <label class="field">
+        <span>Give up on a saved snapshot after</span>
+        <div class="days">
+          <input type="number" min="1" max="365" bind:value={repinAbandonDays} />
+          <span class="unit">days</span>
+        </div>
+        <span class="hint">
+          A snapshot waits for RomM to rescan the converted file. Raise this if
+          your queue or RomM's scan schedule runs longer.
+        </span>
+      </label>
+    </details>
+
+    <!-- Until the saved settings have loaded the buffers are empty, and
+         submitting them would blank the URL and library root -- which the
+         backend reads as a move to a different instance. -->
     <div class="actions">
       <Button
-        onclick={handleSaveSwap}
-        loading={romm.settingsSaving}
+        type="submit"
+        loading={busy || romm.settingsSaving}
         disabled={!loaded}
         icon={saveIcon}
       >
         Save
       </Button>
     </div>
-  </section>
+  </form>
 </div>
 
-{#snippet plugIcon()}<Plug size={14} />{/snippet}
+<!-- One check: passed, failed, or not checked (null) because an earlier one
+     failed. Only what was checked is marked failed. -->
+{#snippet row(ok, label, note)}
+  <li class:ok={ok === true} class:skipped={ok == null}>
+    {#if ok === true}<Check size={14} />{:else if ok === false}<XIcon size={14} />{:else}<Minus size={14} />{/if}
+    {label}
+    {#if ok == null}<span class="muted">(not checked)</span>{:else if note}<span class="muted">{note}</span>{/if}
+  </li>
+{/snippet}
 {#snippet saveIcon()}<Save size={14} />{/snippet}
+{#snippet retryIcon()}<RotateCw size={14} />{/snippet}
 {#snippet importIcon()}<Import size={14} />{/snippet}
 
 <style>
@@ -498,6 +541,36 @@
   .test-results li.ok { color: var(--text-1); }
   .muted { color: var(--text-2); }
   .error { color: var(--danger-text, var(--text-1)); margin: 0; }
+  fieldset {
+    border: 0;
+    border-top: 1px solid var(--border-subtle);
+    margin: 0;
+    padding: var(--space-3) 0 0;
+    display: grid;
+    gap: var(--space-3);
+    min-width: 0;
+  }
+  legend {
+    padding: 0;
+    font-size: var(--text-lg);
+    font-weight: var(--weight-semibold);
+  }
+  fieldset > legend + * { margin-top: var(--space-1); }
+  .advanced {
+    border-top: 1px solid var(--border-subtle);
+    padding-top: var(--space-3);
+  }
+  /* A <details> lays its content out as a block, so space it by hand. */
+  .advanced > :global(* + *) { margin-top: var(--space-3); }
+  .advanced summary {
+    cursor: pointer;
+    font-weight: var(--weight-medium);
+    color: var(--text-2);
+  }
+  input[aria-invalid='true'] { border-color: var(--error); }
+  .test-results li.skipped { color: var(--text-3, var(--text-2)); }
+  .found p { margin: 0; overflow-wrap: anywhere; }
+  .found code, .hint code { overflow-wrap: anywhere; }
   .converter-banner {
     background: var(--warning-muted);
     border-color: var(--warning);

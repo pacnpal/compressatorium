@@ -408,6 +408,21 @@ class Library(Protocol):
     def sweep_blocked(self) -> str | None:
         """An error code when the Library must not be swept now, else None."""
 
+    def excluded(self, name: str) -> bool:
+        """Whether the Library ignores a file or game folder named *name*
+        (#532): RomM's ``exclude:`` settings. The sweep skips such an Image,
+        and one whose output would have such a name. In memory, never blocks."""
+
+    def excluded_extension(self, ext: str) -> bool:
+        """Whether the Library ignores every file ending in ``.<ext>``, by
+        extension alone (#532). The sweep skips a Rule whose outputs all end
+        so. In memory, never blocks."""
+
+    async def refresh(self) -> None:
+        """Bring what the Library caches about itself up to date, bounded and
+        never raising (#532: RomM's folder structure and exclusions). Called
+        by the sweep and by an Inbox poll before they read it."""
+
     def referrer_enabled(self, referrer_id: str) -> bool:
         """Whether this Library's settings turn on the opt-in Referrer *referrer_id* (#383).
 
@@ -525,6 +540,17 @@ class LibraryDefaults:
         summary. Never raises.
         """
         return None
+
+    def excluded(self, name: str) -> bool:
+        """A Library ignores no file by its name (#532)."""
+        return False
+
+    def excluded_extension(self, ext: str) -> bool:
+        """A Library ignores no extension (#532)."""
+        return False
+
+    async def refresh(self) -> None:
+        """Nothing cached to bring up to date (#532)."""
 
     def referrer_enabled(self, referrer_id: str) -> bool:
         """No opt-in Referrer is on until a Library's settings say so (#383)."""

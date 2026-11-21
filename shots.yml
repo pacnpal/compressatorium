@@ -794,6 +794,57 @@
   wait: 1800
   javascript: *js_rule_editor
 
+# --- Connecting RomM (#532) -------------------------------------------------
+# First run: RomM "found" at its usual address (canned, since no RomM runs
+# here), Use it, then a Save whose connection test fails on the token, so the
+# field marked, the "not checked" row, Retry and the open Advanced section show.
+- url: http://127.0.0.1:8099/?s=romm-connect-light#/romm
+  output: docs/screenshots/romm-connect-light.png
+  width: 1280
+  height: 1500
+  wait: 1800
+  javascript: &js_romm_connect |
+    (async () => {
+      const theme = location.search.includes('-dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      const real = window.fetch.bind(window);
+      const canned = {
+        '/api/romm/discover': { url: 'http://romm:8080', version: '5.4.1',
+          library_root: '/data/romm/library' },
+        '/api/romm/settings/test': { reachable: true, authorized: false,
+          library_root_mounted: null, version: '5.4.1', platform_count: null,
+          library_root_suggestion: null, field: 'token',
+          error: 'Add an API token: type the pairing code from RomM, or paste a token.' },
+      };
+      window.fetch = (input, init) => {
+        const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+        const body = canned[url.pathname];
+        if (body === undefined) return real(input, init);
+        return Promise.resolve(new Response(JSON.stringify(body),
+          { headers: { 'Content-Type': 'application/json' } }));
+      };
+      location.hash = '#/dashboard';
+      await new Promise(r => setTimeout(r, 300));
+      location.hash = '#/romm';
+      await new Promise(r => setTimeout(r, 1000));
+      const use = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Use it');
+      if (!use) throw new Error('Found RomM banner not shown');
+      use.click();
+      await new Promise(r => setTimeout(r, 200));
+      const save = [...document.querySelectorAll('button[type="submit"]')].find(b => b.textContent.includes('Save'));
+      save.click();
+      await new Promise(r => setTimeout(r, 800));
+      document.querySelector('details.advanced')?.setAttribute('open', '');
+      if (!document.querySelector('#romm-problem')) throw new Error('connection problem not shown');
+    })()
+- url: http://127.0.0.1:8099/?s=romm-connect-dark#/romm
+  output: docs/screenshots/romm-connect-dark.png
+  width: 1280
+  height: 1500
+  wait: 1800
+  javascript: *js_romm_connect
+
 # --- Beside RomM's converter (#385) ----------------------------------------
 # RomM with its own converter switched on. The status (with its `converter`
 # block), platforms, Rules and import plan are canned in the page, as in the

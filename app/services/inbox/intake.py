@@ -943,6 +943,8 @@ async def poll(
         if library is None:
             state.error = result["error"] = "library_missing"
             return result
+        # Placement reads the Library's layout (RomM's structure, #532).
+        await library.refresh()
         try:
             listing, unlisted, sharing, blocked = await run_detached_within_stall_bound(
                 _list, inbox.folder, library, what=f"The Inbox {inbox.folder}",

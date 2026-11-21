@@ -3065,8 +3065,64 @@ API and the Rules view; the engine never reads those three), and:
 
 **Hooks for steps only one Library performs.**
 
+RomM's connection helpers live in `services/romm/connect.py` (#532). Discovery and pairing ask RomM before it has a token
+of ours through `RommClient(base_url, anonymous=True)`, which sends no token
+and never falls back to the saved one:
+`discover()` (the heartbeat at RomM's usual addresses, bounded, no token
+sent), `find_library_root(FS_PLATFORMS, before=...)` (a bounded breadth-first
+look through the Volumes for the folder holding RomM's platform folders under
+the declared prefix *before*, `games` for `games/{platform}/{game}`, or RomM's
+default layouts when no structure is known; the connection test withholds its
+suggestion when the token could read the structure and the read failed), and
+the layout cache (`refresh_layout()`; `structure()` and
+`excluded()` / `excluded_extension()` only read it). The layout is re-read at
+most every five minutes, by `/api/romm/status`, every sweep and Inbox poll
+(the Library's `refresh()` hook, below), and forced by a connection test and a
+Save that changes the connection. The two parts, the exclusions
+(`/api/config`) and the structure (`/api/setup/library`), are read, timed
+and known separately: a part RomM didn't answer is retried after
+`_LAYOUT_RETRY` (30 s) without re-reading the other, which keeps its full
+TTL (a 404 for the structure is an answer: RomM before 5.3 has none). Until
+a part has ever been read for the configured RomM, its emptiness means "not
+known": `RommLibrary.sweep_blocked()` defers the sweep with
+`romm_layout_unread` until `exclusions_known()`, and placement with no
+declared structure raises `LibraryUnreadable` until `structure_known()`:
+retryable, so an Inbox leaves the file for a later poll rather than holding
+it as it would on `PlacementUnknown`. `structure()`, `structure_known()` and
+`layout()` take an optional base URL, for the RomM a connection test probes.
+RomM placement uses the declared structure when there is one, and refuses a
+structure with a wildcard level (`{category}`); `platform_folder()` looks
+under the same declared prefix (`games/{platform}/{game}` gives
+`<root>/games/<platform>`), with `_declared`'s `roms` rule. A pairing code
+(`POST /api/romm/pair`) saves nothing: the token it is traded for is held in
+memory for that URL, and a connection test
+or Save sent with `paired: true` uses it (400 when none is held for the URL it
+names), so the token, URL and Library path are committed by one Save.
+
 - `sweep_blocked()` returns an error code to refuse the sweep. RomM refuses
   with `identity_cleanup_pending` while a change of instance is half cleaned up.
+- `excluded(name)` (#532) says the Library ignores a file or game folder by
+  that name. The sweep skips such an Image, and one whose output file would
+  have such a name (both counted in `skipped_filtered`).
+  `excluded_extension(ext)` says it ignores every `.<ext>` file, by extension
+  alone; the sweep skips a Rule whose output extension that is (error
+  `output_excluded`, skip check `output_excluded`). A name pattern is never
+  read as a whole extension. A retried kept delete (#329) asks `excluded()`
+  of the Source's name first and leaves an excluded Source, and its pending
+  entry, alone; a delete already `deleting` finishes. Both in memory, never
+  blocking.
+  `LibraryDefaults` answers False; RomM answers from its `exclude:` settings
+  (`EXCLUDED_SINGLE_EXT`, `EXCLUDED_SINGLE_FILES`, `EXCLUDED_MULTI_FILES` and
+  RomM's defaults, from `GET /api/config`), cached by
+  `services/romm/connect.py`.
+- `refresh()` (#532) brings what the Library caches about itself up to date,
+  bounded and never raising. The sweep awaits it before taking its lock, an
+  Inbox poll before placing, and the placements listing before it lists, so
+  the scheduler and `run-rules` read RomM's layout without the RomM page
+  open. `LibraryDefaults` does nothing; RomM
+  calls `refresh_layout()` (within its five-minute TTL). The suite's conftest
+  turns RomM's off, and reads both layout parts as known, unless a test module sets
+  `READS_ROMM_LAYOUT = True`.
 - `summary_fields()` seeds every per-Platform summary and the result (RomM:
   `repins_recorded: 0`).
 - `after_queue(rule, spec, queued, summary, result)` runs once a Platform's
