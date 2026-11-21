@@ -129,7 +129,8 @@ def test_the_defaults_section_edits_the_remembered_compression_and_history():
     # a pending save is flushed before the section reads the server's copy.
     assert "await conversion.flushCompressionPrefs();" in src
     assert "api.getConversionPrefs()" in src
-    assert "conversion.applySavedDefaults(" in src
+    # Only the edited tool goes to the store (CodeRabbit 4652269814).
+    assert "conversion.applySavedDefault(p.tool.id, wire);" in src
     assert "api.putConversionPrefs(" not in src and "setTimeout(" not in src
     assert "formatCompression(" in src and "parseCompression(" in src
     # A save that fails shows under the pickers, with Try again.
@@ -260,3 +261,89 @@ def test_redump_loads_keep_the_newest_and_a_sync_never_runs_twice():
     assert done.returncode == 0, done.stderr
     out = json.loads(done.stdout.strip().splitlines()[-1])
     assert out == {"redump": "new", "second": None, "calls": 1}
+
+
+def _run_store(stubs: str, scenario: str) -> dict:
+    node = _find_node()
+    if node is None:
+        pytest.skip("Node is not installed")
+    script = "\n".join([
+        stubs,
+        _plain(_STORES / "latestSaveQueue.js"),
+        _plain(_STORES / "datMatching.svelte.js"),
+        "(async () => {",
+        scenario,
+        "})().catch((e) => { console.error(e); process.exit(1); });",
+    ])
+    done = subprocess.run(
+        [node, "--input-type=module", "-e", script],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+def test_a_failed_redump_check_is_not_shown_as_no_consoles():
+    """CodeRabbit 4652269828: when asking which consoles Redump covers fails,
+    the store keeps the error (cleared by the next good answer), and the
+    button says it couldn't check, with Try again, instead of claiming no
+    Library has a console Redump covers."""
+    out = _run_store("""
+class SvelteMap extends Map {}
+const untrack = (fn) => fn();
+let fail = true;
+const api = {
+  getRedump: async () => {
+    if (fail) throw new Error('redump.org timed out');
+    return { systems: [] };
+  },
+};
+""", """
+const out = {};
+await datMatching.loadRedump();
+out.failed = { redump: datMatching.redump, error: datMatching.redumpError };
+fail = false;
+await datMatching.loadRedump();
+out.empty = { redump: datMatching.redump, error: datMatching.redumpError };
+console.log(JSON.stringify(out));
+""")
+    assert out == {
+        "failed": {"redump": None, "error": "redump.org timed out"},
+        "empty": {"redump": {"systems": []}, "error": None},
+    }
+    ident = _read("settings/Identification.svelte")
+    assert "datMatching.redumpError" in ident
+    assert "Couldn't check which consoles Redump covers" in ident
+    assert "onclick={() => datMatching.loadRedump()}" in ident
+    # The no-console words stay for a check that worked and found none.
+    assert "None of your Libraries has a disc console Redump covers" in ident
+
+
+def test_a_superseded_hasheous_enable_never_probes_after_a_disable():
+    """CodeRabbit 4652269835: turning Hasheous on, then off before the first
+    answer lands, must not let the older enable apply its state or start a
+    probe once it resumes."""
+    out = _run_store("""
+class SvelteMap extends Map {}
+const untrack = (fn) => fn();
+const pending = [];
+let probes = 0;
+const api = {
+  setHasheousEnabled: (enabled) => new Promise((resolve) => pending.push({ enabled, resolve })),
+  getDATStats: async () => ({ total_dats: 0, hasheous_enabled: false }),
+  testHasheous: async () => { probes += 1; return { ok: true }; },
+};
+const tick = () => new Promise((r) => setTimeout(r, 0));
+""", """
+const on = datMatching.setHasheousEnabled(true);
+const off = datMatching.setHasheousEnabled(false);
+pending[1].resolve({ enabled: false, url: 'h', overridden: true });
+await off;
+pending[0].resolve({ enabled: true, url: 'h', overridden: true });
+await on;
+for (let i = 0; i < 5; i += 1) await tick();
+console.log(JSON.stringify({
+  probes, test: datMatching.hasheousTest, enabled: datMatching.stats?.hasheous_enabled,
+}));
+""")
+    assert out == {"probes": 0, "test": None, "enabled": False}

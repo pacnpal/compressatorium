@@ -165,6 +165,10 @@ class ConversionStore {
   // change to it; a read adopts its answer only if nothing came after it, so
   // a late boot read can't put old values over a newer edit (Codex 4652391157).
   #prefsGeneration = 0;
+  // The tools whose compression changed here and isn't on the server yet. A
+  // save sends only these over the server's current copy (CodeRabbit
+  // 4652269814), so it never writes back what another tab saved meanwhile.
+  #dirtyTools = new Set();
 
   // ─── Derived ──────────────────────────────────────────────────────────
   get currentTool() {
@@ -473,6 +477,7 @@ class ConversionStore {
     if (value == null) return; // mode without compression, nothing to save
     this.#prefsGeneration += 1;
     this.#compressionPrefs = { ...this.#compressionPrefs, [this.primaryTool]: value };
+    this.#dirtyTools.add(this.primaryTool);
     this.#schedulePrefsSave();
   }
 
@@ -488,10 +493,24 @@ class ConversionStore {
   }
 
   #putPrefs() {
-    const snapshot = { ...this.#compressionPrefs };
     this.#saveChain = this.#saveChain.then(async () => {
+      const tools = [...this.#dirtyTools];
+      if (!tools.length) return;
+      const local = { ...this.#compressionPrefs };
       try {
-        await api.putConversionPrefs(snapshot);
+        // The PUT replaces the whole object: start from the server's copy as
+        // it is now and change only the tools edited here. A tool set back to
+        // its own default (null) drops its key.
+        const body = { ...((await api.getConversionPrefs()) ?? {}) };
+        for (const tool of tools) {
+          if (local[tool] == null) delete body[tool];
+          else body[tool] = local[tool];
+        }
+        await api.putConversionPrefs(body);
+        // Saved, unless it changed again while this save was out.
+        for (const tool of tools) {
+          if (this.#compressionPrefs[tool] === local[tool]) this.#dirtyTools.delete(tool);
+        }
         this.compressionSaveError = null;
       } catch (e) {
         this.compressionSaveError = e?.message ?? 'Request failed';
@@ -519,15 +538,20 @@ class ConversionStore {
   }
 
   /**
-   * Settings → Defaults saved the per-tool compression *prefs* (the whole
-   * object): adopt it, make the current tool's value the live one even after
-   * the user picked codecs here (an explicit save wins over the touched
-   * guard, which only shields an edit from a late boot fetch), and save it.
+   * Settings → Defaults saved *toolId*'s compression (*wire*, or null for the
+   * tool's own default): remember it, make it the live choice when it's the
+   * current tool, even after the user picked codecs here (an explicit save
+   * wins over the touched guard, which only shields an edit from a late boot
+   * fetch), and save it.
    */
-  applySavedDefaults(prefs) {
+  applySavedDefault(toolId, wire) {
     this.#prefsGeneration += 1;
-    this.#compressionPrefs = { ...prefs };
-    this.#applyCompressionPref(this.primaryTool);
+    const next = { ...this.#compressionPrefs };
+    if (wire == null) delete next[toolId];
+    else next[toolId] = wire;
+    this.#compressionPrefs = next;
+    this.#dirtyTools.add(toolId);
+    if (toolId === this.primaryTool) this.#applyCompressionPref(toolId);
     this.#schedulePrefsSave();
   }
 

@@ -196,7 +196,9 @@
     loading={redumpSyncing}
     title={redumpSystems.length
       ? `Downloads Redump's lists for ${redumpSystems.map((s) => s.name).join(', ')}`
-      : 'None of your Libraries has a disc console Redump covers'}
+      : datMatching.redumpError
+        ? "Couldn't check which consoles Redump covers"
+        : 'None of your Libraries has a disc console Redump covers'}
     onclick={handleRedumpSync}
   >
     {#snippet icon()}<Download size={14} />{/snippet}
@@ -214,6 +216,13 @@
     </Button>
   {/if}
 </div>
+
+{#if datMatching.redumpError}
+  <div class="error" role="alert">
+    Couldn't check which consoles Redump covers. {datMatching.redumpError}
+    <Button size="sm" variant="secondary" onclick={() => datMatching.loadRedump()}>Try again</Button>
+  </div>
+{/if}
 
 {#if syncing}
   <div class="sync-status" role="status" aria-live="polite">
