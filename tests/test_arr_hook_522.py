@@ -594,3 +594,23 @@ async def test_the_path_test_says_what_an_import_would_do(client, vol, queued):
     body = (await client.post("/api/hooks/arr/check", json={"path": str(game)})).json()
 
     assert "automation is off" in body["problem"]
+
+
+@pytest.mark.asyncio
+async def test_an_import_right_after_a_listing_is_found(client, vol, queued):
+    """Codex 4653298959: a game imported within the walk's cache time must
+    not be missed by a sweep reading the walk from before it arrived."""
+    from routes import libraries as routes
+    from services.inbox import trigger
+
+    from .test_platform_detect import _ps2
+
+    library, _game = await _ps2_library(vol)
+    await routes.library_platforms(library.id)  # the walk the import must not reuse
+    fresh = Path(_ps2(vol / "ROMs" / "ps2" / "Fresh.iso"))
+
+    reply = await client.post("/api/scan", headers=CONFIRM, json={"path": str(fresh)})
+
+    assert reply.json()["accepted"], reply.json()
+    await trigger.drain()
+    assert str(fresh) in queued

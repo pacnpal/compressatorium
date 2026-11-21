@@ -325,6 +325,9 @@ async def process(paths: list[str], *, source: str) -> dict[str, Any]:
             if why:
                 found = {**found, "problem": why}
             else:
+                # The Library's own hook (#353): a walk listed before this file
+                # arrived is dropped, so the sweep sees it (Codex 4653298959).
+                library.note_paths_changed([found["local"]])
                 sweeps.setdefault(library.id, (library, set()))[1].update(due)
                 accepted.append({"path": path, "local": found["local"], "inbox_id": None,
                                  "library_id": library.id, "platform_ids": due})
