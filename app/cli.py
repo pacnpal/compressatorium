@@ -858,7 +858,7 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
     its temp dir.
     """
     from fastapi import HTTPException
-    from routes.convert import queue_prepared
+    from routes.convert import OUTPUT_CLAIMED_CODE, queue_prepared
     from services.job_manager import CANCEL_SHUTDOWN
 
     from config import settings
@@ -920,6 +920,12 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
                 if item is not None:
                     watching[job.id] = item
                     pending.add(job.id)
+            # A file another job was already writing is left out (#520).
+            for skip in batch.skips:
+                item = planned.get(skip.path)
+                if item is not None and skip.code == OUTPUT_CLAIMED_CODE:
+                    item.status, item.reason = "skipped", skip.reason
+                    printer.line(item.convert_line())
             if state.stopping:
                 # A stop that arrived while this batch was being queued: the
                 # signal handler's cancel-all ran before these jobs existed.
