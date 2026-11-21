@@ -660,15 +660,24 @@ export const api = {
     fetchJson(`${API_BASE}/chd-metadata/scan/status`, undefined, 'Failed to get scan status'),
 
   // ─── DAT library ──────────────────────────────────────────────────────
-  importDAT(file) {
+  // .dat / .xml files and .zip files of them (No-Intro's daily pack, a Redump
+  // zip), all in one request -> { imported: [...], errors: [{file, error}], message }.
+  importDATs(files) {
     const formData = new FormData();
-    formData.append('file', file);
+    for (const file of files) formData.append('files', file);
     return fetchJson(
-      `${API_BASE}/dat/import`,
+      `${API_BASE}/dat/import-batch`,
       { method: 'POST', body: formData },
-      'Failed to import DAT',
+      'Failed to import DATs',
     );
   },
+
+  // The disc Platforms in your Libraries Redump has a DAT for: { running, systems }.
+  getRedump: () => fetchJson(`${API_BASE}/dat/redump`, undefined, 'Failed to read Redump status'),
+
+  // Waits for the sync: { systems, imported, up_to_date, failed, changed, message }.
+  syncRedump: (force = false) =>
+    jsonPost(`${API_BASE}/dat/redump/sync`, { force }, {}, 'Redump sync failed'),
 
   // ─── Patch bench (#428) ──────────────────────────────────────────────
   // Keeps an .ips/.bps in the app's data directory; answers { upload_id, ... }.
