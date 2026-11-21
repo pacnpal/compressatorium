@@ -52,6 +52,7 @@ __all__ = [
     "FolderLibrary",
     "LibraryPathError",
     "check_gamelists_folder",
+    "find_gamelists_folders",
     "registration_lock",
     "all_libraries",
     "describe",
@@ -756,6 +757,61 @@ def check_gamelists_folder(path: str) -> str:
     if not resolved.is_dir():
         raise LibraryPathError(404, "Gamelists folder not found")
     return str(resolved)
+
+
+# The search for ES-DE's gamelists folder (#523): how deep below a Volume root
+# a `gamelists` folder may sit (`/data` -> `home/me/ES-DE/gamelists` is 4), the
+# most folders it lists over every Volume, and the most it offers.
+GAMELISTS_SEARCH_DEPTH = 4
+GAMELISTS_SEARCH_MAX_FOLDERS = 5000
+GAMELISTS_SEARCH_MAX_FOUND = 10
+
+
+def _holds_a_system_gamelist(folder: str) -> bool:
+    try:
+        with os.scandir(folder) as entries:
+            return any(
+                entry.is_dir(follow_symlinks=False)
+                and os.path.isfile(os.path.join(entry.path, "gamelist.xml"))
+                for entry in entries
+            )
+    except OSError:
+        return False
+
+
+def find_gamelists_folders() -> list[str]:
+    """ES-DE gamelists folders inside the Volumes (#523), resolved, ES-DE's first.
+
+    ES-DE 2.0+ reads only ``ES-DE/gamelists/<system>/gamelist.xml``, so the
+    Platform-folder lookup finds nothing for it. This looks for a folder named
+    ``gamelists`` holding at least one ``<system>/gamelist.xml``, at most
+    :data:`GAMELISTS_SEARCH_DEPTH` below a Volume root. Hidden folders and
+    symlinks are not walked into, and each hit must be confirmed inside the
+    Volumes. Bounded by folder count; blocking, so the route runs it under
+    :func:`run_admitted`'s time bound.
+    """
+    from config import settings
+
+    found: list[str] = []
+    listed = 0
+    for volume in settings.volumes:
+        top = os.path.normpath(volume)
+        for folder, dirs, _files in os.walk(top):
+            listed += 1
+            if listed > GAMELISTS_SEARCH_MAX_FOLDERS or len(found) >= GAMELISTS_SEARCH_MAX_FOUND:
+                break
+            depth = 0 if folder == top else os.path.relpath(folder, top).count(os.sep) + 1
+            if (
+                os.path.basename(folder) == "gamelists"
+                and _holds_a_system_gamelist(folder)
+                and volume_containment(folder, treat_archives=False) is True
+            ):
+                found.append(str(Path(folder).resolve()))
+                dirs[:] = []
+                continue
+            deeper = depth < GAMELISTS_SEARCH_DEPTH
+            dirs[:] = [d for d in dirs if not d.startswith(".")] if deeper else []
+    return sorted(dict.fromkeys(found), key=lambda p: (Path(p).parent.name != "ES-DE", p))
 
 
 async def admitted(func, *args, what: str, **kwargs):

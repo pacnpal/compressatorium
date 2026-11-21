@@ -4,6 +4,18 @@
 
 ### Added
 
+- **ES-DE's gamelists are found for you** (#523). ES-DE 2.0 and later read
+  gamelists only from `ES-DE/gamelists/<system>`, never from the ROM folders,
+  so an ES-DE Library updated nothing until you typed that folder. The Rules
+  editor's **Frontend** select (None, ES-DE, Batocera or Knulli) replaces the
+  "Used by an EmulationStation frontend" checkbox. Picking ES-DE searches the
+  Volumes for the folder and offers each one found with **Use this folder**.
+  A Library already set up the old way is offered the folder too.
+- **Choose which messages each notification destination gets** (#523), and a
+  new **A job you started finished** message (off unless chosen).
+- **Signed webhooks** (#523). A generic webhook can have a signing secret; each
+  message then carries `X-Compressatorium-Signature: sha256=<hex>`, the
+  HMAC-SHA256 of the body.
 - **DATs made easy** (#524). **Import DATs** takes several `.dat`/`.xml` files
   at once, and zips of them: No-Intro's daily pack or a Redump zip imports
   every DAT inside in one go. A zip is read under the same caps and member-name
@@ -103,6 +115,9 @@
   - Verify accepts a `.dosz` with no `dosbox.conf` when it holds a DOS program.
 
 ### Fixed
+
+- muOS is no longer listed as reading `gamelist.xml`. It keeps its artwork in
+  its own catalogue (`MUOS/info/catalogue`), by game name.
 
 - **Sync MAMERedump no longer deletes your other DATs** (#525). It used to
   delete every DAT in the store after a successful sync, including No-Intro
