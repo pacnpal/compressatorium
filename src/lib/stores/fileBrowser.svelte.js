@@ -817,6 +817,12 @@ class FileBrowserStore {
     await this._enterSearch('');
   }
 
+  /** The words the listing is filtered by now, in either scope. */
+  get activeQuery() {
+    if (this.searchMode) return this._pendingSearchQuery ?? this.searchQuery;
+    return this.folderQuery;
+  }
+
   exitSearch() {
     // A search still on its way belongs to the view being left.
     this._searchGeneration += 1;

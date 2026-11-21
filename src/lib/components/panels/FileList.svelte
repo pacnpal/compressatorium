@@ -169,9 +169,11 @@
     return playlistPaths(paths);
   });
 
-  let searchInput = $state('');
-  // A new folder starts with no name filter (the store drops it on
-  // navigate); a scope change keeps what was typed.
+  // Starts from what the store applies, so coming back to Files never hides
+  // rows behind a filter the box doesn't show. A new folder starts with no
+  // name filter (the store drops it on navigate); a scope change keeps what
+  // was typed.
+  let searchInput = $state(fileBrowser.activeQuery);
   let typedIn = `${fileBrowser.currentPath}::${fileBrowser.currentArchivePath}`;
   $effect(() => {
     // A folder or an archive opened: its own listing, with no filter.

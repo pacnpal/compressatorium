@@ -272,3 +272,26 @@ process.stdout.write(JSON.stringify({
     assert data["during"] == ["/v/Loose.iso", "/v/sub/Deep.iso"], data
     assert data["after"] == ["/v/Loose.iso"], data
     assert data["convertible"] == ["/v/Loose.iso"], data
+
+
+def test_the_store_names_the_query_it_applies(tmp_path):
+    """Codex 4655353322: the box shows what the store filters by, in
+    either scope, so a remounted FileList starts from it."""
+    data = _run(tmp_path, _LISTING + """
+fileBrowser.currentPath = '/v';
+api.searchFiles = async () => ({ files: [], archives: [] });
+await fileBrowser.setSearchScope('folder', 'saga');
+const folder = fileBrowser.activeQuery;
+await fileBrowser.setSearchScope('everywhere', 'mario');
+const everywhere = fileBrowser.activeQuery;
+fileBrowser.exitSearch();
+process.stdout.write(JSON.stringify({ folder, everywhere, none: fileBrowser.activeQuery }));
+""")
+
+    assert data == {"folder": "saga", "everywhere": "mario", "none": ""}, data
+
+
+def test_a_remounted_file_list_shows_the_query_still_applied():
+    file_list = (_LIB / "components" / "panels" / "FileList.svelte").read_text(encoding="utf-8")
+
+    assert "let searchInput = $state(fileBrowser.activeQuery);" in file_list
