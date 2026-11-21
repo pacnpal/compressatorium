@@ -56,10 +56,12 @@
   parallel jobs and land in its Ledger, and the command prints each line as
   its job ends. A server whose queue is full (its own `MAX_QUEUE_DEPTH`, or
   other clients' jobs) is fed smaller batches and waited for, so no input
-  fails for it. Ctrl-C cancels the run's own jobs on the server. With no
-  server running, the command runs the jobs itself, and a server started
-  meanwhile waits until it is done, so a command and the server never work
-  on the same file. A server in another container is found by its host name;
+  fails for it. What the server can run decides what is converted, so NSZ
+  Images convert on a server that has the Switch keys even when the
+  command's container doesn't. Ctrl-C cancels the run's own jobs on the
+  server. With no server running, the command runs the jobs itself, and a
+  server started meanwhile waits until it is done, so a command and the
+  server never work on the same file. A server in another container is found by its host name;
   `--server URL` names one that can't be found. The cross-process job queue
   the two used to share in `/config/locks` (`queue_*.ticket`,
   `holder_*.lock`, `convert_slot_*.lock`) is gone; old files there are

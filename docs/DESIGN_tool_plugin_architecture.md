@@ -5768,7 +5768,9 @@ that leaves `.chd` out of its tool-wide inputs.
 holds the worker lock (`services.scheduler_lock`, §3.3.17's Rule scheduler
 lock, `scheduler.lock` in the lock dir) while it works: the server for its
 life, `run-rules` for its pass, `convert` while its jobs run. `convert`
-decides where its jobs go once it has planned them (`cli._worker`):
+decides where its jobs go before it routes and plans them (`cli._worker`),
+so the tools ready where they will run (the server's `GET /api/tools`, or
+this process's) decide which Images are converted:
 
 * `--server URL` names a server: the jobs go there.
 * The lock held by a server: the jobs go to it. The server names its host in
@@ -9203,7 +9205,12 @@ every other planning skip. A chain mode is refused when any step tool is not
 ready, since `ChainTool.is_ready` asks each. The CLI, the Rules sweeps and the
 Inbox already skip a not-ready tool before they plan, so they never reach this
 check and nothing is reported twice. Per-route or per-tool checks are not
-needed.
+needed. `plan_job` and `prepare_batch` take `ready_tool_ids` (as `plan_auto`
+does) to answer for the process that will run the job instead of probing
+here: a `convert` that hands its jobs to a server routes and plans with the
+server's `GET /api/tools` list (`Server.ready_tool_ids`, #533), so an NSZ
+Image converts on a server that has the keys even when the CLI's container
+lacks them, and the server's own planning has the last word.
 
 **File info routes (#488).** Every `GET /api/*info` route in `routes/info.py`
 (`/info` for chdman, `/dolphin-info`, `/z3ds-info`, `/nkit-info`, `/xiso-info`,

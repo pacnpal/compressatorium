@@ -324,3 +324,46 @@ def test_a_full_server_queue_is_waited_for(volume, dolphin, capsys, server_lock,
     assert stub.refused == 3
     assert [(line["path"], line["status"]) for line in lines] == [(str(iso), "completed")]
 
+
+def test_a_tool_ready_only_on_the_server_still_converts(
+    volume, dolphin, capsys, server_lock, monkeypatch,
+):
+    """The server's readiness decides a remote run (Codex 4650363722): a tool
+    that cannot run in the CLI's container (nsz with the keys mounted only on
+    the server) still has its Images sent."""
+    from services.tools import registry
+
+    real = registry.tool_is_ready
+
+    async def not_here(tool, **kwargs):
+        return False if tool.id == "dolphin" else await real(tool, **kwargs)
+
+    monkeypatch.setattr(registry, "tool_is_ready", not_here)
+    stub = _Stub()
+    server_lock.note_port(stub.port)
+    iso = _iso(volume)
+    try:
+        code, lines = _cli(capsys, "convert", str(volume), "--to", "rvz", "--json")
+    finally:
+        stub.close()
+
+    assert code == 0, lines
+    assert [b["file_paths"] for b in stub.batches] == [[str(iso)]]
+    assert [(line["path"], line["status"]) for line in lines] == [(str(iso), "completed")]
+
+
+def test_a_tool_the_server_cannot_run_is_skipped(
+    volume, dolphin, capsys, server_lock,
+):
+    """And the other way: ready here but not on the server, nothing is sent."""
+    stub = _Stub(available=[])
+    server_lock.note_port(stub.port)
+    iso = _iso(volume)
+    try:
+        code, lines = _cli(capsys, "convert", str(volume), "--to", "rvz", "--json")
+    finally:
+        stub.close()
+
+    assert code == 0, lines
+    assert stub.batches == []
+    assert [(line["path"], line["status"]) for line in lines] == [(str(iso), "skipped")]

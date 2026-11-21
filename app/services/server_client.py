@@ -113,6 +113,18 @@ class Server:
         except ServerRefused as exc:
             raise ServerUnreachable(f"the server at {self.url} answered {exc}") from None
 
+    async def ready_tool_ids(self) -> list[str]:
+        """The tools that can run on the server (``GET /api/tools``), which
+        decide a run it works: its keys and binaries, not the CLI's."""
+        try:
+            answer = await self.call("GET", "/api/tools")
+        except ServerRefused as exc:
+            raise ServerUnreachable(f"the server at {self.url} answered {exc}") from None
+        available = answer.get("available") if isinstance(answer, dict) else None
+        if not isinstance(available, list):
+            raise ServerUnreachable(f"the server at {self.url} did not list its tools")
+        return [str(tool_id) for tool_id in available]
+
     async def queue(self, request: dict) -> tuple[list[dict], list[dict]]:
         """Queue a batch: the jobs it made and the files it left out."""
         answer = await self.call("POST", "/api/jobs/batch?report_skipped=true", request)

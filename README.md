@@ -2961,7 +2961,9 @@ directory at a time. When the server is running on the same `/config`,
 queue, share its `MAX_CONCURRENT_JOBS` limit and land in its Ledger, and the
 command prints each line as its job ends. When the server's queue is full (its
 own `MAX_QUEUE_DEPTH`, or other clients' jobs), the command feeds it smaller
-batches and waits for room instead of failing. Ctrl-C cancels this run's jobs on the
+batches and waits for room instead of failing. The tools the server can run
+decide what is converted: Switch keys mounted only on the server are enough.
+Ctrl-C cancels this run's jobs on the
 server. With no server running, `convert` runs the jobs itself, and a server
 started meanwhile waits until it is done. Either way a command and the server
 never work on the same file. A server in another container is found the same

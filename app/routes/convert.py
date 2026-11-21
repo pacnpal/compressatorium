@@ -3,6 +3,7 @@ import functools
 from logging_setup import get_logger
 import os
 import re
+from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
@@ -748,6 +749,7 @@ async def plan_job(
     output_dir: str | None,
     duplicate_action: DuplicateAction,
     delete_on_verify: bool,
+    ready_tool_ids: Collection[str] | None = None,
 ) -> JobPlan:
     """Resolve one input file into a concrete ``JobPlan``.
 
@@ -763,9 +765,15 @@ async def plan_job(
     A tool that isn't ready (#505) is refused first, before anything is read:
     ``SkipFile(TOOL_NOT_READY)`` with ``not_ready_message(tool)`` as its
     detail, so every caller says it the way the info routes do.
+    ``ready_tool_ids`` answers for the process that will run the job instead
+    of probing here: a CLI that hands its jobs to a server plans with the
+    server's ``GET /api/tools`` (#533), whose own planning has the last word.
     """
     tool = registry.get(spec.tool_id)
-    if not await registry.tool_is_ready(tool):
+    if not (
+        tool.id in ready_tool_ids if ready_tool_ids is not None
+        else await registry.tool_is_ready(tool)
+    ):
         raise SkipFile(SkipReason.TOOL_NOT_READY, not_ready_message(tool))
     # Directory-as-input mode (makeps3iso folder->iso): a folder, not a file with
     # a suffix. Validate isdir + the tool's source-layout detector instead of
@@ -1431,11 +1439,14 @@ def _check_job_paths(file_path: str, output_dir: str | None) -> None:
     _check_within_volumes([], output_dir)
 
 
-async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
+async def prepare_batch(
+    request: BatchJobCreateRequest, *, ready_tool_ids: Collection[str] | None = None,
+) -> PreparedBatch:
     """Validate and plan every file of a batch, queueing nothing.
 
     Raises the same HTTP errors ``create_batch_jobs`` always has. Split out so
     Auto can prepare every group before it queues any of them.
+    ``ready_tool_ids``: see :func:`plan_job`.
     """
     if is_external_mode(request.mode):
         raise HTTPException(
@@ -1485,6 +1496,7 @@ async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
                 output_dir=output_dir,
                 duplicate_action=request.duplicate_action,
                 delete_on_verify=request.delete_on_verify,
+                ready_tool_ids=ready_tool_ids,
             )
         except SkipFile as skip:
             skipped[file_path] = BatchSkip.of(file_path, skip)

@@ -694,7 +694,7 @@ def _decide_deletes(items: list[Item], args) -> None:
         item.kept_source = True
 
 
-async def _prepare_group(request, group: list[Item]):
+async def _prepare_group(request, group: list[Item], ready: list[str]):
     """``prepare_batch`` for one group; on a refusal, retry Image by Image.
 
     The planner refuses a whole batch for one file (a delete snapshot that
@@ -706,7 +706,7 @@ async def _prepare_group(request, group: list[Item]):
     from routes.convert import prepare_batch
 
     try:
-        return [await prepare_batch(request)]
+        return [await prepare_batch(request, ready_tool_ids=ready)]
     except HTTPException as exc:
         if len(group) == 1:
             group[0].status, group[0].reason = "failed", str(exc.detail)
@@ -714,13 +714,14 @@ async def _prepare_group(request, group: list[Item]):
     batches = []
     for item in group:
         batches += await _prepare_group(
-            request.model_copy(update={"file_paths": [item.path]}), [item],
+            request.model_copy(update={"file_paths": [item.path]}), [item], ready,
         )
     return batches
 
 
-async def _prepare(items: list[Item], args) -> list[tuple]:
-    """Plan every routed Image through the batch route's planner, by group.
+async def _prepare(items: list[Item], args, ready: list[str]) -> list[tuple]:
+    """Plan every routed Image through the batch route's planner, by group,
+    with ``ready`` the tools that can run where the jobs will.
 
     Returns ``[(PreparedBatch, {planned file path: Item}), ...]``. Images the
     planner leaves out are marked skipped with its reason (a file collapsed
@@ -758,7 +759,7 @@ async def _prepare(items: list[Item], args) -> list[tuple]:
         for item in group:
             by_path[item.path] = item
             by_path.setdefault(os.path.realpath(item.path), item)
-        for batch in await _prepare_group(request, group):
+        for batch in await _prepare_group(request, group, ready):
             for path, reason in batch.skipped.items():
                 item = by_path.get(path)
                 if item is None:
@@ -1154,31 +1155,47 @@ async def convert(args, printer: Printer, state: RunState) -> int:
     )
     # Once, on the final input set, before any mode is chosen.
     await run_in_threadpool(_skip_outside_volumes, items)
-    # The shared, bounded readiness probe the Auto route uses.
-    ready = await registry.ready_tool_ids()
+    if args.dry_run:
+        # The shared, bounded readiness probe the Auto route uses.
+        items, prepared = await _plan(items, args, prefs, await registry.ready_tool_ids())
+        _print_routed(items, printer)
+        for _batch, planned in prepared:
+            for item in planned.values():
+                item.status = "planned"
+                printer.line(item.convert_line())
+    else:
+        # Where the jobs run is decided first: a server's tools, not this
+        # process's, say what can be converted (a server with the Switch keys
+        # mounted converts NSZ for a CLI without them).
+        async with _worker(args) as server:
+            asked = registry if server is None else server
+            items, prepared = await _plan(items, args, prefs, await asked.ready_tool_ids())
+            _print_routed(items, printer)
+            if prepared and server is not None:
+                await _run_remote(server, prepared, printer, state)
+            elif prepared:
+                await _run_jobs(prepared, printer, state)
+    failed = any(i.status in ("failed", "cancelled") or i.kept_source for i in items)
+    return EXIT_FAILED if failed else EXIT_OK
+
+
+async def _plan(items: list[Item], args, prefs: dict, ready: list[str]) -> tuple:
+    """Route, decide deletes and plan, with ``ready`` the tools that can run
+    where the jobs will. ``(items, prepared)``."""
+    from fastapi.concurrency import run_in_threadpool
+
     if args.auto:
         items = await _route_auto(items, args, prefs, ready)
     else:
         items = await run_in_threadpool(_route_to, items, args, prefs, ready)
     _decide_deletes(items, args)
-    prepared = await _prepare(items, args)
+    return items, await _prepare(items, args, ready)
 
+
+def _print_routed(items: list[Item], printer: Printer) -> None:
     for item in items:
         if item.status and item.status != "dropped":
             printer.line(item.convert_line())
-    if args.dry_run:
-        for _batch, planned in prepared:
-            for item in planned.values():
-                item.status = "planned"
-                printer.line(item.convert_line())
-    elif prepared:
-        async with _worker(args) as server:
-            if server is not None:
-                await _run_remote(server, prepared, printer, state)
-            else:
-                await _run_jobs(prepared, printer, state)
-    failed = any(i.status in ("failed", "cancelled") or i.kept_source for i in items)
-    return EXIT_FAILED if failed else EXIT_OK
 
 
 # --------------------------------------------------------------------------- #
