@@ -8762,11 +8762,12 @@ it on that Inbox's `_State.ready`, and the Inbox is polled at once
 (`_poll_now`, waiting out a poll already running, then
 `report.after_pass`). A poll treats an Image as settled when a marker names it,
 a folder above it, or one of its files (a sheet's track): only the settle wait
-is skipped. A folder's marker covers only what was last written by the time
-it was named (every file of the Image, a sheet and its tracks, by mtime
-against the marker's wall-clock time), so a download still being written
-there settles as usual; a matched sheet consumes only its own tracks'
-markers. `trigger.process` resolves the marker's path in the same bounded
+is skipped. Every marker covers only what was last written by the time it
+was named (every file of the Image, a sheet and its tracks, by mtime against
+the marker's wall-clock time), so a download still being written there, or a
+new one at a named path, settles as usual. A taken Image consumes its own
+markers (the file, its tracks), never another sheet's beside it; a folder's
+marker stays for the rest of the folder until it expires. `trigger.process` resolves the marker's path in the same bounded
 worker as the check (`_checked`) and hands it to `mark_ready(...,
 resolved=True)`, so nothing touches the disk on the event loop (PR #526). A held Image stays held, and only files the poll lists (no link,
 no `processed/`) are ever taken, so a marker can't reach anything intake

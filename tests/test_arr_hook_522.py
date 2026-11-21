@@ -400,3 +400,29 @@ async def test_taking_a_path_in_reads_no_folder_on_the_event_loop(vol, db, monke
 
     assert result["accepted"]
     assert on_loop == []
+
+
+@pytest.mark.asyncio
+async def test_a_file_replaced_after_its_marker_settles_as_usual(vol, db):
+    """Codex PR #526: the folder and the file were both named; once the file
+    is taken, a new download at the same name is not hurried by either."""
+    import os
+    import time
+
+    from services.inbox import intake
+
+    library = t431._library(vol)
+    box = t431._inbox(vol, library, settle=3600)
+    game = t431._drop(vol / "Downloads" / "ps2" / "Game.iso")
+    intake.mark_ready(box.id, str(vol / "Downloads" / "ps2"))
+    intake.mark_ready(box.id, str(game))
+    await t431._poll(box, now=0)
+    assert (vol / "ROMs" / "ps2" / "Game.iso").exists()
+    (vol / "ROMs" / "ps2" / "Game.iso").unlink()  # so only readiness decides
+
+    again = t431._drop(vol / "Downloads" / "ps2" / "Game.iso", b"a new download")
+    later = time.time() + 60
+    os.utime(again, (later, later))
+    await t431._poll(box, now=1)
+
+    assert again.exists()

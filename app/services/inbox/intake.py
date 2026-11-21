@@ -554,23 +554,26 @@ async def _is_ready(state: _State, path: str) -> bool:
     for marker, (at, _wall) in list(state.ready.items()):
         if now - at > READY_SECONDS:
             state.ready.pop(marker, None)
-    for marker, (_at, wall) in list(state.ready.items()):
-        if path.startswith(marker + os.sep):
-            # A folder: only what was finished in it when it was named.
-            if await _step(_written_by, path, wall):
-                return True
-            continue
-        if marker == path:
-            state.ready.pop(marker, None)
+    # A sheet's tracks are read only when a marker sits beside it.
+    beside = os.path.dirname(path) + os.sep
+    near = any(m.startswith(beside) and m != path for m in state.ready)
+    own = {path, *(await _step(_members, path) if near else ())}
+    # The markers that name this Image: a folder above it, the file itself,
+    # or one of its files (a sheet's track). Another sheet named beside it
+    # keeps its markers for its own turn (Codex PR #526).
+    naming = [
+        (marker, wall) for marker, (_at, wall) in state.ready.items()
+        if marker in own or path.startswith(marker + os.sep)
+    ]
+    for marker, wall in naming:
+        # Any marker covers only what was finished when it was named, so a
+        # new download at a named path still settles (Codex PR #526).
+        if await _step(_written_by, path, wall):
+            # Taken: its own markers go, so none can hurry a later file of
+            # the same name; a folder's stays for the rest of the folder.
+            for name in own:
+                state.ready.pop(name, None)
             return True
-    near = {m for m in state.ready if m.startswith(os.path.dirname(path) + os.sep)}
-    matched = near & set(await _step(_members, path)) if near else set()
-    if matched:
-        # Only this sheet's own tracks: another sheet named beside it keeps
-        # its markers for its own turn (Codex PR #526).
-        for marker in matched:
-            state.ready.pop(marker, None)
-        return True
     return False
 
 
