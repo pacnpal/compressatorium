@@ -85,7 +85,10 @@ Compressatorium can sync [MAME Redump](https://github.com/MetalSlug/MAMERedump) 
 - **Dolphin RVZ/WIA/GCZ**: Matched via the game image's content SHA1 reconstructed by `dolphin-tool verify` — the same hash MAME Redump records for GameCube/Wii discs — so compressed Dolphin outputs match without the container bytes having to be identical
 - **Everything else** (3DS/Switch/CSO·ZSO·DAX/`.iso`/`.bin`): Matched via file-level SHA1
 - **Library scan**: The background scan discovers and DAT-matches tool outputs by extension (CHD, Dolphin RVZ/WIA/GCZ, 3DS, Switch, CSO/ZSO, `.iso`, and the `.bin` data track from CHDMAN extract), not just CHDs, so non-CHD libraries get cached match results too. A single PS3-packed `.iso` is matched like any other `.iso`; a 4 GB split set is not, since its `.iso.0`/`.iso.1` parts aren't scanned extensions. Heavy Dolphin disc-hashing during the scan honors `MATCH_MAX_FILE_SIZE` and stops promptly if you cancel the scan.
-- **DAT management**: Import, list, and delete DATs via the web UI "DAT Files" button
+- **Sync Redump in one click**: **Sync Redump** in the DAT Library downloads Redump's DAT for each disc Platform in your Libraries (PlayStation, PS2, GameCube, Saturn, Dreamcast, Xbox and more), one request at a time. A system synced in the last day isn't asked again. DATs only: never keys, BIOS or games
+- **Import packs**: **Import DATs** takes several `.dat`/`.xml` files at once, and zips of them, such as No-Intro's daily pack (No-Intro's site can't be scripted, so download the pack there and drop the zip in). Re-importing a DAT replaces the older copy
+- **DAT management**: Import, list, reorder and delete DATs in the DAT Library
+- **From a shell**: `compressatorium dat import PATH...` and `compressatorium dat sync` (see [Command line](#command-line-compressatorium))
 - **Match badges**: Files matching a DAT entry show a blue "DAT" badge in the file list
 - **Wider coverage without curating DATs**: see [Hasheous Integration](#hasheous-integration-optional) to fall back on 14 preservation databases for anything your imported DATs don't recognise
 
@@ -2864,6 +2867,15 @@ of a run is moved to `processed/` by the next run. If what intake remembers
 between runs can't be saved, the pass is still reported and the run exits
 `1`.
 `--dry-run` polls no Inbox and says so (`skipped`, `dry_run`).
+
+**`dat import PATH...`** imports DATs: `.dat`/`.xml` files and `.zip` files of
+them (No-Intro's daily pack, a Redump zip). Each DAT replaces an earlier
+import of itself. **`dat sync [--platform SLUG]... [--force]`** downloads
+Redump's DATs for the disc Platforms in your Libraries (or just the ones
+named), skipping a system synced in the last day unless `--force`. Both print
+one line per DAT or system (`--json` for the whole result) and exit `1` when
+any was refused or failed. Both re-match the files a changed DAT may name
+(locally, as the server does) before they exit.
 
 Before it sweeps RomM, `run-rules` does the RomM upkeep the server does in the
 background: it finishes an identity cleanup a crash left owed (otherwise RomM

@@ -31,6 +31,35 @@ _HTTP_TIMEOUT = 30
 _MAX_DAT_SIZE = 100 * 1024 * 1024
 
 
+def save_capped(resp, dest: str, label: str, cap: int | None = None) -> None:
+    """Stream an HTTP response body into *dest*, refusing past *cap* bytes.
+
+    Checks ``Content-Length`` first, then counts the bytes actually read, so
+    a server that lies is caught mid-stream. Removes *dest* on any failure.
+    Shared by the MAMERedump and Redump syncs. Blocking.
+    """
+    cap = _MAX_DAT_SIZE if cap is None else cap
+    try:
+        cl = (resp.headers.get("Content-Length") or "").strip()
+        if cl.isdigit() and int(cl) > cap:
+            raise ValueError(f"DAT Content-Length {cl} bytes for {label} exceeds limit of {cap}")
+        written = 0
+        with open(dest, "wb") as fh:
+            while chunk := resp.read(65536):
+                written += len(chunk)
+                if written > cap:
+                    raise ValueError(
+                        f"DAT download for {label} exceeded size limit of {cap} bytes mid-stream"
+                    )
+                fh.write(chunk)
+    except BaseException:
+        try:
+            os.unlink(dest)
+        except OSError:
+            pass
+        raise
+
+
 class DATSyncService:
     """Fetches MAME Redump DAT files from GitHub and imports them."""
 
@@ -241,33 +270,9 @@ class DATSyncService:
         headers = {"User-Agent": "compressatorium-dat-sync/1.0"}
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # nosec B310
-            # Validate Content-Length before reading (if the header is present).
-            cl = resp.headers.get("Content-Length", "").strip()
-            if cl.isdigit() and int(cl) > _MAX_DAT_SIZE:
-                raise ValueError(
-                    f"DAT Content-Length {cl} bytes for {path} exceeds limit of {_MAX_DAT_SIZE}"
-                )
             fd, tmp_path = tempfile.mkstemp(suffix=".dat")
-            bytes_written = 0
-            try:
-                with os.fdopen(fd, "wb") as fh:
-                    while True:
-                        chunk = resp.read(65536)
-                        if not chunk:
-                            break
-                        bytes_written += len(chunk)
-                        if bytes_written > _MAX_DAT_SIZE:
-                            raise ValueError(
-                                f"DAT download for {path} exceeded size limit of"
-                                f" {_MAX_DAT_SIZE} bytes mid-stream"
-                            )
-                        fh.write(chunk)
-            except Exception:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
+            os.close(fd)
+            save_capped(resp, tmp_path, path)
         return tmp_path
 
     # ------------------------------------------------------------------

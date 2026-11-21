@@ -4,6 +4,26 @@
 
 ### Added
 
+- **DATs made easy** (#524). **Import DATs** takes several `.dat`/`.xml` files
+  at once, and zips of them: No-Intro's daily pack or a Redump zip imports
+  every DAT inside in one go. A zip is read under the same caps and member-name
+  rules as an archive an Inbox takes in, and each DAT is capped at 100 MB.
+  Re-importing a DAT replaces the older copy instead of doubling it. One bad
+  or unreadable DAT is reported and the rest still import. The whole upload
+  is capped at 1 GB while it arrives, and the 100 MB cap holds for a loose
+  DAT from the CLI too. A DAT imported from the CLI while the server is
+  matching makes it re-check what it was deciding.
+- **Sync Redump in one click** (#524). Downloads Redump's DAT for each disc
+  Platform in your Libraries, one request at a time, and leaves a system
+  synced in the last day alone. Only DATs: never keys, BIOS sets or games.
+  It asks over HTTPS only, with the certificate checked, so a DAT can't be
+  swapped on the way in; while redump.org answers only plain HTTP, each
+  system reports that it couldn't connect. A Redump DAT you replace by hand
+  is fetched again on the next sync. No-Intro stays upload-only, because its
+  site is gated.
+- **Online identification is a single yes/no** (#524). Until you answer, the
+  DAT Library asks once whether to look up unknown files on Hasheous.
+- **CLI:** `compressatorium dat import PATH...` and `compressatorium dat sync`.
 - **Sonarr, Radarr and ROMarr webhook, and "scan this path now"** (#522).
   `POST /api/hooks/arr` takes the *arr's Webhook connection: its Test answers
   ok, and each file an import names is taken in by the Inbox that holds it at

@@ -2026,6 +2026,16 @@ This is a payload field, not a schema change.
   unless its generation is the current one; `None` on either side never is. A
   local dict with no stamp makes no claim and is written as before.
 
+  The generation is two counters added together: the in-memory one above, and
+  a shared one in the database (the `preferences` row
+  `SHARED_GENERATION_KEY`, `dat_index_generation`) that each of those changes
+  moves inside its own transaction (`_bump_shared_generation`). The CLI's
+  `dat import` and `dat sync` run in their own process, with their own
+  in-memory counter, so only the shared one tells the server about them
+  (CodeRabbit on PR #527). Both only grow, so the sum moves when either does.
+  `index_generation()` reads the database (on the writer's own session at the
+  write boundary), so `_match_single_file()` calls it off the event loop.
+
   Remote verdicts take no part in the generation check, even while a change is
   in flight. A refused verdict goes to a *local-only* rematch, which cannot ask
   the remote source again, so refusing a remote hit for an unrelated import
@@ -8000,7 +8010,9 @@ without one (chunked) is cut off the moment it passes it. Nothing is spooled.
 `save_upload` writes the bytes into a hidden temp file in
 `<data dir>/patches/` and stops at the exact
 `CHD_PATCH_MAX_PATCH_SIZE` (413, nothing kept). Any other upload route that
-must hold a size limit can use `file_upload` the same way. The header must say IPS or
+must hold a size limit can use `file_upload` the same way, or
+`file_uploads` for a form of many files (one async iterator of them, the cap
+on the whole body; `POST /dat/import-batch` uses it). The header must say IPS or
 BPS. The file is kept as `<16 hex>-<safe name>`, the `upload_id`, so the
 Ledger's path stays valid; `POST /api/patch` accepts an `upload_id` only in
 that exact shape (no separator can appear) and reads it with `read_beneath`
@@ -10216,3 +10228,50 @@ match only) and this app's own `.compressatorium-stage` folder
 folder Library walk (which feeds sweeps, check Rules and the Platform walk) and
 the Switch key search all route through it. Add a new ignored name there, not in
 a caller.
+
+## DAT import and Redump sync (`services/dat_import.py`, #524)
+
+One path imports DATs for the batch upload (`POST /dat/import-batch`), the
+Redump sync (`POST /dat/redump/sync`) and the CLI (`dat import`, `dat sync`):
+
+- `import_files([(label, path)])` takes `.dat`/`.xml` files and `.zip` files
+  of them. `extract_dats` reads a zip under the Inbox gate
+  (`ArchiveService.check_inbox_source`: entries, declared sizes, links,
+  absolute and `..` paths, expansion ratio) and the extract path's name rules
+  (`member_segments`), counts the bytes it reads with `_UnpackBudget`, skips
+  `is_junk_path` members, and copies each DAT to `<n>.dat` in a private temp
+  folder, so a member name never reaches the disk. Any bad member refuses the
+  whole zip, and so does data that can't be read (corrupt deflate data,
+  `zlib.error`), never the rest of the batch (PR #527).
+- Each DAT is imported with `dat_store.import_dat(..., replace=True)`: an
+  earlier DAT with the same name and family is deleted in the same
+  transaction (its rank carries over). One rematch runs after the batch
+  (local-only, `routes.dat.rematch_after_dat_change`). The CLI has no server
+  to finish it later, so it waits for it (`routes.dat.wait_for_match_jobs`),
+  and `dat sync` reads RomM's saved settings (`romm_settings.load`) before it
+  asks which consoles are present (PR #527).
+- `sync_redump` maps Platform slugs (`REDUMP_SYSTEMS`) to Redump's systems,
+  asks `https://redump.org/datfile/<system>/` through `http.client` on the
+  fixed host (`HTTPSConnection` with `ssl.create_default_context()`, so the
+  certificate and host name are checked; never plain HTTP, whose answer could
+  be swapped on the way into the DAT index, Codex on PR #527; no redirect
+  followed, generic `USER_AGENT`), one system at a time with
+  `REQUEST_GAP_SECONDS` between requests, at most one sync at once. The cache
+  (preference `redump_sync`) skips a system synced within `FRESH_FOR` whose
+  DATs are still installed, sends `If-None-Match`/`If-Modified-Since` when it
+  has them, and skips re-importing an identical download (SHA-256). "Still
+  installed" is by DAT id (`dat_ids`), not name: a DAT of the same name and
+  family imported by hand replaces the synced one under a new id, and the
+  next sync then asks again, unconditionally, and re-imports (PR #527). The
+  answer's `changed` says some DAT went in, even for a system that failed
+  part-way; the UI refreshes on it.
+- A loose `.dat`/`.xml` over `MAX_DAT_SIZE` is refused before it is parsed,
+  for the CLI and Redump's bare-DAT answer as much as the upload, and a file
+  that can't be read (`OSError`, such as `PermissionError`) is that file's
+  error, never the batch's (PR #527).
+- `POST /dat/import-batch` reads its body with
+  `upload_stream.file_uploads`, the many-files form of `file_upload`: the
+  whole body is capped at `MAX_BATCH_SIZE` while it arrives (413 by its
+  `Content-Length`, or as it comes), and each file at its own cap as it is
+  written (PR #527).
+- `dat_sync.save_capped` is the capped download loop both syncs share.
