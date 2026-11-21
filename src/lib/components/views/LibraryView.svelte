@@ -265,7 +265,7 @@
         <RommBrowse />
       {:else if source}
         <Panel>
-          <LibraryBrowse {source} {library} />
+          {#key id}<LibraryBrowse {source} {library} />{/key}
         </Panel>
       {/if}
     </div>

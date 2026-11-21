@@ -37,7 +37,8 @@
     void source.platforms;
     if (!id || source.platformsLoading || source.platformsBusy) return;
     placementsLoad.load(id).then((answer) => {
-      if (!answer || answer.error) return;
+      // Only the Library still shown: another one opened meanwhile keeps its own.
+      if (!answer || answer.error || answer.id !== library?.id) return;
       folders = Object.fromEntries(answer.placements.map((row) => [row.id, row.folder]));
     });
   });
