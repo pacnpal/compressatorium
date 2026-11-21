@@ -56,3 +56,43 @@ export async function loadInfo(tools, path, entry) {
   const head = readFailed || !unavailable.length ? NO_TOOL_READ_NOTE : 'Showing the basics.';
   return { info: basics, fellBack: true, notes: [head, ...unavailable] };
 }
+
+// Short words a tool's info keys use that read as initials, not words.
+const INITIALS = new Set([
+  'cd', 'chd', 'cia', 'crc', 'crc32', 'cso', 'dat', 'dvd', 'gc', 'hd', 'id', 'iso',
+  'md5', 'nsp', 'nsz', 'ps3', 'rom', 'rvz', 'sha1', 'tmd', 'wbfs', 'wia', 'wud', 'wux',
+]);
+
+/** A tool's info key as a label: `hunk_size` -> "Hunk size", `game_id` -> "Game ID". */
+export function infoLabel(key) {
+  const words = String(key).split(/[_\s]+/).filter(Boolean)
+    .map((w) => (INITIALS.has(w.toLowerCase()) ? w.toUpperCase() : w.toLowerCase()));
+  if (!words.length) return String(key);
+  words[0] = words[0][0].toUpperCase() + words[0].slice(1);
+  return words.join(' ');
+}
+
+function isEmpty(v) {
+  return v == null || v === ''
+    || (Array.isArray(v) && v.length === 0)
+    || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);
+}
+
+/**
+ * Split a tool's info into what the modal shows: `rows`, the plain facts with
+ * readable labels, and `details`, a tool's raw output and nested data, kept
+ * behind a fold. Empty fields are dropped, and so is any field that only
+ * repeats the file's own *path* (the modal's heading names the file).
+ */
+export function infoRows(info, path = null) {
+  const rows = [];
+  const details = [];
+  if (!info || typeof info !== 'object') return { rows, details };
+  for (const [key, value] of Object.entries(info)) {
+    if (isEmpty(value) || (path && value === path)) continue;
+    const row = { key, label: infoLabel(key), value };
+    const raw = /^raw(_|$)/i.test(key) || typeof value === 'object';
+    (raw ? details : rows).push(row);
+  }
+  return { rows, details };
+}

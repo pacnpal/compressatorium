@@ -307,7 +307,10 @@ class FileBrowserStore {
       .filter((v) => v?.path && (path === v.path || path.startsWith(`${v.path.replace(/\/+$/, '')}/`)))
       .sort((a, b) => b.path.length - a.path.length)[0];
     if (holder) this.selectedVolume = holder;
-    ui.navigate('files');
+    // From another view, go to Files. Already there (Files opening a
+    // `#/files/<path>` link), push nothing: a second entry would make Back
+    // bounce between the link and `#/files`.
+    if (ui.activeView !== 'files') ui.navigate('files');
     await this.navigate(path);
   }
 

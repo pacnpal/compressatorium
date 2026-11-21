@@ -49,47 +49,25 @@ class JobsStore {
   tab = $state('queue');
   pageSize = $state(50);
   page = $state(1);
-  stuckState = $state(null);
   // The background scans (metadata, DAT match) stay out of Running for good:
   // they run as a side effect of browsing. History still records them.
   showExternalScanJobs = false;
 
-  // Finished jobs the backend's MAX_JOB_HISTORY cap has already evicted,
-  // keyed status → mode → count, plus the cap itself. The jobs list can
-  // never hold more than the cap, so every count derived from it alone
-  // freezes there ("Completed 500" while the queue is still draining
-  // thousands). Retained + evicted is the real number. Fed by the `history`
-  // SSE event and re-read on refresh(); see convert.py:event_generator.
-  historyOverflow = $state({});
-  historyLimit = $state(0);
-  // Sequence of the newest overflow state applied. The REST read in refresh()
-  // races the `history` stream, so without it a hydration response captured
-  // before a newer event could land after it and roll the totals backwards —
-  // and since the backend only re-emits on change, they'd stay wrong until the
-  // next poll. Every change to the tally (evictions and Clear alike) advances
-  // the sequence, so an older payload is always recognizable.
-  historySeq = -1;
-  // Which backend process the sequence belongs to. The sequence is in-memory
-  // and restarts at 0 with the backend, so without this a restart would make
-  // every payload from the new process look older than what we hold and the
-  // guard above would reject all of them — badges frozen for the rest of the
-  // session. A changed generation means: drop the cursor, trust the payload.
-  historyGeneration = null;
-
   cancellingAll = $state(false);
   clearingCompleted = $state(false);
-  recoveringStuck = $state(false);
   loading = $state(false);
 
   // index for O(1) lookup; not a $state because it's derived from this.jobs
   _byId = new SvelteMap();
-  // Eviction tombstones: ids the backend pruned from history after they
-  // finished, newest last, at most EVICTED_TOMBSTONES of them. An HTTP
+  // Tombstones: ids of finished jobs the backend no longer lists (cleared,
+  // or past the history cap), newest last, at most EVICTED_TOMBSTONES. An HTTP
   // response built before the prune (Auto's adopt) must not bring such a job
   // back as an unknown queued row. A plain id->true map, like refresh().
   _evictedIds = Object.create(null);
   _evictedOrder = [];
   _unsubscribe = null;
+  // True once the first /api/jobs snapshot has answered (or failed).
+  hydrated = $state(false);
   _pollTimer = null;
 
   get activeCount() {
@@ -108,53 +86,19 @@ class JobsStore {
     return this.jobs.reduce((n, j) => (j.status === 'processing' ? n + 1 : n), 0);
   }
 
-  /**
-   * Sum the evicted-history tally for `statuses`.
-   *
-   * `visibleOnly` applies the same external-scan filter the job list uses,
-   * so turning `Show metadata jobs` off doesn't leave pruned metadata scans
-   * silently inflating a tab badge. Locally hidden ids can't be honoured
-   * here — an evicted job no longer has a row to hide — so a job the user
-   * dismissed locally rejoins the total once the cap evicts it. That's a
-   * cosmetic edge on a count that was previously wrong by thousands.
-   */
-  _evictedCount(statuses, visibleOnly = false) {
-    let total = 0;
-    for (const status of statuses) {
-      const byMode = this.historyOverflow?.[status];
-      if (!byMode) continue;
-      for (const [mode, count] of Object.entries(byMode)) {
-        if (visibleOnly && !this.showExternalScanJobs && EXTERNAL_SCAN_MODES.has(mode)) continue;
-        total += count || 0;
-      }
-    }
-    return total;
-  }
-
-  // Terminal-status counts include jobs the history cap has evicted; the
-  // work happened, and the dashboard's Done / Failed tiles are totals for
-  // the run, not a measure of how much history we happen to be holding.
-  // Queued / processing counts need no such treatment: pruning only ever
-  // touches terminal jobs, so the live list is already complete.
+  // Counts of the jobs the list holds. The backend keeps the newest
+  // MAX_JOB_HISTORY finished jobs; the all-time totals are the Ledger's
+  // (`ledger.totals`, #533).
   get completedCount() {
-    return (
-      this.jobs.reduce((n, j) => (j.status === 'completed' ? n + 1 : n), 0)
-      + this._evictedCount(['completed'])
-    );
+    return this.jobs.reduce((n, j) => (j.status === 'completed' ? n + 1 : n), 0);
   }
 
   get failedCount() {
-    return (
-      this.jobs.reduce((n, j) => (j.status === 'failed' ? n + 1 : n), 0)
-      + this._evictedCount(['failed'])
-    );
+    return this.jobs.reduce((n, j) => (j.status === 'failed' ? n + 1 : n), 0);
   }
 
   get cancelledCount() {
-    return (
-      this.jobs.reduce((n, j) => (j.status === 'cancelled' ? n + 1 : n), 0)
-      + this._evictedCount(['cancelled'])
-    );
+    return this.jobs.reduce((n, j) => (j.status === 'cancelled' ? n + 1 : n), 0);
   }
 
   /**
@@ -189,17 +133,11 @@ class JobsStore {
   }
 
   get visibleCompletedCount() {
-    return (
-      this.jobs.reduce((n, j) => (this._matchesTabFilter(j, 'completed') ? n + 1 : n), 0)
-      + this._evictedCount(['completed'], true)
-    );
+    return this.jobs.reduce((n, j) => (this._matchesTabFilter(j, 'completed') ? n + 1 : n), 0);
   }
 
   get visibleFailedCount() {
-    return (
-      this.jobs.reduce((n, j) => (this._matchesTabFilter(j, 'failed') ? n + 1 : n), 0)
-      + this._evictedCount(['failed', 'cancelled'], true)
-    );
+    return this.jobs.reduce((n, j) => (this._matchesTabFilter(j, 'failed') ? n + 1 : n), 0);
   }
 
   /** Filter by current `tab` + external-scan toggle + locally hidden ids. */
@@ -231,23 +169,6 @@ class JobsStore {
       ...visible.filter((job) => job.status === 'processing'),
       ...visible.filter((job) => job.status !== 'processing'),
     ];
-  }
-
-  /** Rows the current tab can actually list — pagination spans these only. */
-  get retainedCount() {
-    return this.visibleJobs.length;
-  }
-
-  /**
-   * Jobs matching the current tab that the history cap has already evicted,
-   * i.e. counted in the tab badge but no longer listable. Non-zero only past
-   * the cap; the panel uses it to explain the gap rather than let the badge
-   * and the pager silently disagree.
-   */
-  get trimmedCount() {
-    if (this.tab === 'completed') return this._evictedCount(['completed'], true);
-    if (this.tab === 'failed') return this._evictedCount(['failed', 'cancelled'], true);
-    return 0;
   }
 
   get pageCount() {
@@ -319,18 +240,7 @@ class JobsStore {
     for (const job of jobs) this._byId.set(job.id, job);
   }
 
-  /**
-   * Absolute evicted-history totals from the backend
-   * ({evicted, max_job_history, evicted_ids}).
-   *
-   * `evicted_ids` (SSE only) names jobs the cap deleted since our last event.
-   * We must drop those rows before taking the new tally: a completion reaches
-   * us over SSE *before* the prune it triggers, so for a moment we hold a row
-   * the backend has already deleted, and counting it as retained *and* as
-   * evicted would inflate every badge — by one per completion for as long as
-   * a batch runs past the cap, until refresh()'s deletion reconcile caught up.
-   */
-  /** Record eviction tombstones, keeping the newest EVICTED_TOMBSTONES. */
+  /** Record tombstones, keeping the newest EVICTED_TOMBSTONES. */
   _rememberEvicted(ids) {
     for (const id of ids) {
       if (id == null || this._evictedIds[id]) continue;
@@ -341,43 +251,6 @@ class JobsStore {
     if (excess > 0) {
       for (const id of this._evictedOrder.splice(0, excess)) delete this._evictedIds[id];
     }
-  }
-
-  _applyHistoryOverflow(payload) {
-    if (!payload || typeof payload !== 'object') return;
-    // A new backend process restarts the sequence at 0, so the cursor from
-    // the old one is meaningless — adopt the new generation and take its
-    // payload as the baseline rather than comparing across processes.
-    const generation = payload.generation ?? null;
-    if (generation !== this.historyGeneration) {
-      this.historyGeneration = generation;
-      this.historySeq = -1;
-    }
-    // Drop payloads older than what we've already applied. Equal sequences
-    // carry equal counts (nothing changes the tally without advancing it), so
-    // re-applying those is a no-op rather than a regression.
-    const seq = payload.seq;
-    if (typeof seq === 'number') {
-      if (seq < this.historySeq) return;
-      this.historySeq = seq;
-    }
-    const evictedIds = payload.evicted_ids;
-    if (Array.isArray(evictedIds) && evictedIds.length > 0) {
-      // Plain object as an id→true map, matching refresh(): the svelte-eslint
-      // `prefer-svelte-reactivity` rule flags raw Set usage even for locals.
-      const gone = Object.create(null);
-      for (const id of evictedIds) gone[id] = true;
-      this._rememberEvicted(evictedIds);
-      this.jobs = this.jobs.filter((j) => {
-        if (gone[j.id]) {
-          this._byId.delete(j.id);
-          return false;
-        }
-        return true;
-      });
-    }
-    this.historyOverflow = payload.evicted ?? {};
-    this.historyLimit = payload.max_job_history ?? 0;
   }
 
   /**
@@ -400,13 +273,8 @@ class JobsStore {
    * page load, the SSE is already connected and the user can recover
    * by retrying any action.
    */
-  async refresh(isRetry = false) {
+  async refresh() {
     this.loading = true;
-    // Cursor captured before the job list is read, so the history read below
-    // can name anything evicted from here on. See the tail of this method.
-    const cursor = this.historySeq;
-    const cursorGeneration = this.historyGeneration;
-    let listSynced = false;
     // The jobs known before the request. Only these can be inferred evicted
     // when the snapshot lacks them: one SSE created (and maybe finished) while
     // the request was in flight is simply newer than the snapshot.
@@ -415,7 +283,6 @@ class JobsStore {
     try {
       const data = await api.getJobs();
       if (!Array.isArray(data)) return;
-      listSynced = true;
       // Plain object as a transient id→true map. The svelte-eslint
       // `prefer-svelte-reactivity` rule (when present) flags raw Set
       // usage even for non-reactive locals; an object lookup avoids
@@ -459,34 +326,8 @@ class JobsStore {
       console.error('Job snapshot hydration failed:', e);
     } finally {
       this.loading = false;
-    }
-    // Re-read the evicted-history totals. The `history` SSE event is the live
-    // path; this is the safety net for a client whose stream dropped a frame,
-    // reconnected across an outage, or was never open (poll-only).
-    //
-    // Deliberately AFTER the job list, and with the cursor captured BEFORE it:
-    // the two reads describe different moments, and a job evicted in between
-    // is both still in the list we just applied and inside these totals. The
-    // cursor makes the backend name it so we drop the row instead of counting
-    // it twice. Anything evicted before the list read is already absent from
-    // it, and counted here — the two reconcile exactly.
-    //
-    // Skipped when the list read failed: the halves are only coherent
-    // together, and advancing the cursor against a list we couldn't refresh
-    // would retire rows without taking their replacements. Leave both stale
-    // and let the next poll re-establish truth.
-    if (!listSynced) return;
-    try {
-      const overflow = await api.getJobHistoryOverflow(cursor, cursorGeneration);
-      this._applyHistoryOverflow(overflow);
-      // An expired cursor means the backend can't account for everything that
-      // happened since the list read — most often another client ran Clear in
-      // between, which deletes every finished job and drops the tombstones
-      // with them, so the rows we just took are already gone there. Read once
-      // more, now with a current cursor; that pass cannot expire again.
-      if (overflow?.cursor_expired && !isRetry) await this.refresh(true);
-    } catch (_e) {
-      // Non-fatal: the next poll or `history` event re-establishes truth.
+      // Answered (or failed): what runs is now as known as it will get.
+      this.hydrated = true;
     }
   }
 
@@ -635,24 +476,6 @@ class JobsStore {
     this.clearingCompleted = true;
     try {
       const res = await api.deleteCompletedJobs();
-      // Drop terminal jobs locally for instant feedback. The backend forgets
-      // its evicted-history tally on the same call, so drop ours too or the
-      // badges would keep counting jobs no list can show. Adopting the
-      // post-reset sequence rejects any history read still in flight from
-      // before the clear, which would otherwise restore the tally.
-      // Routed through the same path as any other payload rather than hand
-      // rolled, so it inherits both rules: an eviction applied from the stream
-      // after the reset but before this response arrived is not clobbered
-      // (the backend only re-emits on change, so that would stick), and a
-      // sequence from a different generation is adopted rather than compared —
-      // a backend restart mid-request returns a small one that would otherwise
-      // read as stale and leave the badges up after a Clear.
-      this._applyHistoryOverflow({
-        generation: res?.history_generation ?? this.historyGeneration,
-        seq: res?.history_seq,
-        evicted: {},
-        max_job_history: this.historyLimit,
-      });
       // Remove and tombstone exactly the jobs the backend says it deleted, not
       // the ones terminal here. Local status is a later moment than the one
       // the backend cleared at: a job that finished over SSE while this
@@ -670,26 +493,6 @@ class JobsStore {
       return res;
     } finally {
       this.clearingCompleted = false;
-    }
-  }
-
-  async checkStuck() {
-    try {
-      this.stuckState = await api.checkStuckStatus();
-    } catch (_e) {
-      this.stuckState = null;
-    }
-    return this.stuckState;
-  }
-
-  async recoverStuck() {
-    this.recoveringStuck = true;
-    try {
-      const res = await api.recoverStuckJobs();
-      await this.refresh();
-      return res;
-    } finally {
-      this.recoveringStuck = false;
     }
   }
 
@@ -726,16 +529,6 @@ class JobsStore {
             // Status pulses don't carry a job payload in some emit paths.
             if (data?.job) this._applyJob(data.job);
             break;
-          case 'history':
-            // Absolute totals, not deltas, so a missed frame or a reconnect
-            // self-heals on the next emission.
-            this._applyHistoryOverflow(data?.history);
-            // `cursor_expired` means the backend can no longer name every job
-            // it evicted since our cursor, so rows we hold may already be
-            // deleted there. The totals alone can't settle that — only the job
-            // list can, and refresh() is the authoritative read.
-            if (data?.history?.cursor_expired) this.refresh().catch(() => {});
-            break;
           default:
             break;
         }
@@ -743,12 +536,8 @@ class JobsStore {
       {
         onOpen: () => {
           ui.reportConnection('open');
-          // Reconcile rows against the backend on every (re)connect. A stream
-          // opens its history cursor at the current sequence, so its first
-          // frame cannot name jobs evicted while we were disconnected — we'd
-          // hold rows for jobs already deleted and count them again inside
-          // the totals. The snapshot read drops exactly those rows, and it
-          // re-reads the totals with a matching cursor.
+          // Reconcile rows against the backend on every (re)connect: jobs
+          // cleared or past the history cap while we were away go.
           this.refresh().catch(() => {});
           // Re-sync verified state on every SSE (re)connect. Terminal
           // job snapshots emitted at reconnect only carry the `job`

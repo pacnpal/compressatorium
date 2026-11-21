@@ -344,7 +344,7 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
-  .bv-group-status.done { color: var(--success); }
+  .bv-group-status.done { color: var(--success-text); }
 
   .bv-progress { display: flex; flex-direction: column; gap: var(--space-1); }
   .bv-progress-row { display: flex; justify-content: space-between; gap: var(--space-2); }

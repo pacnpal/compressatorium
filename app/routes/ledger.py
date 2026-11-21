@@ -106,6 +106,11 @@ async def ledger_recent(limit: int = Query(5, ge=1, le=100)) -> list[dict]:
     return await ledger.recent(limit)
 
 
+@router.get("/ledger/totals")
+async def ledger_totals() -> dict:
+    return await ledger.totals()
+
+
 @router.get("/ledger/savings")
 async def ledger_savings() -> dict:
     return await ledger.savings()

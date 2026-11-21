@@ -11,6 +11,8 @@
   import Spinner from '$lib/components/ui/Spinner.svelte';
 
   const ready = $derived(new Set(ui.visibleTools.map((t) => t.id)));
+  // Why each tool that can't run can't (#519), with the store's fallback text.
+  const reasons = $derived(new Map(ui.unavailableTools.map((t) => [t.id, t.reason])));
 
   // What a tool makes, in format names: its Make-smaller formats, else what it unpacks to.
   function makes(toolId) {
@@ -27,7 +29,7 @@
       label: tool.label,
       makes: makes(tool.id),
       ready: ready.has(tool.id),
-      reason: ui.toolReasons?.[tool.id] ?? '',
+      reason: reasons.get(tool.id) ?? '',
     })),
   );
 </script>

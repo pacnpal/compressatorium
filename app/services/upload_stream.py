@@ -108,15 +108,9 @@ async def _events(request: Request, boundary: bytes, body_cap: int | None):
         yield pending.popleft()
 
 
-async def file_upload(request: Request, *, field: str, max_bytes: int) -> FileUpload:
-    """The *field* file part of *request*, read as it arrives.
-
-    *max_bytes* of 0 (or less) sets no cap. Raises :class:`UploadRefused`:
-    413 for a body over the cap (by its ``Content-Length``, or as it comes),
-    400 for a body that isn't multipart or holds no *field* file. Any other
-    part is read past and dropped. Iterate ``chunks`` to the end (or close it)
-    to finish reading the body.
-    """
+def _open(request: Request, max_bytes: int):
+    """The body's parser events under the cap; refuses (413/400) before a
+    byte is read when the headers already say no."""
     body_cap = max_bytes + MULTIPART_OVERHEAD if max_bytes > 0 else None
     declared = _declared_length(request)
     if body_cap is not None and declared is not None and declared > body_cap:
@@ -125,8 +119,11 @@ async def file_upload(request: Request, *, field: str, max_bytes: int) -> FileUp
     boundary = options.get(b"boundary")
     if kind != b"multipart/form-data" or not boundary:
         raise UploadRefused(400, "Send the file as multipart/form-data")
+    return _events(request, boundary, body_cap)
 
-    events = _events(request, boundary, body_cap)
+
+async def _next_file(events, field: str) -> str | None:
+    """Read on to the next *field* file part's data; its name, or None at the end."""
     disposition = b""
     async for event in events:
         if event[0] == "begin":
@@ -136,20 +133,63 @@ async def file_upload(request: Request, *, field: str, max_bytes: int) -> FileUp
         elif event[0] == "headers":
             _kind, params = parse_options_header(disposition)
             if params.get(b"name") == field.encode() and b"filename" in params:
-                return FileUpload(_decode(params[b"filename"]), _part_data(events))
-    await events.aclose()
-    raise UploadRefused(400, f"The upload holds no {field!r} file")
+                return _decode(params[b"filename"])
+    return None
+
+
+async def _current_part(events) -> AsyncGenerator[bytes, None]:
+    """The current part's bytes, up to its end."""
+    async for event in events:
+        if event[0] == "end":
+            return
+        if event[0] == "data":
+            yield event[1]
+
+
+async def file_upload(request: Request, *, field: str, max_bytes: int) -> FileUpload:
+    """The *field* file part of *request*, read as it arrives.
+
+    *max_bytes* of 0 (or less) sets no cap. Raises :class:`UploadRefused`:
+    413 for a body over the cap (by its ``Content-Length``, or as it comes),
+    400 for a body that isn't multipart or holds no *field* file. Any other
+    part is read past and dropped. Iterate ``chunks`` to the end (or close it)
+    to finish reading the body.
+    """
+    events = _open(request, max_bytes)
+    filename = await _next_file(events, field)
+    if filename is None:
+        await events.aclose()
+        raise UploadRefused(400, f"The upload holds no {field!r} file")
+    return FileUpload(filename, _part_data(events))
+
+
+async def file_uploads(
+    request: Request, *, field: str, max_bytes: int,
+) -> AsyncGenerator[FileUpload, None]:
+    """Every *field* file part of *request*, in order, read as it arrives.
+
+    *max_bytes* caps the whole body (all the files together), as in
+    :func:`file_upload`, which raises the same :class:`UploadRefused`. Each
+    file's ``chunks`` is valid until the next file is asked for; what is left
+    unread of it is read past then (still under the cap). Other parts are
+    read past and dropped.
+    """
+    events = _open(request, max_bytes)
+    try:
+        while (filename := await _next_file(events, field)) is not None:
+            part = _current_part(events)
+            yield FileUpload(filename, part)
+            await part.aclose()
+    finally:
+        await events.aclose()
 
 
 async def _part_data(events) -> AsyncGenerator[bytes, None]:
     """The current part's bytes, up to its end; the rest of the body is then
     read through and dropped, so the parser sees it end cleanly."""
     try:
-        async for event in events:
-            if event[0] == "end":
-                break
-            if event[0] == "data":
-                yield event[1]
+        async for chunk in _current_part(events):
+            yield chunk
         async for _event in events:
             pass
     finally:

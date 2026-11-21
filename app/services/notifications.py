@@ -12,16 +12,21 @@ public surface at the bottom of this module and never touch a transport:
   Failures inside a sweep are listed in that one message, never sent one by one.
 
 Events are a shared registry (``register_event``) so a later ticket adds its
-own (check failed, for instance) without touching this module's logic.
+own (check failed, for instance) without touching this module's logic. Each
+destination gets only the events it chose (#523); one that never chose gets
+those registered ``default=True``. A generic webhook with a signing secret
+carries the raw body's HMAC-SHA256 in ``X-Compressatorium-Signature``.
 
-Destination URLs are secrets (a webhook token, a bot token inside an Apprise
-URL). They live in the ``notifications`` preference, are never returned by the
+Destination URLs and signing secrets are secrets (a webhook token, a bot token
+inside an Apprise URL). They live in the ``notifications`` preference, are never returned by the
 API, and never appear in a log line or an error message.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import http.client
 import importlib.util
 import json
@@ -50,6 +55,10 @@ PREF_KEY = "notifications"
 MAX_DESTINATIONS = 20
 MAX_URL_LEN = 2048
 MAX_LABEL_LEN = 60
+MAX_SECRET_LEN = 256
+# The generic webhook's HMAC-SHA256 of the raw body, when its destination has a
+# signing secret (#523): ``sha256=<hex>``.
+SIGNATURE_HEADER = "X-Compressatorium-Signature"
 # A destination that hangs is abandoned after this long; the job never waits.
 SEND_TIMEOUT_S = 10.0
 MAX_LISTED_FAILURES = 20
@@ -61,20 +70,27 @@ MAX_ERROR_LEN = 300
 # events
 # ----------------------------------------------------------------------
 
-# key -> what the user sees in Settings. Later tickets add theirs here.
-_EVENTS: dict[str, str] = {}
+# key -> (what the user sees in Settings, whether a destination that never
+# chose its events gets it). Later tickets add theirs here.
+_EVENTS: dict[str, tuple[str, bool]] = {}
 
 
-def register_event(key: str, title: str) -> None:
-    _EVENTS[key] = title
+def register_event(key: str, title: str, *, default: bool = True) -> None:
+    _EVENTS[key] = (title, default)
 
 
-def event_list() -> list[dict[str, str]]:
-    return [{"key": k, "title": t} for k, t in _EVENTS.items()]
+def event_list() -> list[dict]:
+    return [{"key": k, "title": t, "default": d} for k, (t, d) in _EVENTS.items()]
+
+
+def _default_events() -> list[str]:
+    return [k for k, (_, d) in _EVENTS.items() if d]
 
 
 register_event("sweep_finished", "A sweep finished (one message with counts and space saved)")
 register_event("job_failed", "A job you started failed")
+# Off unless chosen (#523): one message per job, so a batch sends one each.
+register_event("job_succeeded", "A job you started finished", default=False)
 register_event("rename_finished", "A rename to DAT names finished (one message with counts)")
 register_event(
     "inbox_pass", "An Inbox pass placed Images or left some with a Finding (one message)",
@@ -187,20 +203,28 @@ def discord_payload(event: Event) -> dict:
     }
 
 
-def _send_webhook(url: str, event: Event) -> None:
-    _post_json(url, generic_payload(event))
+def _send_webhook(url: str, event: Event, secret: str | None = None) -> None:
+    _post_json(url, generic_payload(event), secret)
 
 
 def _send_discord(url: str, event: Event) -> None:
     _post_json(url, discord_payload(event))
 
 
-def _post_json(url: str, body: dict) -> None:
+def _post_json(url: str, body: dict, secret: str | None = None) -> None:
     """POST *body* as JSON under one overall deadline. The one HTTP send path of
-    every webhook kind: only the payload differs between them."""
+    every webhook kind: only the payload differs between them. With *secret*,
+    the raw body's HMAC-SHA256 goes in ``SIGNATURE_HEADER`` (#523)."""
     _check_http_url(url)
     parts = urlparse.urlsplit(url)
     payload = json.dumps(body).encode()
+    headers = {
+        "Content-Type": "application/json", "User-Agent": "compressatorium",
+        "Host": parts.netloc.rsplit("@", 1)[-1],
+    }
+    if secret:
+        digest = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+        headers[SIGNATURE_HEADER] = f"sha256={digest}"
     target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
     # http.client, not urlopen: the scheme is fixed to http/https by the check
     # above, redirects are never followed, and the whole exchange gets one
@@ -222,10 +246,7 @@ def _post_json(url: str, body: dict) -> None:
     timer.daemon = True
     timer.start()
     try:
-        conn.request("POST", target, body=payload, headers={
-            "Content-Type": "application/json", "User-Agent": "compressatorium",
-            "Host": parts.netloc.rsplit("@", 1)[-1],
-        })
+        conn.request("POST", target, body=payload, headers=headers)
         response = conn.getresponse()
         # Only the status matters, so the body is never read: after a
         # `Connection: close` response http.client detaches the socket from
@@ -320,28 +341,29 @@ class Kind:
     key: str
     label: str
     placeholder: str
-    send: Callable[[str, Event], None]
+    send: Callable[..., None]  # (url, event), plus the secret when it `signs`
     check: Callable[[str], None]  # raises NotificationError (run on save and on Test)
     hint: Callable[[str], str]  # what may be shown of a saved URL: never the secret
+    signs: bool = False  # takes an optional HMAC signing secret (#523)
 
 
 _KINDS: dict[str, Kind] = {k.key: k for k in (
     Kind("webhook", "Webhook (generic JSON)", "https://example.com/hook",
-         _send_webhook, _check_http_url, _host_hint),
+         _send_webhook, _check_http_url, _host_hint, signs=True),
     Kind("discord", "Discord webhook", "https://discord.com/api/webhooks/<id>/<token>",
          _send_discord, _check_https_url, _host_hint),
     Kind("apprise", "Apprise", "discord://webhook-id/token",
          _send_apprise, _check_apprise_url, _scheme_hint),
 )}
 KINDS = tuple(_KINDS)
-TRANSPORTS: dict[str, Callable[[str, Event], None]] = {k: v.send for k, v in _KINDS.items()}
+TRANSPORTS: dict[str, Callable[..., None]] ={k: v.send for k, v in _KINDS.items()}
 
 
 def kind_list() -> list[dict]:
     """The picker's rows, for Settings."""
     return [
         {"value": k.key, "label": k.label, "placeholder": k.placeholder,
-         "available": k.key != "apprise" or apprise_available()}
+         "available": k.key != "apprise" or apprise_available(), "signs": k.signs}
         for k in _KINDS.values()
     ]
 
@@ -355,8 +377,13 @@ def kind_list() -> list[dict]:
 _in_flight: set[str] = set()
 
 
-async def _send_one(kind: str, url: str, event: Event, slot: str | None = None) -> None:
+async def _send_one(
+    kind: str, url: str, event: Event, slot: str | None = None, secret: str | None = None,
+) -> None:
     """Send *event* through one transport, bounded by SEND_TIMEOUT_S. Raises.
+
+    *secret* (a signing kind's, #523) is passed only when set, so an unsigned
+    destination calls its transport exactly as ``send(url, event)``.
 
     *slot* names a saved destination: while its previous send's thread is still
     running (it outlived the timeout), a new send to it is refused rather than
@@ -369,7 +396,7 @@ async def _send_one(kind: str, url: str, event: Event, slot: str | None = None) 
 
     def run() -> None:
         try:
-            TRANSPORTS[kind](url, event)
+            TRANSPORTS[kind](url, event, *([secret] if secret else []))
         finally:
             # Released when the thread really ends, not when we stop waiting.
             if slot is not None:
@@ -431,12 +458,36 @@ def _hint(dest: dict) -> str:
     return kind.hint(dest.get("url", "")) if kind else ""
 
 
+def _events_of(dest: dict) -> list[str]:
+    """The events *dest* gets: its own choice, or the defaults if it never chose."""
+    chosen = dest.get("events")
+    return [k for k in chosen if k in _EVENTS] if isinstance(chosen, list) else _default_events()
+
+
 def public_view(dest: dict) -> dict:
-    """What the browser may see. Never the URL."""
+    """What the browser may see. Never the URL or the signing secret."""
     return {
         "id": dest["id"], "kind": dest["kind"],
         "label": dest.get("label") or _hint(dest), "hint": _hint(dest),
+        "events": _events_of(dest), "signed": bool(dest.get("secret")),
     }
+
+
+def _clean_events(events: list[str]) -> list[str]:
+    unknown = [e for e in events if e not in _EVENTS]
+    if unknown:
+        raise NotificationError(f"Unknown event: {unknown[0][:40]}")
+    return list(dict.fromkeys(events))
+
+
+def _clean_secret(kind: str, secret: str) -> str:
+    """*secret* stripped, or NotificationError: only a signing kind takes one."""
+    secret = secret.strip()
+    if secret and not _KINDS[kind].signs:
+        raise NotificationError("Only a generic webhook can have a signing secret")
+    if len(secret) > MAX_SECRET_LEN:
+        raise NotificationError(f"The signing secret is longer than {MAX_SECRET_LEN} characters")
+    return secret
 
 
 def validate(kind: str, url: str) -> str:
@@ -458,19 +509,32 @@ async def list_destinations() -> list[dict]:
     return [public_view(d) for d in await _load()]
 
 
-async def add_destination(kind: str, url: str, label: str | None) -> dict:
+async def add_destination(
+    kind: str, url: str, label: str | None,
+    events: list[str] | None = None, secret: str | None = None,
+) -> dict:
+    """Save a destination. *events* None means the defaults, now and as events
+    are added; *secret* signs a generic webhook's body (#523)."""
     url = validate(kind, url)
+    dest = {"id": uuid.uuid4().hex[:8], "kind": kind, "url": url, "label": _clean_label(label)}
+    if events is not None:
+        dest["events"] = _clean_events(events)
+    secret = _clean_secret(kind, secret or "")
+    if secret:
+        dest["secret"] = secret
     async with _store_lock:
         dests = await _load()
         if len(dests) >= MAX_DESTINATIONS:
             raise NotificationError(f"At most {MAX_DESTINATIONS} destinations")
-        dest = {"id": uuid.uuid4().hex[:8], "kind": kind, "url": url,
-                "label": _clean_label(label)}
         await _save(dests + [dest])
     return public_view(dest)
 
 
-async def update_destination(dest_id: str, url: str | None, label: str | None) -> dict | None:
+async def update_destination(
+    dest_id: str, url: str | None, label: str | None,
+    events: list[str] | None = None, secret: str | None = None,
+) -> dict | None:
+    """Change a destination. None keeps a field; a *secret* of "" stops signing."""
     async with _store_lock:
         dests = await _load()
         for dest in dests:
@@ -479,6 +543,12 @@ async def update_destination(dest_id: str, url: str | None, label: str | None) -
                     dest["url"] = validate(dest["kind"], url)
                 if label is not None:
                     dest["label"] = _clean_label(label)
+                if events is not None:
+                    dest["events"] = _clean_events(events)
+                if secret is not None:
+                    dest["secret"] = _clean_secret(dest["kind"], secret)
+                    if not dest["secret"]:
+                        del dest["secret"]
                 await _save(dests)
                 return public_view(dest)
     return None
@@ -497,18 +567,21 @@ async def remove_destination(dest_id: str) -> bool:
 
 async def test_destination(
     dest_id: str | None = None, kind: str | None = None, url: str | None = None,
+    secret: str | None = None,
 ) -> dict | None:
-    """Send a test message. ``{"ok", "error"}``, or None for an unknown saved id."""
+    """Send a test message, whatever events the destination chose, signed as its
+    real messages are. ``{"ok", "error"}``, or None for an unknown saved id."""
     if dest_id is not None:
         dest = next((d for d in await _load() if d["id"] == dest_id), None)
         if dest is None:
             return None
-        kind, url = dest["kind"], dest["url"]
+        kind, url, secret = dest["kind"], dest["url"], dest.get("secret")
     event = Event("test", "Compressatorium test message",
                   "If you can read this, notifications are working.")
     try:
         url = validate(kind or "", url or "")
-        await _send_one(kind, url, event)
+        secret = _clean_secret(kind, secret or "")
+        await _send_one(kind, url, event, secret=secret)
     except NotificationError as exc:
         return {"ok": False, "error": _redact(str(exc), url)}
     return {"ok": True, "error": None}
@@ -575,7 +648,8 @@ async def _dispatch() -> None:
             done.set_result(None)
             continue
         # No await between these: each destination's queue gets events in order.
-        waits = [_enqueue(d["id"], event) for d in dests]
+        # Only to the destinations that chose this event (#523).
+        waits = [_enqueue(d["id"], event) for d in dests if event.kind in _events_of(d)]
         if waits:
             _spawn(_resolve(waits, done))
         else:
@@ -637,7 +711,10 @@ async def _drain_destination(slot: str) -> None:
                 dest = next((d for d in await _load() if d["id"] == slot), None)
                 if dest is not None:
                     try:
-                        await _send_one(dest["kind"], dest["url"], event, slot=slot)
+                        await _send_one(
+                            dest["kind"], dest["url"], event, slot=slot,
+                            secret=dest.get("secret"),
+                        )
                     except NotificationError as exc:  # every send failure arrives as one
                         _log_failure(dest, event, exc)
             except Exception:
@@ -726,6 +803,15 @@ def _short(text: str | None) -> str:
 
 def _file(job: ConversionJob) -> str:
     return job.filename or os.path.basename(job.file_path or "") or job.id
+
+
+def job_succeeded_event(job: ConversionJob) -> Event:
+    mode = getattr(job.mode, "value", str(job.mode))
+    saved = ledger.job_saved_bytes(job)
+    return Event(
+        "job_succeeded", f"Job finished: {_file(job)}", f"{mode}: {_fmt_bytes(saved)} saved",
+        {"job_id": job.id, "filename": _file(job), "mode": mode, "saved_bytes": saved},
+    )
 
 
 def job_failed_event(job: ConversionJob) -> Event:
@@ -922,6 +1008,8 @@ async def on_job_finished(job: ConversionJob) -> None:
         _maybe_send(sweep)
     elif job.status == JobStatus.FAILED and _started_by_hand(job):
         notify(job_failed_event(job))
+    elif job.status == JobStatus.COMPLETED and _started_by_hand(job):
+        notify(job_succeeded_event(job))
 
 
 def _started_by_hand(job: ConversionJob) -> bool:

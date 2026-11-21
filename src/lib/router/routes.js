@@ -28,16 +28,16 @@ export const SETTINGS_SECTIONS = Object.freeze([
 
 export const DEFAULT_HASH = '#/files';
 
-// The old views, each to its new home. A function gets the rest of the path.
-const LEGACY = Object.freeze({
-  workspace: () => '#/files',
-  dashboard: () => '#/activity',
-  romm: () => '#/libraries/romm',
-  rules: ([id]) => (id ? `#/libraries/${encodeURIComponent(decode(id))}/automation` : '#/libraries'),
-  findings: () => '#/activity/attention',
-  ledger: () => '#/activity/history',
-  dat: () => '#/settings/identification',
-});
+// The old views with a fixed new home. `rules` keeps its Library id, so
+// `legacyRedirect` handles it on its own.
+const LEGACY = new Map([
+  ['workspace', '#/files'],
+  ['dashboard', '#/activity'],
+  ['romm', '#/libraries/romm'],
+  ['findings', '#/activity/attention'],
+  ['ledger', '#/activity/history'],
+  ['dat', '#/settings/identification'],
+]);
 
 function decode(segment) {
   try {
@@ -61,8 +61,11 @@ export function legacyRedirect(hash) {
   const [view, ...rest] = segments(hash);
   if (!view) return DEFAULT_HASH;
   if (VIEWS.includes(view)) return null;
-  const to = LEGACY[view];
-  return to ? to(rest) : DEFAULT_HASH;
+  if (view === 'rules') {
+    if (!rest[0]) return '#/libraries';
+    return `#/libraries/${encodeURIComponent(decode(rest[0]))}/automation`;
+  }
+  return LEGACY.get(view) ?? DEFAULT_HASH;
 }
 
 /**

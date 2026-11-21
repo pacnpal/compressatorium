@@ -38,6 +38,10 @@ class FindingsStore {
   duplicateRuns = $state([]);
   showDismissed = $state(false);
   loading = $state(false);
+  // How many reads have written the list (success or failure). A read a newer
+  // one superseded doesn't count, so a caller waiting for "a read since X"
+  // gets the authoritative one.
+  reads = $state(0);
 
   /** How many problems are open (not ignored): the sidebar's Activity badge. */
   get openCount() {
@@ -95,6 +99,7 @@ class FindingsStore {
       if (request === this.#request) this.error = e?.message ?? 'Failed to list the Findings';
     } finally {
       if (request === this.#request) this.loading = false;
+      if (request === this.#request) this.reads += 1;
     }
     return this.list;
   }

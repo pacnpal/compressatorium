@@ -64,11 +64,14 @@ const values = (opts) => convertTargets(opts).flatMap((g) => g.options.map((o) =
 process.stdout.write(JSON.stringify({
   cue: values({ entries: [{ type: 'file', path: '/v/Game.cue' }] }),
   chd: values({ entries: [{ type: 'file', path: '/v/Game.chd' }] }),
-  ps3: values({ entries: [{ type: 'directory', path: '/v/BLUS', convertible_by: ['makeps3iso'] }] }),
+  ps3: values({ entries: [
+    { type: 'directory', path: '/v/BLUS', convertible_by: ['makeps3iso'] },
+  ] }),
   folder: values({ entries: [{ type: 'directory', path: '/v/stuff', convertible_by: [] }] }),
   console: values({ modeIds: ['createcd', 'cso_compress'] }),
   ready: values({ ready: ['dolphin'] }),
-  member: values({ entries: [{ type: 'file', path: '/v/a.zip::Game.gba' }] }),
+  member: values({ entries: [{ type: 'file', path: '/v/a.zip::Game.cue' }] }),
+  romInZip: values({ entries: [{ type: 'file', path: '/v/a.zip::Game.gba' }] }),
 }));
 """)
     assert ".chd" in got["cue"] and "extractcd" not in got["cue"]
@@ -77,12 +80,36 @@ process.stdout.write(JSON.stringify({
     assert got["folder"] == [""]
     assert set(got["console"]) == {"", ".chd", ".cso"}
     assert set(got["ready"]) == {"", ".rvz", ".wia", ".gcz", "dolphin_iso"}
-    assert ".7z" in got["member"]
+    # A disc inside a zip converts straight from it; a ROM inside one doesn't.
+    assert ".chd" in got["member"]
+    assert got["romInZip"] == [""]
+
+
+def test_entries_a_mode_cannot_read_are_not_offered(tmp_path):
+    """CodeRabbit 4651507824 and 4651507825: a CHD inside a zip is not offered
+    to Copy (no archive input), and a content-refined tool (Xbox) is offered
+    only where the backend's probe claimed the file."""
+    got = _targets(tmp_path, """
+const values = (opts) => convertTargets({ perMode: true, ...opts })
+  .flatMap((g) => g.options.map((o) => o.value));
+process.stdout.write(JSON.stringify({
+  zipped: values({ entries: [{ type: 'file', path: '/v/a.zip::Game.chd' }] }),
+  plain: values({ entries: [{ type: 'file', path: '/v/Game.chd' }] }),
+  ps2: values({ entries: [{ type: 'file', path: '/v/PS2.iso', convertible_by: ['chdman'] }] }),
+  xbox: values({ entries: [{ type: 'file', path: '/v/Halo.iso', convertible_by: ['xiso'] }] }),
+  unknown: values({ entries: [{ type: 'file', path: '/v/Game.iso' }] }),
+}));
+""")
+    assert "copy" not in got["zipped"] and "copy" in got["plain"]
+    assert "xiso_rewrite" not in got["ps2"] and "createdvd" in got["ps2"]
+    assert "xiso_rewrite" in got["xbox"]
+    assert "xiso_rewrite" in got["unknown"], "no claims: the extension decides"
 
 
 def test_target_label(tmp_path):
     got = _targets(tmp_path, """
-process.stdout.write(JSON.stringify(['', '.chd', '.xiso.iso', 'extractcd', 'dolphin_rvz'].map(targetLabel)));
+const values = ['', '.chd', '.xiso.iso', 'extractcd', 'dolphin_rvz'];
+process.stdout.write(JSON.stringify(values.map(targetLabel)));
 """)
     assert got == ["Best format for each game", "CHD", "XISO", "BIN/CUE from CHD", "Dolphin RVZ"]
 
@@ -94,7 +121,9 @@ def _safety(tmp_path, body):
     script = tmp_path / "safety_eval.mjs"
     mod = (_SRC / "util" / "safetyOptions.js").as_uri()
     script.write_text(f"import * as s from {json.dumps(mod)};\n{body}", encoding="utf-8")
-    proc = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30, check=False)
+    proc = subprocess.run(
+        [node, str(script)], capture_output=True, text=True, timeout=30, check=False,
+    )
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
 
@@ -102,7 +131,9 @@ def _safety(tmp_path, body):
 def test_the_safety_controls_follow_the_modes(tmp_path):
     got = _safety(tmp_path, """
 const chd = { supportsDeleteOnVerify: true, supportsRoundTrip: true };
-const zar = { supportsDeleteOnVerify: false, sourceKeptReason: 'a ZAR holds files, not the disc', games: 2 };
+const zar = {
+  supportsDeleteOnVerify: false, sourceKeptReason: 'a ZAR holds files, not the disc', games: 2,
+};
 const required = { supportsDeleteOnVerify: true, supportsRoundTrip: true, roundTripRequired: true };
 const extract = { supportsDeleteOnVerify: false };
 process.stdout.write(JSON.stringify({
@@ -111,12 +142,17 @@ process.stdout.write(JSON.stringify({
   mixed: s.safetyControls([chd, zar], { deleteOriginal: true }),
   required: s.safetyControls([required], { deleteOriginal: true }),
   extract: s.safetyControls([extract]),
-  on: s.applySafety({ checkAfter: false, deleteOriginal: false, quickCheck: false }, { deleteOriginal: true }),
-  off: s.applySafety({ checkAfter: true, deleteOriginal: true, quickCheck: true }, { deleteOriginal: false }),
+  on: s.applySafety(
+    { checkAfter: false, deleteOriginal: false, quickCheck: false }, { deleteOriginal: true },
+  ),
+  off: s.applySafety(
+    { checkAfter: true, deleteOriginal: true, quickCheck: true }, { deleteOriginal: false },
+  ),
 }));
 """)
     assert got["chd_off"] == {
-        "showCheck": True, "showDelete": True, "kept": None, "showQuick": False, "checkLocked": False,
+        "showCheck": True, "showDelete": True, "kept": None, "showQuick": False,
+        "checkLocked": False,
     }
     assert got["chd_on"]["showQuick"] is True and got["chd_on"]["checkLocked"] is True
     assert got["mixed"]["kept"] == {"games": 2, "reason": "a ZAR holds files, not the disc"}
@@ -124,6 +160,27 @@ process.stdout.write(JSON.stringify({
     assert got["extract"]["showCheck"] is False and got["extract"]["showDelete"] is False
     assert got["on"] == {"checkAfter": True, "deleteOriginal": True, "quickCheck": False}
     assert got["off"] == {"checkAfter": True, "deleteOriginal": False, "quickCheck": False}
+
+
+def test_the_mode_list_keeps_to_a_romm_platforms_formats():
+    """Codex 4651687770: on a RomM platform the shared Convert-to list offered
+    every ready tool (CHDMAN Create DVD on GameCube). While the panel shows a
+    RomM catalog it is narrowed to that platform's tool_ids and mode_ids."""
+    src = (_SRC / "components" / "panels" / "ModeSelect.svelte").read_text(encoding="utf-8")
+    assert "fileBrowser.rommPlatformId === null" in src
+    assert "romm.platforms.find((p) => p.id === fileBrowser.rommPlatformId)" in src
+    assert "modeIds: platform?.mode_ids ?? null" in src
+    assert "toolIds: platform?.tool_ids ?? null" in src
+
+
+def test_narrowing_to_a_gamecube_platform(tmp_path):
+    got = _targets(tmp_path, """
+const values = convertTargets({
+  perMode: true, toolIds: ['dolphin'], modeIds: ['dolphin_rvz', 'dolphin_iso'],
+}).flatMap((g) => g.options.map((o) => o.value));
+process.stdout.write(JSON.stringify(values));
+""")
+    assert got == ["", "dolphin_rvz", "dolphin_iso"]
 
 
 def test_mode_select_lists_every_ready_tools_formats():

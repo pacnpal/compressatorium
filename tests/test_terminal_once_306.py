@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 import pytest
 
 from models import ConversionJob, ConversionMode, JobStatus
-from services.concurrency_manager import concurrency_manager
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
 
@@ -43,7 +42,6 @@ def _job(tmp_path, job_id, *, mode=ConversionMode.DOLPHIN_RVZ):
 
 def _cleanup(job):
     lock_manager.release_lock(job.output_path)
-    concurrency_manager.release(job.id)
     job_manager.jobs.pop(job.id, None)
     job_manager._cancel_events.pop(job.id, None)
     job_manager._cancelled.discard(job.id)

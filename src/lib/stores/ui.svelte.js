@@ -17,6 +17,12 @@ import { VIEW_TITLES, legacyRedirect, parseHash, hashFor } from '$lib/router/rou
 
 export { VIEW_TITLES };
 
+// *value* when *route* is on *view*, else null: a part of another view's
+// route never lingers in this one's fields.
+function routePart(route, view, value) {
+  return route.view === view ? value : null;
+}
+
 class UIStore {
   // Routing: one field per part of the route (src/lib/router/routes.js).
   activeView = $state('files');
@@ -36,6 +42,8 @@ class UIStore {
   hiddenTools = $state(new Set());
   // True once the first /api/tools answer (or its failure) has been applied.
   toolsKnown = $state(false);
+  // Tool id -> why it can't run, with the fix (#515). Shown, never hidden.
+  toolReasons = $state({});
 
   // Layout
   sidebarCollapsed = $state(readBool(STORAGE_KEYS.SIDEBAR_COLLAPSED, false));
@@ -78,6 +86,14 @@ class UIStore {
   get visibleTools() {
     if (!this.toolsKnown) return [];
     return registry.all().filter((t) => !this.hiddenTools.has(t.id));
+  }
+
+  /** The tools that can't run here, each with the backend's reason (#515). */
+  get unavailableTools() {
+    if (!this.toolsKnown) return [];
+    return registry.all()
+      .filter((t) => this.hiddenTools.has(t.id))
+      .map((t) => ({ ...t, reason: this.toolReasons[t.id] ?? `${t.label} isn't ready here.` }));
   }
 
   /**
@@ -142,26 +158,27 @@ class UIStore {
   applyHash(hash) {
     const route = parseHash(legacyRedirect(hash) ?? hash);
     this.activeView = route.view;
-    const at = (view, value) => (route.view === view ? value : null);
-    this.libraryTarget = at('libraries', route.id);
-    this.libraryTab = at('libraries', route.tab);
-    this.activityTab = at('activity', route.tab);
-    this.activityLibrary = at('activity', route.id);
-    this.filesPath = at('files', route.path);
-    this.settingsSection = at('settings', route.tab);
+    this.libraryTarget = routePart(route, 'libraries', route.id);
+    this.libraryTab = routePart(route, 'libraries', route.tab);
+    this.activityTab = routePart(route, 'activity', route.tab);
+    this.activityLibrary = routePart(route, 'activity', route.id);
+    this.filesPath = routePart(route, 'files', route.path);
+    this.settingsSection = routePart(route, 'settings', route.tab);
     this.focusBump++;
   }
 
   /**
    * Apply the backend's tool-availability report (from GET /api/tools).
-   * Hides tools the backend can't run (e.g. Switch without prod.keys).
-   * Passing nothing (the fetch failed) shows every tool. Either way the list
-   * is now known.
+   * Keeps tools the backend can't run (e.g. Switch without prod.keys) out of
+   * the working list, with their reasons for `unavailableTools`. Passing
+   * nothing (the fetch failed) shows every tool. Either way the list is now
+   * known.
    */
-  applyToolAvailability(available) {
+  applyToolAvailability(available, reasons = {}) {
     const ids = registry.ids();
     const allow = new Set(available ?? [...ids]);
     this.hiddenTools = new Set([...ids].filter((id) => !allow.has(id)));
+    this.toolReasons = reasons ?? {};
     this.toolsKnown = true;
   }
 

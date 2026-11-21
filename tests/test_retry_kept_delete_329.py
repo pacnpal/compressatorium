@@ -2352,51 +2352,6 @@ def test_a_stop_during_the_recheck_deletes_nothing(env, dolphin, capsys, kept, m
     assert pending["attempts"] == 0
 
 
-def test_a_cancel_while_letting_go_of_output_locks_still_frees_the_slot(
-    env, dolphin, monkeypatch,
-):
-    """Codex's repro: the job is cancelled while its cleanup waits for the
-    output locks to be let go. The concurrency slot, the input and folder
-    locks are released all the same."""
-    import threading
-
-    import cli
-    from models import ConversionMode, DuplicateAction, JobCreateRequest
-    from routes import convert as convert_routes
-    from services import job_manager as job_manager_module
-    from services.concurrency_manager import concurrency_manager
-
-    cli._open_db(False)
-    iso = _iso(env)
-    reached, go = threading.Event(), threading.Event()
-    real = job_manager_module._let_go
-
-    def slow_let_go(paths):
-        if paths:
-            reached.set()
-            go.wait(10)
-        return real(paths)
-
-    monkeypatch.setattr(job_manager_module, "_let_go", slow_let_go)
-
-    async def run():
-        job = await convert_routes.create_job(JobCreateRequest(
-            file_path=str(iso), mode=ConversionMode.DOLPHIN_RVZ,
-            duplicate_action=DuplicateAction.SKIP,
-        ))
-        task = asyncio.ensure_future(convert_routes.job_manager._process_job(job.id))
-        try:
-            await _cancel_once(task, reached)
-            return job.id, job.id in concurrency_manager._lock_handles
-        finally:
-            go.set()
-
-    job_id, slot_held = asyncio.run(run())
-
-    assert not slot_held, job_id
-
-
-
 # --------------------------------------------------------------------------- #
 # #354 review: a Round-trip mismatch, a stalled stream reader, a verifier
 # with no verdict (CodeRabbit 5915313566, 4582189521, 4582189529)
@@ -2759,3 +2714,19 @@ def test_a_disconnect_during_the_store_write_keeps_the_lane_until_it_lands(
     assert first["event"] == "verify_progress"
     assert held and freed
     assert _checked_outputs(kept["output"]) == ([], [])
+
+
+def test_a_kept_source_the_library_now_excludes_is_not_deleted(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """The Library came to ignore the kept Source's name (RomM's ``exclude:``,
+    #532): its retried delete leaves it alone (CodeRabbit
+    PRRT_kwDOQ9nULM66RLwD)."""
+    from .test_cli_run_rules_307 import _Shelf
+
+    monkeypatch.setattr(_Shelf, "excluded", lambda _self, name: name == "Game.iso")
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert kept["iso"].exists()

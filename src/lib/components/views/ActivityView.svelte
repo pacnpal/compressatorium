@@ -5,8 +5,10 @@
    * matters now: Needs attention when anything does, else Running when
    * anything runs, else History.
    */
+  import { onMount } from 'svelte';
   import { ui } from '$lib/stores/ui.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { terminalJobIds } from '$lib/stores/jobConstants.js';
   import { ledger } from '$lib/stores/ledger.svelte.js';
   import { findings } from '$lib/stores/findings.svelte.js';
   import ActivitySummary from '$lib/components/activity/ActivitySummary.svelte';
@@ -15,10 +17,21 @@
   import HistoryList from '$lib/components/activity/HistoryList.svelte';
 
   const attention = $derived(findings.openCount);
+  // The queue as Running lists it (background scans left out).
   const running = $derived(jobs.runningList.length);
-  const tab = $derived(
-    ui.activityTab ?? (attention > 0 ? 'attention' : running > 0 ? 'running' : 'history'),
-  );
+  // The bare route opens on what matters now: Needs attention when anything
+  // does, else Running when anything runs, else History. Decided once per
+  // visit, after the findings read that counts (one a newer read superseded
+  // doesn't) and the first jobs snapshot, so a job ending doesn't swap the tab
+  // (and its list) out from under you. A tab in the URL always wins.
+  const live = $derived(attention > 0 ? 'attention' : running > 0 ? 'running' : 'history');
+  const readsAtMount = findings.reads;
+  const settled = $derived(findings.reads > readsAtMount && jobs.hydrated);
+  let opening = $state(null);
+  $effect(() => {
+    if (opening === null && settled) opening = live;
+  });
+  const tab = $derived(ui.activityTab ?? opening ?? live);
   const TABS = $derived([
     { id: 'attention', label: `Needs attention (${attention})` },
     { id: 'running', label: `Running (${running})` },
@@ -28,15 +41,16 @@
   // Refresh the space saved whenever the set of finished jobs changes.
   // Keyed on identity, not count: once history hits its cap a new finished
   // job replaces an evicted one and the count stays flat.
-  const finished = $derived(
-    jobs.jobs
-      .filter((j) => j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled')
-      .map((j) => j.id)
-      .join(','),
-  );
+  const finished = $derived(terminalJobIds(jobs.jobs).join(','));
   $effect(() => {
     void finished;
     ledger.refresh();
+  });
+
+  // Entering Activity reads what needs you now, so the opening tab is right
+  // even when nothing has finished since the last read.
+  onMount(() => {
+    findings.load();
   });
 </script>
 

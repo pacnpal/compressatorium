@@ -63,7 +63,8 @@ def _eval(tmp_path: Path, body: str):
 def test_every_old_route_redirects(tmp_path):
     got = _eval(tmp_path, f"""
 const cases = {json.dumps(list(REDIRECTS))};
-process.stdout.write(JSON.stringify(Object.fromEntries(cases.map((h) => [h, r.legacyRedirect(h)]))));
+const out = Object.fromEntries(cases.map((h) => [h, r.legacyRedirect(h)]));
+process.stdout.write(JSON.stringify(out));
 """)
     assert got == REDIRECTS
 

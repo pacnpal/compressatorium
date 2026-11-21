@@ -57,16 +57,13 @@ async def test_two_conversions_over_the_limit_still_log_the_invariant(
     env, monkeypatch, caplog,
 ) -> None:
     from app.models import JobStatus
-    from services.concurrency_manager import concurrency_manager
     from services.job_manager import job_manager
 
     monkeypatch.setattr(job_manager, "max_concurrent", 1)
     first = await _queue_rvz(env, "Melee")
     second = await _queue_rvz(env, "Pikmin")
-    # Forced: the dispatcher's semaphore would never admit both at once. The
-    # first gives up its queue ticket so the second's turn comes.
+    # Forced: the dispatcher's semaphore would never admit both at once.
     job_manager.jobs[first.id].status = JobStatus.PROCESSING
-    concurrency_manager.release_ticket(first.id)
 
     with caplog.at_level(logging.ERROR):
         await job_manager._process_job(second.id)

@@ -574,7 +574,6 @@ async def test_blocked_job_requeues_instead_of_failing(tmp_path):
     # those from the same module graph (the ``app.services.*`` aliases are
     # distinct singletons under PYTHONPATH=app).
     from app.services.job_manager import job_manager
-    from services.concurrency_manager import concurrency_manager
     from services.lock_manager import lock_manager
 
     folder = str(_make_ps3_folder(tmp_path / "MyGame"))
@@ -610,7 +609,6 @@ async def test_blocked_job_requeues_instead_of_failing(tmp_path):
         assert found
     finally:
         lock_manager.release_dir_lock(folder)
-        concurrency_manager.release_ticket(job.id)
         job_manager.jobs.pop(job.id, None)
         job_manager._cancelled.discard(job.id)
     # With the folder lock gone, the job is no longer blocked.
@@ -965,7 +963,6 @@ async def test_process_job_rejects_existing_split_set_without_overwrite(tmp_path
     # the worker must fail like a normal output collision rather than clobber the
     # existing split set (and unlink its parts on a later failure cleanup).
     from app.services.job_manager import job_manager
-    from services.concurrency_manager import concurrency_manager
     from services.lock_manager import lock_manager
 
     folder = str(_make_ps3_folder(tmp_path / "MyGame"))
@@ -995,7 +992,6 @@ async def test_process_job_rejects_existing_split_set_without_overwrite(tmp_path
         assert is_locked is False
     finally:
         lock_manager.release_lock(out)
-        concurrency_manager.release(job.id)
         job_manager.jobs.pop(job.id, None)
         job_manager._cancel_events.pop(job.id, None)
         job_manager._cancelled.discard(job.id)
@@ -1008,7 +1004,6 @@ async def test_process_job_revalidates_ps3_tree_after_dir_lock(tmp_path, monkeyp
     # acquiring the directory subtree lock and before makeps3iso runs.
     from app.services import job_manager as job_manager_module
     from app.services.job_manager import job_manager
-    from services.concurrency_manager import concurrency_manager
     from services.lock_manager import lock_manager
 
     folder_path = _make_ps3_folder(tmp_path / "volume" / "MyGame")
@@ -1064,7 +1059,6 @@ async def test_process_job_revalidates_ps3_tree_after_dir_lock(tmp_path, monkeyp
     finally:
         lock_manager.release_lock(out)
         lock_manager.release_dir_lock(str(folder_path))
-        concurrency_manager.release(job.id)
         job_manager.jobs.pop(job.id, None)
         job_manager._cancel_events.pop(job.id, None)
         job_manager._cancelled.discard(job.id)
@@ -1077,7 +1071,6 @@ async def test_process_job_revalidation_is_non_destructive_on_overwrite(tmp_path
     # runs before _clear_existing_output, so the existing ISO is preserved.
     from app.services import job_manager as job_manager_module
     from app.services.job_manager import job_manager
-    from services.concurrency_manager import concurrency_manager
     from services.lock_manager import lock_manager
 
     folder_path = _make_ps3_folder(tmp_path / "volume" / "MyGame")
@@ -1135,7 +1128,6 @@ async def test_process_job_revalidation_is_non_destructive_on_overwrite(tmp_path
     finally:
         lock_manager.release_lock(out)
         lock_manager.release_dir_lock(str(folder_path))
-        concurrency_manager.release(job.id)
         job_manager.jobs.pop(job.id, None)
         job_manager._cancel_events.pop(job.id, None)
         job_manager._cancelled.discard(job.id)
@@ -1148,7 +1140,6 @@ async def test_process_job_honors_cancel_during_safety_walk(tmp_path, monkeypatc
     # mid-walk keeps the user's prior output instead of clearing it and aborting.
     from app.services import job_manager as job_manager_module
     from app.services.job_manager import job_manager
-    from services.concurrency_manager import concurrency_manager
     from services.lock_manager import lock_manager
 
     folder_path = _make_ps3_folder(tmp_path / "volume" / "MyGame")
@@ -1199,7 +1190,6 @@ async def test_process_job_honors_cancel_during_safety_walk(tmp_path, monkeypatc
     finally:
         lock_manager.release_lock(out)
         lock_manager.release_dir_lock(str(folder_path))
-        concurrency_manager.release(job.id)
         job_manager.jobs.pop(job.id, None)
         job_manager._cancel_events.pop(job.id, None)
         job_manager._cancelled.discard(job.id)
@@ -1212,7 +1202,6 @@ async def test_process_job_rejects_directory_output(tmp_path):
     # clause fires for both overwrite states), so the worker fails the job rather
     # than writing *into* the directory. Regression guard against that clobber.
     from app.services.job_manager import job_manager
-    from services.concurrency_manager import concurrency_manager
     from services.lock_manager import lock_manager
 
     folder = str(_make_ps3_folder(tmp_path / "MyGame"))
@@ -1239,7 +1228,6 @@ async def test_process_job_rejects_directory_output(tmp_path):
         assert is_locked is False
     finally:
         lock_manager.release_lock(out)
-        concurrency_manager.release(job.id)
         job_manager.jobs.pop(job.id, None)
         job_manager._cancel_events.pop(job.id, None)
         job_manager._cancelled.discard(job.id)

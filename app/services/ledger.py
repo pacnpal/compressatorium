@@ -475,6 +475,18 @@ def _metrics_sync() -> tuple[dict[str, int], int, int]:
     )
 
 
+async def totals() -> dict:
+    """Finished jobs by status, all time: ``{"jobs": {"completed": N, ...}}``.
+
+    From ``ledger_totals``, so a Clear in the Jobs panel, the job history
+    cap or a retention prune never lowers them. The UI's job totals read
+    these.
+    """
+    by_status, _bytes_in, _bytes_out = await run_in_threadpool(_metrics_sync)
+    statuses = sorted(set(_METRIC_STATUSES) | set(by_status))
+    return {"jobs": {s: by_status.get(s, 0) for s in statuses}}
+
+
 async def metrics_text(queue_depth: int) -> str:
     """Prometheus text exposition (v0.0.4): running totals plus the live queue.
 

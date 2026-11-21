@@ -6,6 +6,7 @@
    */
   import { jobs } from '$lib/stores/jobs.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
+  import { hashFor } from '$lib/router/routes.js';
   import JobRow from '$lib/components/panels/JobRow.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Pager from '$lib/components/ui/Pager.svelte';
@@ -54,6 +55,10 @@
       </div>
     {/if}
   {/if}
+  <!-- A job leaves this list when it ends; History keeps every one (#533). -->
+  <p class="history">
+    Finished jobs are in <a href={hashFor('activity', { tab: 'history' })}>History</a>.
+  </p>
 </section>
 
 {#snippet cancelIcon()}<CircleX size={14} />{/snippet}
@@ -87,4 +92,6 @@
     gap: var(--space-2);
   }
   .footer { display: flex; justify-content: flex-end; }
+  .history { margin: 0; color: var(--text-2); font-size: var(--text-xs); }
+  .history a { color: var(--accent); }
 </style>
