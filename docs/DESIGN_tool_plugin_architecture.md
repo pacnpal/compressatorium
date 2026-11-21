@@ -10275,3 +10275,6 @@ Redump sync (`POST /dat/redump/sync`) and the CLI (`dat import`, `dat sync`):
   `Content-Length`, or as it comes), and each file at its own cap as it is
   written (PR #527).
 - `dat_sync.save_capped` is the capped download loop both syncs share.
+- The MAMERedump sync follows the same replace rule (#525): after a full
+  success it deletes only the existing DATs whose name and family match a DAT
+  it just staged, never DATs from another source.

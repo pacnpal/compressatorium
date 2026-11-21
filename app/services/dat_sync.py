@@ -382,6 +382,8 @@ class DATSyncService:
         imported = 0
         errors: list[str] = []
         new_dat_ids: list[str] = []
+        # (name, family) of each DAT staged: what this sync replaces (#525).
+        new_keys: set[tuple] = set()
         for i, file_info in enumerate(all_files):
             if self._is_cancelled():
                 # Discard any DATs staged in this run before aborting.
@@ -411,6 +413,7 @@ class DATSyncService:
                 )
                 result = await dat_store.import_dat_no_persist(tmp_path)
                 new_dat_ids.append(result["id"])
+                new_keys.add((result.get("name"), result.get("family")))
                 imported += 1
                 self._update_progress(
                     status="importing",
@@ -456,7 +459,14 @@ class DATSyncService:
                     " rematch will cover only the rows the sync drops or keeps",
                 )
                 previous_match_paths = []
-            old_ids = [d["id"] for d in existing_dats]
+            # Only the DATs this sync brings a new copy of: same name and
+            # family, the rule an import with replace=True applies (#524).
+            # A No-Intro pack or a Redump DAT the user added is not ours to
+            # drop (#525).
+            old_ids = [
+                d["id"] for d in existing_dats
+                if (d.get("name"), d.get("family")) in new_keys
+            ]
             # The rows the persist's invalidation dropped, listed in its own
             # transaction: the snapshot above misses any written after it
             # (issue #492).
