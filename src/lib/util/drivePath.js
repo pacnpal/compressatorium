@@ -1,7 +1,9 @@
 // A folder as people read it: "{drive} › {path inside it}", from the Drives
 // (`/api/volumes`) the app knows. A folder on no known Drive shows as it is.
 
-const trimmed = (p) => String(p ?? '').replace(/\/+$/, '');
+function trimmed(p) {
+  return String(p ?? '').replace(/\/+$/, '');
+}
 
 export function drivePath(path, volumes = []) {
   const p = trimmed(path);
