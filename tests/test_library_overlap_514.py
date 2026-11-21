@@ -370,8 +370,8 @@ def test_the_catalogue_is_read_again_after_a_library_is_added_or_removed() -> No
         assert "this.load()" in body, method
     # A read answering after a newer one was applied is dropped.
     assert "if (sent < this.#loadApplied) return this.list;" in store
-    editor = (root / "src/lib/components/views/RuleEditor.svelte").read_text()
-    assert "nothing was '\n      + 'queued for this platform" in editor
+    automation = (root / "src/lib/components/library/LibraryAutomation.svelte").read_text()
+    assert "libraries_changed:" in automation
 
 
 @pytest.mark.asyncio

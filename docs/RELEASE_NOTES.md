@@ -70,12 +70,55 @@
   Both use the app's login when it is on and the header
   `X-Chd-Action-Confirm: scan`. When the *arr sees a folder under another name
   (`/downloads` here is `/data/downloads`), add a path rewrite in the new
-  **Sonarr, Radarr and ROMarr** card in the Rules view; **Test a path** says
+  **Sonarr, Radarr and ROMarr** fold under a Library's watch folders; **Test a path** says
   where a path lands, and suggests the rewrite when it finds the file under a
   Volume. A rewritten path must still be inside a Volume and an Inbox.
+- **An *arr that imports straight into a Library converts it** (#541). When the
+  imported file lands in a Library's console folder rather than an Inbox, that
+  console's conversion Rule runs for it at once, as Run now would. Only when
+  the Library converts on its own (Convert automatically) and the console is
+  set to convert and on; otherwise the hook skips it and says why. A console
+  outside its hours is skipped too, and its next scheduled run takes the file.
+  A console paused meanwhile stays paused. **Test a path** gives the answer an
+  import of that path would get.
 
 ### Changed
 
+- **One page per Library** (#541). **Libraries** lists every Library as a
+  card with its consoles, games, whether it converts on its own, its watch
+  folders and how many problems need you. A Library's page has **Browse** (its
+  consoles and their folders, each a link into Files; RomM's catalog for
+  RomM), **Automation** and, for RomM, **Connection**. The Rules view, the
+  separate RomM view and the Inboxes panel are gone; their old links open the
+  new page.
+- **A console table instead of the Rule editor.** Each console is one row:
+  **Convert to**, **Check after**, **Delete original**. The rest (compression,
+  where new files go, which games, when it runs, the nightly re-check) is
+  under the row's sliders button. Picking a format turns the console on; a
+  new console starts from your saved defaults. Every change saves on its own,
+  so the **Save rules** button is gone. **Apply recommended** sets every
+  console with games and no format yet to its best one in one click, checks
+  each new file and keeps originals, and never changes a console you set
+  (new `GET /api/libraries/{id}/recommended-rules`). **Re-check games every
+  night** turns the check on for every converting console at once. A name
+  filter is saved only once the server says it is a valid pattern (new
+  `POST /api/rules/check-pattern`); until then it stays in its box with why,
+  and Preview, Run now and turning automation on wait for the check and refuse
+  while a filter isn't valid. Each change saves only the console it changes
+  (new `PATCH .../rules`, which the server merges), so no other console's
+  settings can be lost.
+  A console's **Try them again** releases only the games held after a failed
+  conversion (`failed_only` on `.../rules/forget-converted`), so a game already
+  converted under a rename or overwrite console is never converted again.
+- **Watch folders** (Inboxes) are picked from your Drives, never typed, and
+  each row says when it was last checked, what's still downloading, what
+  needs you and what was taken in, refreshed every 15 seconds. **Where new
+  games go** and the **Game list app** (None, ES-DE or Batocera/Knulli; ES-DE's
+  gamelists folder is picked from your Drives) sit below the table.
+- **RomM's Connection tab** has one **Save** that tests the connection before
+  saving, and saves only when it works. RomM's details, keeping the same entry and online IDs fold under
+  **More**. RomM's own converter shows as a banner on the Automation tab with
+  **Use RomM's choices**.
 - **Four places instead of eleven** (#534). The sidebar is now **Files**,
   **Libraries**, **Activity** and **Settings**, with **Help** at the foot.
   Files is the old Workspace; Libraries holds RomM and every folder Library;

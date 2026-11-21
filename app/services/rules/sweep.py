@@ -660,6 +660,31 @@ async def forget_converted_locked(
     return cleared
 
 
+async def release_failed(library: Library, platform_ids: list[str] | None = None) -> int:
+    """Drop only the failed holds of *platform_ids* (or every Platform), so
+    the next run tries those Images again (#541, CodeRabbit 4652729342).
+
+    Unlike :func:`forget_converted` it keeps the converted history: under a
+    rename or overwrite Rule that history is what stops a converted Image from
+    being converted again. No decision about a converted Image changes, so
+    nothing is invalidated. Returns how many Platforms had holds.
+    """
+    async with _sweep_lock:
+        state = await get_state(library)
+        targets = [str(p) for p in platform_ids] if platform_ids is not None else list(state)
+        cleared = 0
+        for pid in targets:
+            entry = state.get(pid)
+            if isinstance(entry, dict) and entry.get("failed"):
+                entry = dict(entry)
+                entry.pop("failed", None)
+                state[pid] = entry
+                cleared += 1
+        if cleared:
+            await store.write(store.STATE_KEY, library, state)
+        return cleared
+
+
 def library_generation(library_id: str) -> int:
     """*library_id*'s generation: it moves when that Library is removed.
 
@@ -1472,7 +1497,7 @@ _kept_running: set[tuple[str, str, str]] = set()
 
 async def _plan_kept_deletes(
     library: Library, rules: dict, wanted: set[str] | None,
-    stopping: Callable[[], bool], result: dict,
+    stopping: Callable[[], bool], result: dict, *, honour_pauses: bool = False,
 ) -> list[_KeptAttempt]:
     """Decide which Sources a reader kept are tried this sweep (#329). Called
     under ``_sweep_lock``; :func:`_run_kept_deletes` tries them after it.
@@ -1494,7 +1519,7 @@ async def _plan_kept_deletes(
         if not kept or (wanted is not None and platform_id not in wanted):
             continue
         rule = rules.get(platform_id)
-        if rule and _rule_paused(rule, wanted):
+        if rule and _rule_paused(rule, None if honour_pauses else wanted):
             # The same pause the Platform pass honours: its entries wait,
             # neither retried nor dropped (codex 4579529040).
             continue
@@ -2014,8 +2039,18 @@ async def sweep(
     dry_run: bool = False,
     overall_limit: int | None = None,
     should_stop: Callable[[], bool] | None = None,
+    kinds: tuple[str, ...] = RULE_KINDS,
+    honour_pauses: bool = False,
 ) -> dict:
     """Run one pass over *library*'s ruled Platforms.
+
+    *kinds* narrows it to those kinds of Rule: an *arr import into a Library
+    runs the console's conversion Rule only (``(CONVERT,)``), never a
+    budget's worth of its check Rule (#541). *honour_pauses* keeps an
+    operator's pause even for the Platforms named: Run now's override is for
+    a person's click, never for an automatic run (CodeRabbit 4652729285). It
+    is read under ``_sweep_lock``, so a pause made after the import was
+    accepted still holds.
 
     Returns a summary rather than raising on a partial failure: one unreachable
     platform must not abort the sweep for the others.
@@ -2060,6 +2095,8 @@ async def sweep(
                 overall_limit=overall_limit,
                 should_stop=should_stop,
                 kept_attempts=kept_attempts,
+                kinds=kinds,
+                honour_pauses=honour_pauses,
             )
         await _run_kept_deletes(
             library, kept_attempts, result,
@@ -2088,6 +2125,8 @@ async def _sweep_locked(
     overall_limit: int | None,
     should_stop: Callable[[], bool] | None = None,
     kept_attempts: list | None = None,
+    kinds: tuple[str, ...] = RULE_KINDS,
+    honour_pauses: bool = False,
 ) -> dict:
     """The sweep body. Always called with ``_sweep_lock`` held. The pending
     deletes it plans go in *kept_attempts*, for the caller to try once the
@@ -2153,7 +2192,7 @@ async def _sweep_locked(
     # first), so the order is total and a capped sweep resumes where the last
     # one stopped.
     ordered = sorted(
-        ((kind, pid) for kind in RULE_KINDS for pid in rules[kind]),
+        ((kind, pid) for kind in RULE_KINDS if kind in kinds for pid in rules[kind]),
         key=lambda item: (
             rules[item[0]][item[1]]["priority"], library.platform_value(item[1]),
             RULE_KINDS.index(item[0]),
@@ -2185,6 +2224,7 @@ async def _sweep_locked(
         await _clear_vanished(library)
         planned_deletes = await _plan_kept_deletes(
             library, rules[CONVERT], wanted, stopping, result,
+            honour_pauses=honour_pauses,
         )
         if kept_attempts is not None:
             kept_attempts.extend(planned_deletes)
@@ -2221,8 +2261,8 @@ async def _sweep_locked(
         # window becomes no window -- so running it would do more than the
         # saved rule says, unattended, possibly with delete-on-verify. Those
         # stay paused until the operator fixes what is wrong.
-        if _rule_paused(rule, wanted):
-            if wanted is not None:
+        if _rule_paused(rule, None if honour_pauses else wanted):
+            if wanted is not None and not honour_pauses:
                 result["errors"].append(
                     {"platform_id": platform_ref, "error": "rule_invalid"},
                 )

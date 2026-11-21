@@ -755,12 +755,13 @@ export const api = {
       "Failed to read RomM's converter targets",
     ),
 
+  // The consoles changed (#541): `{id: rule | null}`, merged by the server.
   // `checkRules` (#305) is sent when given; without it the server keeps them.
   saveRommRules: (rules, checkRules) =>
     fetchJson(
       `${API_BASE}/romm/rules`,
       {
-        method: 'PUT',
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
           checkRules === undefined ? { rules } : { rules, check_rules: checkRules },
@@ -769,24 +770,13 @@ export const api = {
       'Failed to save RomM rules',
     ),
 
-  // One-time notices any rule editor shows (#302). Not RomM-specific.
-  getRuleNotices: () =>
-    fetchJson(`${API_BASE}/rules/notices`, undefined, 'Failed to load rule notices'),
-
-  dismissCheckLevelNotice: () =>
-    jsonPost(
-      `${API_BASE}/rules/notices/check-level/dismiss`,
-      {},
-      {},
-      'Failed to dismiss the notice',
-    ),
-
   // Clears the "already converted by this rule" history that stops overwrite
   // and rename rules from reconverting the same sources every interval.
-  forgetRommConverted: (platformIds = null) =>
+  // `failedOnly` releases the failed holds and keeps what was converted (#541).
+  forgetRommConverted: (platformIds = null, failedOnly = false) =>
     jsonPost(
       `${API_BASE}/romm/rules/forget-converted`,
-      platformIds ? { platform_ids: platformIds } : {},
+      { ...(platformIds ? { platform_ids: platformIds } : {}), ...(failedOnly ? { failed_only: true } : {}) },
       {},
       'Failed to clear the conversion history',
     ),
@@ -907,11 +897,12 @@ export const api = {
       'Failed to load the Rules',
     ),
 
+  // The consoles changed (#541): `{id: rule | null}`, merged by the server.
   saveLibraryRules: (id, rules, checkRules) =>
     fetchJson(
       `${API_BASE}/libraries/${encodeURIComponent(id)}/rules`,
       {
-        method: 'PUT',
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
           checkRules === undefined ? { rules } : { rules, check_rules: checkRules },
@@ -920,10 +911,10 @@ export const api = {
       'Failed to save the Rules',
     ),
 
-  forgetLibraryConverted: (id, platformIds = null) =>
+  forgetLibraryConverted: (id, platformIds = null, failedOnly = false) =>
     jsonPost(
       `${API_BASE}/libraries/${encodeURIComponent(id)}/rules/forget-converted`,
-      platformIds ? { platform_ids: platformIds } : {},
+      { ...(platformIds ? { platform_ids: platformIds } : {}), ...(failedOnly ? { failed_only: true } : {}) },
       {},
       'Failed to clear the conversion history',
     ),
@@ -935,6 +926,19 @@ export const api = {
 
   runLibrary: (id, body = {}) =>
     jsonPost(`${API_BASE}/libraries/${encodeURIComponent(id)}/run`, body, {}, 'Run failed'),
+
+  // Whether a name filter can be saved (#541): `{ ok, error }`, from the
+  // same compile a Rule save runs.
+  checkRulePattern: (pattern) =>
+    jsonPost(`${API_BASE}/rules/check-pattern`, { pattern }, {}, "Couldn't check the pattern"),
+
+  // Apply recommended (#541): `{ rules: {platform_id: {mode, enabled}}, skipped }`
+  // for the consoles with games and no target. Read-only; the caller saves.
+  getRecommendedRules: (id) =>
+    fetchJson(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/recommended-rules`, undefined,
+      "Couldn't work out the best formats",
+    ),
 
   // A Library's find-duplicates run (#388): a background job whose groups
   // land in Findings. `{ job_id }`; 409 while the previous run still runs.

@@ -108,12 +108,12 @@
   }
 </script>
 
-<section class="arr" aria-labelledby="arr-title">
+<section class="arr" aria-label="Sonarr, Radarr and ROMarr">
   <div class="text">
-    <h2 id="arr-title">Sonarr, Radarr and ROMarr</h2>
     <p class="muted">
       Add a <strong>Webhook</strong> connection in the app, turned on for imports. Each file it
-      imports into an Inbox is taken in at once, with no settle wait. Scripts can POST
+      imports into a watch folder is taken in at once, with no wait; one it imports straight
+      into a Library is converted under its console's settings. Scripts can POST
       <code>{'{"path": "…"}'}</code> to <code>/api/scan</code> the same way.
     </p>
   </div>
@@ -155,7 +155,11 @@
       {#if result.problem}
         <p>{result.problem}.</p>
       {:else}
-        <p>Works: it lands at <code>{result.local}</code>, in an Inbox, and would be taken in at once.</p>
+        {#if result.inbox_id != null}
+          <p>Works: it lands at <code>{result.local}</code>, in a watch folder, and would be taken in at once.</p>
+        {:else}
+          <p>Works: it lands at <code>{result.local}</code>, in a Library, and its console's settings convert it.</p>
+        {/if}
       {/if}
       {#if result.suggestion}
         {@render suggest(result.suggestion)}
@@ -168,7 +172,7 @@
     <p class="muted small">
       When the *arr mounts a folder under another name (it sees <code>/downloads</code>, this
       app sees <code>/data/downloads</code>). The longest match wins; the result must still be
-      inside a Volume.
+      on one of your Drives.
     </p>
     {#if rewrites.length}
       <ul>
@@ -219,7 +223,7 @@
 
 {#snippet suggest(s)}
   <p class="suggest">
-    <span>Found under a Volume: rewrite <code>{s.from}</code> to <code>{s.to}</code></span>
+    <span>Found on a Drive: rewrite <code>{s.from}</code> to <code>{s.to}</code></span>
     <Button variant="secondary" size="sm" icon={plusIcon} loading={saving}
       onclick={() => adopt(s)}>Add this rewrite</Button>
   </p>
@@ -234,10 +238,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-3, 12px);
-    padding: 12px 16px;
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md, 8px);
     min-width: 0;
   }
   h2 { margin: 0 0 4px; font-size: var(--text-md, 1rem); }

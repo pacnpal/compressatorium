@@ -17,8 +17,8 @@
   const links = [
     ['Supported formats', `${readme}#supported-conversions`],
     ['RomM', `${readme}#romm-integration`],
-    ['Folder Libraries', `${readme}#folder-libraries-and-the-rules-view`],
-    ['Watch folders', `${readme}#inboxes`],
+    ['Folder Libraries', `${readme}#folder-libraries`],
+    ['Watch folders', `${readme}#watch-folders`],
     ['Checking and deleting safely', `${readme}#verifying-and-deleting-safely`],
     ['Game identification', `${readme}#dat-matching`],
     ['Troubleshooting', `${readme}#troubleshooting`],
