@@ -72,9 +72,11 @@ export function infoLabel(key) {
   return words.join(' ');
 }
 
-const isEmpty = (v) => v == null || v === ''
-  || (Array.isArray(v) && v.length === 0)
-  || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);
+function isEmpty(v) {
+  return v == null || v === ''
+    || (Array.isArray(v) && v.length === 0)
+    || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);
+}
 
 /**
  * Split a tool's info into what the modal shows: `rows`, the plain facts with
