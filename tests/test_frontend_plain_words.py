@@ -33,6 +33,12 @@ CHECKED_FILES = [
     "panels/SafetyOptions.svelte",
     "panels/CompressionPicker.svelte",
     "panels/ModeSelect.svelte",
+    # PR 5: Settings.
+    "settings/Connections.svelte",
+    "settings/HasheousQuestion.svelte",
+    "settings/Identification.svelte",
+    "settings/Defaults.svelte",
+    "views/NotificationSettings.svelte",
 ]
 
 OLD_WORDS = re.compile(

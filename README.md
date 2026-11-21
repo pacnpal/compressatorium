@@ -85,9 +85,9 @@ Compressatorium can sync [MAME Redump](https://github.com/MetalSlug/MAMERedump) 
 - **Dolphin RVZ/WIA/GCZ**: Matched via the game image's content SHA1 reconstructed by `dolphin-tool verify` — the same hash MAME Redump records for GameCube/Wii discs — so compressed Dolphin outputs match without the container bytes having to be identical
 - **Everything else** (3DS/Switch/CSO·ZSO·DAX/`.iso`/`.bin`): Matched via file-level SHA1
 - **Library scan**: The background scan discovers and DAT-matches tool outputs by extension (CHD, Dolphin RVZ/WIA/GCZ, 3DS, Switch, CSO/ZSO, `.iso`, and the `.bin` data track from CHDMAN extract), not just CHDs, so non-CHD libraries get cached match results too. A single PS3-packed `.iso` is matched like any other `.iso`; a 4 GB split set is not, since its `.iso.0`/`.iso.1` parts aren't scanned extensions. Heavy Dolphin disc-hashing during the scan honors `MATCH_MAX_FILE_SIZE` and stops promptly if you cancel the scan.
-- **Sync Redump in one click**: **Sync Redump** in the DAT Library downloads Redump's DAT for each disc Platform in your Libraries (PlayStation, PS2, GameCube, Saturn, Dreamcast, Xbox and more), one request at a time. A system synced in the last day isn't asked again. DATs only: never keys, BIOS or games
-- **Import packs**: **Import DATs** takes several `.dat`/`.xml` files at once, and zips of them, such as No-Intro's daily pack (No-Intro's site can't be scripted, so download the pack there and drop the zip in). Re-importing a DAT replaces the older copy
-- **DAT management**: Import, list, reorder and delete DATs in the DAT Library
+- **Sync Redump in one click**: **Get Redump lists for my consoles** in Settings → Game identification downloads Redump's DAT for each disc Platform in your Libraries (PlayStation, PS2, GameCube, Saturn, Dreamcast, Xbox and more), one request at a time. A system synced in the last day isn't asked again. DATs only: never keys, BIOS or games
+- **Import packs**: **Import game lists…** takes several `.dat`/`.xml` files at once, and zips of them, such as No-Intro's daily pack (No-Intro's site can't be scripted, so download the pack there and drop the zip in). Re-importing a DAT replaces the older copy
+- **DAT management**: Import, list, reorder and delete DATs in Settings → Game identification
 - **From a shell**: `compressatorium dat import PATH...` and `compressatorium dat sync` (see [Command line](#command-line-compressatorium))
 - **Match badges**: Files matching a DAT entry show a blue "DAT" badge in the file list
 - **Wider coverage without curating DATs**: see [Hasheous Integration](#hasheous-integration-optional) to fall back on 14 preservation databases for anything your imported DATs don't recognise
@@ -101,11 +101,11 @@ at once. Turn it on and every hash your imported DATs *don't* recognise is
 looked up there, so your library gets identified without you curating DATs for
 every system you own.
 
-**Setup is one click.** Open **DAT Library** in the web UI and press **Turn on**
-in the Hasheous panel. It takes effect immediately — no restart, no editing
-`docker-compose.yml` — and the choice is saved, so it survives restarts. A
-**Test** button next to it confirms the server is reachable and reports the
-round-trip time.
+**Setup is one click.** Open **Settings → Connections** in the web UI and tick
+**Identify games online (Hasheous)** (the first visit asks once). It takes effect
+immediately — no restart, no editing `docker-compose.yml` — and the choice is
+saved, so it survives restarts. Turning it on checks that the server answers and
+says so under the switch.
 
 **No account, no API key, no signup** — the hash-lookup endpoint is public.
 
@@ -216,7 +216,7 @@ until you open it, or until you run a rescan.
 Enabling this sends **the SHA1 of your files** (and nothing else — no filenames,
 no paths, no account identifier) to whatever server `COMPRESSATORIUM_HASHEOUS_URL`
 points at. That is why it ships **off**, and why nothing is transmitted at all
-until you enable it — either with the toggle in the DAT Library or by setting
+until you enable it — either with the switch in Settings → Connections or by setting
 the variable. Requests are HTTPS-only, and a redirect that would
 downgrade to plain HTTP is refused rather than followed.
 
@@ -244,16 +244,15 @@ Those files are retried the next time you browse or rescan them.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `COMPRESSATORIUM_HASHEOUS_ENABLED` | `false` | Starting state of the master switch. The **DAT Library** toggle overrides it and persists. |
+| `COMPRESSATORIUM_HASHEOUS_ENABLED` | `false` | Starting state of the master switch. The switch in **Settings → Connections** overrides it and persists. |
 | `COMPRESSATORIUM_HASHEOUS_URL` | `https://hasheous.org` | Point at your own instance. Must be `https`. |
 | `COMPRESSATORIUM_HASHEOUS_TIMEOUT` | `15` | Whole-request timeout in seconds, from the TCP connect to the last byte: every address the host resolves to (one budget between them, not one each), a proxy `CONNECT` tunnel, headers and body. Not per socket read, so a server or proxy dripping the *response* a byte at a time can't stall a scan. Two things sit outside the budget: **name resolution** — `getaddrinfo` runs before any socket exists, so a stalled resolver is bounded by `/etc/resolv.conf` instead — and **a dripping TLS handshake**, which gets the remaining budget as its socket timeout (a peer that stalls or dies mid-handshake is bounded) but not a per-record deadline, so a peer trickling handshake records can outlast it. Both raise eventually, and the 60s cooldown then opens. This call sits in the file-browse path, so keep it short. |
 
 Legacy short names (`HASHEOUS_ENABLED`, `HASHEOUS_URL`, `HASHEOUS_TIMEOUT`) are
 accepted as aliases.
 
-The DAT Library page shows the live state — on or off, which server it is
-pointed at, whether the setting came from the toggle or the environment, and a
-**Test** button that reports reachability and latency.
+Settings → Connections shows the live state: on or off, and whether Hasheous
+answered when it was turned on.
 
 Changing `COMPRESSATORIUM_HASHEOUS_URL` re-checks previously-unmatched files
 against the new server automatically — cached "no match" verdicts record *which*
@@ -470,7 +469,7 @@ Failed tabs link to the Ledger for the rest.
 
 ### Notifications
 
-Open **Settings** and add a webhook URL or an [Apprise](https://github.com/caronc/apprise)
+Open **Settings → Notifications** and add a webhook URL or an [Apprise](https://github.com/caronc/apprise)
 URL (Discord, Telegram, ntfy, email and many more) to hear about finished work.
 Nothing leaves the server until you add a destination. You get:
 
@@ -660,8 +659,10 @@ on every folder open.
 
 ### DAT matching
 
-Sync the MAMERedump DATs from the DAT Library (or import your own `.dat`/`.xml`
-from No-Intro/Redump) and converted files are checked against known-good hashes —
+Open **Settings → Game identification** and press **Get Redump lists for my
+consoles** or **Update MAME Redump**, or **Import game lists…** to add your own
+`.dat`/`.xml` files or zips from No-Intro or Redump, and converted files are
+checked against known-good hashes —
 a blue DAT badge means the file matches. CHDs match on the codec-independent header
 SHA1, and Dolphin RVZ/WIA/GCZ match on the game image's content SHA1 reconstructed by
 `dolphin-tool verify --algorithm sha1` (the same hash Redump records), so **any
@@ -670,11 +671,21 @@ aren't synced, the title isn't in the DAT, or the file is larger than
 `MATCH_MAX_FILE_SIZE` (which skips the expensive full-disc reconstruction) — not that
 the file is bad.
 
+When two game lists know the same game, the higher one names it: open **Name
+order** under the lists to move them. To look up games no list knows, turn on
+**Identify games online (Hasheous)** in **Settings → Connections**. Turning it on
+checks that Hasheous answers, and the first visit asks once whether you want it.
+
+**Settings → Defaults** sets what new conversions start with: check each new file,
+delete the original once it checks out, the compression for each format (the same
+one the Convert panel remembers), and how long History keeps its rows (forever,
+30 days, 90 days or a year).
+
 ### Rename to DAT name
 
 Tick Images in the file browser and press **Rename to DAT name**. Each
 Recognized Image takes the name the top-ranked DAT gives it (see the DAT
-order under [DAT Library](#dat-library)), keeping its own extension: a
+order under [Game identification](#game-identification)), keeping its own extension: a
 `game.iso` matched by Redump's `Ico (USA)` becomes `Ico (USA).iso`.
 Characters some filesystems can't hold (`< > : " / \ | ? *`) become `_`.
 
@@ -1829,21 +1840,23 @@ A Platform conflict (a GameCube disc filed under `ps2`) and an Unsorted Image, e
 |-------|------|
 | ![Findings view, light](docs/screenshots/findings-light.png) | ![Findings view, dark](docs/screenshots/findings-dark.png) |
 
-#### DAT Library
+#### Game identification
 
-Import or sync No-Intro / Redump / MAMERedump datasets and match converted files against known-good hashes.
-
-| Light | Dark |
-|-------|------|
-| ![DAT Library, light](docs/screenshots/dat-light.png) | ![DAT Library, dark](docs/screenshots/dat-dark.png) |
-
-When more than one DAT knows a file, the higher one in the list names it. Each
-DAT shows its family; move them up or down to set your own order. Until you do,
-Redump comes first for disc Images and No-Intro first for cartridge Images.
+**Settings → Game identification**: get Redump's lists for your disc consoles,
+import game lists (DATs) from No-Intro or Redump, or update MAME Redump, and
+converted files are matched against known-good hashes.
 
 | Light | Dark |
 |-------|------|
-| ![DAT order, light](docs/screenshots/dat-ranking-light.png) | ![DAT order, dark](docs/screenshots/dat-ranking-dark.png) |
+| ![Game identification, light](docs/screenshots/settings-identification-light.png) | ![Game identification, dark](docs/screenshots/settings-identification-dark.png) |
+
+When more than one list knows a game, the higher one names it. Open **Name
+order** to move them up or down. Until you do, Redump comes first for discs and
+No-Intro first for cartridges.
+
+| Light | Dark |
+|-------|------|
+| ![Name order, light](docs/screenshots/settings-name-order-light.png) | ![Name order, dark](docs/screenshots/settings-name-order-dark.png) |
 
 #### Rename to DAT name
 
@@ -1857,11 +1870,22 @@ The preview for a Recognized cartridge, then the finished job, then the preview 
 
 #### Settings
 
-Notification destinations for finished sweeps and failed jobs.
+Everything set once, on one page: Connections (RomM, Hasheous, the *arr
+webhook), Game identification, Notifications, Defaults and Converters. On a wide
+screen the section list stays at the left as you scroll.
 
 | Light | Dark |
 |-------|------|
 | ![Settings, light](docs/screenshots/settings-light.png) | ![Settings, dark](docs/screenshots/settings-dark.png) |
+
+**Defaults**: what new conversions start with, the compression for each format,
+and how long History is kept. **Converters**: each program, the formats it makes,
+whether it can run here, and the CHD badge scan.
+
+| Light | Dark |
+|-------|------|
+| ![Settings Defaults, light](docs/screenshots/settings-defaults-light.png) | ![Settings Defaults, dark](docs/screenshots/settings-defaults-dark.png) |
+| ![Settings Converters, light](docs/screenshots/settings-converters-light.png) | ![Settings Converters, dark](docs/screenshots/settings-converters-dark.png) |
 
 A new generic webhook's form: its signing secret and the messages it gets.
 

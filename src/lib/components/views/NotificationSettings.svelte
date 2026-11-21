@@ -166,9 +166,9 @@
   <header>
     <h2 id="notif-title">Notifications</h2>
     <p>
-      Hear about finished sweeps and jobs on your phone or in your own tooling. A
-      sweep sends one message with its counts and space saved, with its failures
-      listed inside it. Pick which messages each destination gets.
+      Hear about finished runs and jobs on your phone or in your own tooling. A
+      Library's run sends one message with its counts and space saved, with its
+      failures listed inside it. Pick which messages each destination gets.
     </p>
   </header>
 
