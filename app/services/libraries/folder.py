@@ -64,7 +64,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from functools import cache
 from typing import Any
 
 from logging_setup import get_logger
@@ -85,7 +86,7 @@ from services.rules.library import (
     PlacementUnknown,
     Platform,
     QueuedImage,
-    folder_holding,
+    folder_holder,
     placed_in,
 )
 from services.tools import registry
@@ -334,10 +335,21 @@ class FolderLibrary(LibraryDefaults):
         PRRT_kwDOQ9nULM64es7B). None for an Image directly in the root or in
         ``roms``.
         """
-        holding = folder_holding(self.root, path)
-        if holding is not None and os.path.basename(holding) == "roms":
-            return folder_holding(holding, path)
-        return holding
+        return self.platform_folders()(path)
+
+    def platform_folders(self) -> Callable[[str], str | None]:
+        """:meth:`platform_folder` for many paths: the root (and its ``roms``
+        folder) is listed once, not once per Image (Codex 4653575625)."""
+        in_root = folder_holder(self.root)
+        below = cache(folder_holder)
+
+        def platform_folder(path: str) -> str | None:
+            holding = in_root(path)
+            if holding is not None and os.path.basename(holding) == "roms":
+                return below(holding)(path)
+            return holding
+
+        return platform_folder
 
     def placement(
         self, platform: str, *, known: Sequence[Platform] | None = None,
@@ -707,7 +719,9 @@ class FolderLibrary(LibraryDefaults):
         self._rewalk_thread = thread
         thread.start()
 
-    def _games_folder(self, entries: list[Entry]) -> tuple[str | None, str | None]:
+    def _games_folder(
+        self, entries: list[Entry], platform_folder: Callable[[str], str | None],
+    ) -> tuple[str | None, str | None]:
         """Where most of a console's games are, relative to the root (#541):
         their console folder, whatever the layout says new ones get, and a
         note when that can't be told. ``(None, None)`` when they sit in the
@@ -722,7 +736,7 @@ class FolderLibrary(LibraryDefaults):
         ambiguous = None
         for entry in entries:
             try:
-                folder = self.platform_folder(entry.path)
+                folder = platform_folder(entry.path)
             except AmbiguousFolder as exc:
                 ambiguous = str(exc)
                 continue
@@ -739,6 +753,8 @@ class FolderLibrary(LibraryDefaults):
     def summary(self, *, refresh: bool = False) -> dict[str, Any]:
         """Detected Platforms with Image counts, and the Images left out."""
         scan = self.scan(refresh=refresh)
+        by_platform = scan.by_platform()
+        platform_folder = self.platform_folders() if by_platform else None
         unsorted = conflicted = 0
         for entry in scan.entries:
             if entry.detection.platform:
@@ -752,9 +768,11 @@ class FolderLibrary(LibraryDefaults):
                 {
                     "id": slug, "slug": slug,
                     "name": platform_detect.platform_name(slug), "images": len(entries),
-                    **dict(zip(("folder", "folder_note"), self._games_folder(entries))),
+                    **dict(zip(
+                        ("folder", "folder_note"), self._games_folder(entries, platform_folder),
+                    )),
                 }
-                for slug, entries in sorted(scan.by_platform().items())
+                for slug, entries in sorted(by_platform.items())
             ],
             "unsorted": unsorted,
             "conflicted": conflicted,

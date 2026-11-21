@@ -114,7 +114,7 @@
     } catch (e) {
       error = `couldn't check it: ${e?.message ?? 'the server did not answer'}`;
     }
-    if (drafts[field] !== text) return;
+    if (destroyed || drafts[field] !== text) return;
     errors = { ...errors, [field]: error };
     const label = field === 'include_pattern' ? 'Only names matching' : 'Skip names matching';
     source.markUnsaved(
@@ -125,8 +125,10 @@
   }
 
   // Closing the panel drops what was typed and not saved: Run now no longer
-  // waits for it or refuses over it.
+  // waits for it or refuses over it, and a check still out is ignored.
+  let destroyed = false;
   onDestroy(() => {
+    destroyed = true;
     for (const field of ['include_pattern', 'exclude_pattern']) {
       clearTimeout(timers[field]);
       release(field);

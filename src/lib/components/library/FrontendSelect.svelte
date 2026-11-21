@@ -73,7 +73,7 @@
   });
 
   async function choose(value) {
-    choice += 1;
+    const mine = ++choice;
     try {
       if (value === 'esde') {
         if (source.gamelistsFolder) {
@@ -91,7 +91,10 @@
         toast.success('Game lists are left alone');
         return;
       }
-      if (source.gamelistsFolder) await source.setGamelistsFolder('');
+      if (source.gamelistsFolder) {
+        await source.setGamelistsFolder('');
+        if (mine !== choice) return;
+      }
       await source.setEsFrontend(true);
       toast.success('Conversions now update the game list in each console folder');
     } catch (e) {

@@ -74,3 +74,23 @@ async def test_romm_takes_a_patch_too() -> None:
     from routes import romm as routes
 
     assert callable(routes.patch_romm_rules)
+
+
+@pytest.mark.asyncio
+async def test_a_whole_map_save_waits_for_a_patch_under_way(tree: Path) -> None:
+    """CodeRabbit 4653612408: a PUT landing between a PATCH's read and its
+    save would be undone by the PATCH's stale map. Both take one lock."""
+    import asyncio
+
+    from routes import libraries as routes
+    from services.rules import editor
+
+    lib = await _register(tree)
+    async with editor._save_lock:
+        put = asyncio.create_task(routes.put_library_rules(lib["id"], {
+            "rules": {"ps2": {"mode": "createdvd", "enabled": True}},
+        }))
+        await asyncio.sleep(0.05)
+        assert not put.done()
+    saved = await put
+    assert set(saved["rules"]) == {"ps2"}

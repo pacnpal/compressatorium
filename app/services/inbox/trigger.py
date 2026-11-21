@@ -205,29 +205,39 @@ def _platform_ids(library: Any, local: str) -> list[str]:
     matched on the console's id or slug. A console detection can't name
     at all (RomM's renamed folder) is RomM's own: the folder it sits in,
     matched on the console's folder. One whose header and folder disagree
-    is neither, and nothing runs for it.
+    is neither, and nothing runs for it. Consoles that are one to detection
+    (RomM's nes and famicom) are narrowed to the one whose folder holds it,
+    or none (Codex 4653575642).
     """
     from services import platform_detect
-    from services.rules.library import AmbiguousFolder
 
     detection = platform_detect.detect_platform(local)
     if detection.how == platform_detect.CONFLICT:
         return []
     slug = detection.platform if detection.decided else None
-    folder = None
     if slug is None:
-        try:
-            held = library.platform_folder(local)
-        except (AmbiguousFolder, OSError):
-            return []
-        folder = os.path.basename(held) if held else None
-        if not folder:
-            return []
-    return [
-        str(p.id) for p in library.platforms()
-        if (slug and (str(p.id) == slug or canonical_slug(p.slug) == slug))
-        or (folder and p.folder == folder)
+        folder = _held_folder(library, local)
+        return [str(p.id) for p in library.platforms() if folder and p.folder == folder]
+    matches = [
+        p for p in library.platforms()
+        if str(p.id) == slug or canonical_slug(p.slug) == slug
     ]
+    if len(matches) > 1:
+        folder = _held_folder(library, local)
+        matches = [p for p in matches if folder and p.folder == folder]
+    return [str(p.id) for p in matches]
+
+
+def _held_folder(library: Any, local: str) -> str | None:
+    """The name of the Library's console folder holding *local*, or None
+    when none does or it can't be told. Blocking."""
+    from services.rules.library import AmbiguousFolder
+
+    try:
+        held = library.platform_folder(local)
+    except (AmbiguousFolder, OSError):
+        return None
+    return os.path.basename(held) if held else None
 
 
 def check(path: str, rules: list[dict[str, str]]) -> dict[str, Any]:
@@ -318,7 +328,7 @@ async def process(paths: list[str], *, source: str) -> dict[str, Any]:
     accepted: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     boxes: dict[int, inbox_store.Inbox] = {}
-    sweeps: dict[str, tuple[Any, set[str]]] = {}
+    sweeps: dict[str, tuple[Any, set[str], list[str]]] = {}
     for path in paths[:MAX_PATHS]:
         try:
             found, real, ids = await asyncio.wait_for(
@@ -333,10 +343,9 @@ async def process(paths: list[str], *, source: str) -> dict[str, Any]:
             if why:
                 found = {**found, "problem": why}
             else:
-                # The Library's own hook (#353): a walk listed before this file
-                # arrived is dropped, so the sweep sees it (Codex 4653298959).
-                library.note_paths_changed([found["local"]])
-                sweeps.setdefault(library.id, (library, set()))[1].update(due)
+                _library, due_ids, locals_ = sweeps.setdefault(library.id, (library, set(), []))
+                due_ids.update(due)
+                locals_.append(found["local"])
                 accepted.append({"path": path, "local": found["local"], "inbox_id": None,
                                  "library_id": library.id, "platform_ids": due})
         _recent.appendleft({"at": _now(), "source": source, **found})
@@ -351,8 +360,13 @@ async def process(paths: list[str], *, source: str) -> dict[str, Any]:
         intake.mark_ready(box.id, real, resolved=True)
         boxes[box.id] = box
         accepted.append({"path": path, "local": found["local"], "inbox_id": box.id})
+    for library, _ids, locals_ in sweeps.values():
+        # The Library's own hook (#353), once per Library (CodeRabbit
+        # 4653612399): a walk listed before these files arrived is dropped,
+        # so the sweep sees them (Codex 4653298959).
+        library.note_paths_changed(locals_)
     jobs = [_poll_now(box) for box in boxes.values()]
-    jobs += [_sweep_now(library, ids) for library, ids in sweeps.values()]
+    jobs += [_sweep_now(library, ids) for library, ids, _locals in sweeps.values()]
     for job in jobs:
         task = asyncio.create_task(job)
         _tasks.add(task)

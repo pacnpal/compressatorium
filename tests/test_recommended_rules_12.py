@@ -115,14 +115,18 @@ async def test_an_ambiguous_console_folder_does_not_fail_the_listing(mixed: Path
     from services.rules.library import AmbiguousFolder
 
     lib = await _register(mixed)
-    real = FolderLibrary.platform_folder
+    real = FolderLibrary.platform_folders
 
-    def ambiguous_psx(self, path):
-        if "/psx/" in path:
-            raise AmbiguousFolder(path, ["psx", "PlayStation"])
-        return real(self, path)
+    def ambiguous_psx(self):
+        find = real(self)
 
-    monkeypatch.setattr(FolderLibrary, "platform_folder", ambiguous_psx)
+        def folder(path):
+            if "/psx/" in path:
+                raise AmbiguousFolder(path, ["psx", "PlayStation"])
+            return find(path)
+        return folder
+
+    monkeypatch.setattr(FolderLibrary, "platform_folders", ambiguous_psx)
     libraries.reset_for_tests()
 
     listed = await routes.library_platforms(lib["id"])
@@ -130,6 +134,33 @@ async def test_an_ambiguous_console_folder_does_not_fail_the_listing(mixed: Path
     rows = {p["id"]: p for p in listed["platforms"]}
     assert rows["psx"]["folder"] is None and rows["psx"]["folder_note"]
     assert rows["gba"]["folder"] == "gba" and rows["gba"]["folder_note"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_console_folders_are_listed_once_per_listing(mixed: Path, monkeypatch) -> None:
+    """Codex 4653575625: each console's folder is found from one listing of
+    the root, not one per game (5,000 games took about 5 s)."""
+    from routes import libraries as routes
+    from services import libraries
+    from services.libraries import folder as folder_module
+
+    for n in range(30):
+        _write(mixed / "gba" / f"Game {n}.gba", b"\0" * 4096)
+    lib = await _register(mixed)
+    listed_parents: list[str] = []
+    real = folder_module.folder_holder
+
+    def counting(parent):
+        listed_parents.append(parent)
+        return real(parent)
+
+    monkeypatch.setattr(folder_module, "folder_holder", counting)
+    libraries.reset_for_tests()
+
+    listed = await routes.library_platforms(lib["id"])
+
+    assert {p["id"]: p["folder"] for p in listed["platforms"]} == {"psx": "psx", "gba": "gba"}
+    assert listed_parents == [str(mixed)]
 
 
 @pytest.mark.asyncio

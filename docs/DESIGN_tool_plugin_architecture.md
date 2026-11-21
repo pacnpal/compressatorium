@@ -5085,7 +5085,10 @@ Knulli) key each game's artwork, favourite flag and play count on its
   `parent` (`os.scandir`) whose resolved path holds the resolved file,
   returned as listed. When more than one does (an alias, `alias -> ps2`), the
   answer would depend on the listing's order, so it raises `AmbiguousFolder`
-  and the gamelist Referrer keeps the Source. So `ROMs/ps2/psx/Game.iso` is
+  and the gamelist Referrer keeps the Source. `folder_holder(parent)` is the
+  same answer for many paths, listing `parent` once: a Library's listing finds
+  every game's console folder through `FolderLibrary.platform_folders()`, one
+  listing of the root (and `roms`), not one per game (#541). So `ROMs/ps2/psx/Game.iso` is
   `ps2` and the `psx` system's gamelist is never read. Only
   `<gamelists folder>/<system>/gamelist.xml` is read, with the Platform
   folder as the entries' base: `ROMs/ps2/Game.iso` reaches
@@ -8911,7 +8914,11 @@ decide. `kinds` (default every kind) keeps a console's check Rule from spending
 a budget on an import. `honour_pauses` drops Run now's named-Platform override
 (a sweep that names its Platforms runs a Rule the person paused): the pause is
 read again under `_sweep_lock`, so a console paused after the import was
-accepted stays paused. `trigger.check_one`, the UI's **Test a path**, returns
+accepted stays paused, and it holds for the deferred deletes of kept Sources
+too: an import never deletes an original for a paused console. Consoles that
+are one to detection (RomM's `nes` and `famicom`) are narrowed to the one
+whose folder holds the file, or none. The Library's listing is dropped once
+per request (`note_paths_changed` with every accepted path), not once per path. `trigger.check_one`, the UI's **Test a path**, returns
 `_due_in_library`'s answer for a Library path, so it never says "works" for an
 import that would be skipped.
 

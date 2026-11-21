@@ -51,3 +51,15 @@ def test_the_browser_never_builds_a_regexp_from_what_was_typed() -> None:
         assert "new RegExp(" not in src, rel
     advanced = (_SRC / "components" / "library" / "RuleAdvanced.svelte").read_text(encoding="utf-8")
     assert "api.checkRulePattern(" in advanced
+
+
+def test_a_check_answered_after_the_panel_closed_changes_nothing() -> None:
+    """A reply landing after the panel is destroyed must not mark the pattern
+    unsaved again, which would block Run, Preview and automation (codex
+    4653575620)."""
+    src = (_SRC / "components" / "library" / "RuleAdvanced.svelte").read_text(encoding="utf-8")
+    after_answer = src.split("await api.checkRulePattern(text)", 1)[1]
+    guard = after_answer.split("source.markUnsaved", 1)[0]
+    assert "if (destroyed || drafts[field] !== text) return;" in guard
+    destroy = src.split("onDestroy(() => {", 1)[1].split("});", 1)[0]
+    assert "destroyed = true;" in destroy

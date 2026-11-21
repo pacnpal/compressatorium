@@ -50,6 +50,12 @@ async def save_rules(library: Library, payload: Any) -> dict[str, Any]:
     submission without it (an older editor, a bare map) leaves them as they are,
     and one with only ``check_rules`` leaves the conversion Rules.
     """
+    async with _save_lock:
+        return await _save_rules_locked(library, payload)
+
+
+async def _save_rules_locked(library: Library, payload: Any) -> dict[str, Any]:
+    """:func:`save_rules`, with ``_save_lock`` held."""
     as_dict = isinstance(payload, dict)
     has_checks = as_dict and "check_rules" in payload
     only_checks = has_checks and "rules" not in payload
@@ -66,9 +72,12 @@ async def save_rules(library: Library, payload: Any) -> dict[str, Any]:
     return out
 
 
-# One merge at a time: two patches each reading the stored Rules before the
-# other wrote would each write back without the other's console.
-_patch_lock = asyncio.Lock()
+# One Rules save at a time: two patches each reading the stored Rules before
+# the other wrote would each write back without the other's console, and a
+# whole-map save landing inside a patch would be undone by its stale map
+# (CodeRabbit 4653612408).
+# ponytail: one lock for every Library; per-Library locks if saves contend.
+_save_lock = asyncio.Lock()
 
 
 def _merged(stored: dict, patch: Any) -> dict:
@@ -93,7 +102,7 @@ async def patch_rules(library: Library, payload: Any) -> dict[str, Any]:
     """
     if not isinstance(payload, dict):
         payload = {}
-    async with _patch_lock:
+    async with _save_lock:
         merged: dict[str, Any] = {
             "rules": _merged(await rules_sweep.get_rules(library), payload.get("rules")),
         }
@@ -101,7 +110,7 @@ async def patch_rules(library: Library, payload: Any) -> dict[str, Any]:
             merged["check_rules"] = _merged(
                 await rules_sweep.get_rules(library, CHECK), payload.get("check_rules"),
             )
-        return await save_rules(library, merged)
+        return await _save_rules_locked(library, merged)
 
 
 async def forget_converted(

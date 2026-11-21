@@ -245,7 +245,7 @@ def test_an_unfinished_pattern_is_never_saved():
     body = advanced[advanced.index("async function checkPattern("):]
     body = body[: body.index("\n  }\n")]
     assert "api.checkRulePattern(text)" in body
-    assert body.index("if (drafts[field] !== text) return;") < body.index("onupdate(")
+    assert body.index("if (destroyed || drafts[field] !== text) return;") < body.index("onupdate(")
     assert "if (!error) onupdate({ [field]: text });" in body
 
 
@@ -374,7 +374,14 @@ def test_a_late_folder_save_never_undoes_a_later_choice():
     body = body[: body.index("\n  }\n")]
     assert "const mine = ++choice;" in body
     assert body.index("if (mine !== choice) return;") < body.index("setEsFrontend(true)")
-    assert "choice += 1;" in src[src.index("async function choose("):]
+    choose = src[src.index("async function choose("):]
+    choose = choose[: choose.index("\n  }\n")]
+    assert "const mine = ++choice;" in choose
+    # Batocera's folder clear finishing after a later None must not turn the
+    # updates back on (codex 4653575633).
+    clear = choose.index("await source.setGamelistsFolder('');")
+    guard = choose.index("if (mine !== choice) return;", clear)
+    assert guard < choose.rindex("setEsFrontend(true)")
 
 
 def test_browse_names_games_without_a_console_even_with_no_consoles():

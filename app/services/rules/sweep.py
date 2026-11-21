@@ -1497,7 +1497,7 @@ _kept_running: set[tuple[str, str, str]] = set()
 
 async def _plan_kept_deletes(
     library: Library, rules: dict, wanted: set[str] | None,
-    stopping: Callable[[], bool], result: dict,
+    stopping: Callable[[], bool], result: dict, *, honour_pauses: bool = False,
 ) -> list[_KeptAttempt]:
     """Decide which Sources a reader kept are tried this sweep (#329). Called
     under ``_sweep_lock``; :func:`_run_kept_deletes` tries them after it.
@@ -1519,7 +1519,7 @@ async def _plan_kept_deletes(
         if not kept or (wanted is not None and platform_id not in wanted):
             continue
         rule = rules.get(platform_id)
-        if rule and _rule_paused(rule, wanted):
+        if rule and _rule_paused(rule, None if honour_pauses else wanted):
             # The same pause the Platform pass honours: its entries wait,
             # neither retried nor dropped (codex 4579529040).
             continue
@@ -2224,6 +2224,7 @@ async def _sweep_locked(
         await _clear_vanished(library)
         planned_deletes = await _plan_kept_deletes(
             library, rules[CONVERT], wanted, stopping, result,
+            honour_pauses=honour_pauses,
         )
         if kept_attempts is not None:
             kept_attempts.extend(planned_deletes)
@@ -2261,7 +2262,7 @@ async def _sweep_locked(
         # saved rule says, unattended, possibly with delete-on-verify. Those
         # stay paused until the operator fixes what is wrong.
         if _rule_paused(rule, None if honour_pauses else wanted):
-            if wanted is not None:
+            if wanted is not None and not honour_pauses:
                 result["errors"].append(
                     {"platform_id": platform_ref, "error": "rule_invalid"},
                 )

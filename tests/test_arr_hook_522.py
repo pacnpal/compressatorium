@@ -617,6 +617,29 @@ async def test_an_import_right_after_a_listing_is_found(client, vol, queued):
 
 
 @pytest.mark.asyncio
+async def test_a_batch_drops_the_librarys_listing_once(client, vol, queued, monkeypatch):
+    """CodeRabbit 4653612399: a hundred imports into one Library drop its
+    listing once, after they are all checked, not once each (a walk each)."""
+    from services.inbox import trigger
+    from services.libraries.folder import FolderLibrary
+
+    from .test_platform_detect import _ps2
+
+    _library, game = await _ps2_library(vol)
+    other = Path(_ps2(vol / "ROMs" / "ps2" / "Other.iso"))
+    noted: list[list[str]] = []
+    monkeypatch.setattr(
+        FolderLibrary, "note_paths_changed", lambda _self, paths: noted.append(list(paths)),
+    )
+
+    answer = await trigger.process([str(game), str(other)], source="test")
+
+    assert len(answer["accepted"]) == 2, answer
+    assert noted == [[str(game), str(other)]]
+    await trigger.drain()
+
+
+@pytest.mark.asyncio
 async def test_a_busy_library_listing_skips_that_path_only(client, vol, queued, monkeypatch):
     """CodeRabbit 4653326169: a walk already running (`ListingInProgress`)
     is one path's skip, never the end of the request or the check."""
@@ -637,3 +660,29 @@ async def test_a_busy_library_listing_skips_that_path_only(client, vol, queued, 
 
     check = (await client.post("/api/hooks/arr/check", json={"path": str(game)})).json()
     assert "still running" in check["problem"]
+
+
+def test_consoles_sharing_a_slug_run_only_the_folder_holding_it(monkeypatch, tmp_path):
+    """Codex 4653575642: RomM's nes and famicom are one console to detection,
+    so an import into famicom/ runs only Famicom's Rule, never NES's."""
+    from services import platform_detect
+    from services.inbox import trigger
+    from services.rules.library import Platform
+
+    game = tmp_path / "roms" / "famicom" / "Zelda.nes"
+
+    class _Romm:
+        @staticmethod
+        def platforms():
+            return [Platform("1", "nes", "NES", folder="nes"),
+                    Platform("2", "famicom", "Famicom", folder="famicom")]
+
+        @staticmethod
+        def platform_folder(path):
+            return str(tmp_path / "roms" / "famicom") if "/famicom/" in path else None
+
+    monkeypatch.setattr(platform_detect, "detect_platform", lambda _p: platform_detect.Detection(
+        "nes", platform_detect.FOLDER, None, "famicom", "in the famicom folder",
+    ))
+
+    assert trigger._platform_ids(_Romm(), str(game)) == ["2"]
