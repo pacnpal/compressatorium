@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- **Sonarr, Radarr and ROMarr webhook, and "scan this path now"** (#522).
+  `POST /api/hooks/arr` takes the *arr's Webhook connection: its Test answers
+  ok, and each file an import names is taken in by the Inbox that holds it at
+  once, with no poll and no settle wait, through the same intake as always.
+  `POST /api/scan` with a `path` (a file or folder) does the same for scripts.
+  Both use the app's login when it is on and the header
+  `X-Chd-Action-Confirm: scan`. When the *arr sees a folder under another name
+  (`/downloads` here is `/data/downloads`), add a path rewrite in the new
+  **Sonarr, Radarr and ROMarr** card in the Rules view; **Test a path** says
+  where a path lands, and suggests the rewrite when it finds the file under a
+  Volume. A rewritten path must still be inside a Volume and an Inbox.
+
 ### Changed
 
 - **Works out of the box** (#515). A tool program that isn't at the path the
