@@ -42,14 +42,12 @@
   // Connection. Each maps to this view's own tab.
   const TAB_OF_ROUTE = { browse: 'library', automation: 'automation', connection: 'settings' };
   const ROUTE_OF_TAB = { library: 'browse', automation: 'automation', settings: 'connection' };
-  let tab = $state(TAB_OF_ROUTE[ui.libraryTab] ?? 'library');
-  $effect(() => {
-    const routed = TAB_OF_ROUTE[ui.libraryTab];
-    if (routed) tab = routed;
-  });
+  // A bare `#/libraries/romm` shows Browse, or Connection while RomM isn't
+  // set up. Derived, never kept: Back to the bare URL shows that tab again.
+  let defaultTab = $state('library');
+  const tab = $derived(TAB_OF_ROUTE[ui.libraryTab] ?? defaultTab);
 
   function openTab(id) {
-    tab = id;
     ui.navigate('libraries', { id: 'romm', tab: ROUTE_OF_TAB[id] });
   }
 
@@ -265,7 +263,7 @@
       await Promise.all([romm.loadStatus(), romm.loadSettings()]);
       if (!alive) return;
       if (!romm.configured) {
-        tab = 'settings';
+        defaultTab = 'settings';
         return;
       }
       // Only touch the library once RomM answers AND its folder is visible
@@ -403,7 +401,7 @@
       description="Add your RomM URL, API token and library path. It takes about a minute."
     >
       {#snippet actions()}
-        <Button onclick={() => (tab = 'settings')}>Connect RomM</Button>
+        <Button onclick={() => openTab('settings')}>Connect RomM</Button>
       {/snippet}
     </EmptyState>
   {:else if !romm.connected}

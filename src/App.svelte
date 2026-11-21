@@ -96,6 +96,16 @@
     fileBrowser.refresh().catch(() => {});
   });
 
+  // What needs attention can change whenever a run finishes (a check, a
+  // duplicate scan, a watch folder's intake), so the sidebar badge and
+  // Activity's opening tab reload it then, whether or not Needs attention is
+  // on screen. Keyed on which jobs finished, as the refresh above is.
+  const finishedRuns = $derived(terminalJobIds(jobs.jobs).join(','));
+  $effect(() => {
+    void finishedRuns;
+    findings.load();
+  });
+
   // Surface a live toast for every RUNNING job and resolve it on
   // completion. Iterating the list (and touching status/progress/message)
   // subscribes the effect at index granularity, so SSE progress frames,
@@ -135,8 +145,6 @@
     conversion.loadServerPrefs();
     // The safety choices new conversions start with.
     defaults.load();
-    // What needs attention, for the sidebar's Activity badge.
-    findings.load();
     // Rehydrate the verified set + DAT-library state so OK / DAT badges
     // survive reloads. Fire and forget, failure leaves the cache empty.
     verification.loadVerified();

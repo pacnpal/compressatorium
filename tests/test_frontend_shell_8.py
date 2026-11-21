@@ -135,3 +135,28 @@ const at = (p) => libraries.folderLibraryFor(p)?.id ?? null;
 process.stdout.write(JSON.stringify([at('/v/roms/psx'), at('/v/other'), at('/w')]));
 """)
     assert data == ["folder:2", "folder:1", None], data
+
+
+def test_findings_refresh_without_the_needs_attention_tab():
+    """Codex 4651470866: the badge and Activity's default tab read the findings
+    count, so it is refreshed when a run finishes and on entering Activity, not
+    only while Needs attention is mounted."""
+    app = (_SRC / "App.svelte").read_text(encoding="utf-8")
+    effect = re.search(
+        r"const finishedRuns = \$derived\(terminalJobIds\(jobs\.jobs\)\.join\(','\)\);"
+        r"\s*\$effect\(\(\) => \{\s*void finishedRuns;\s*findings\.load\(\);",
+        app,
+    )
+    assert effect, "App does not reload findings when runs finish"
+    activity = _read("views/ActivityView.svelte")
+    assert "onMount(() => {\n    findings.load();" in activity
+
+
+def test_one_url_shows_one_tab():
+    """Codex 4651470868: Back to a bare `#/libraries/romm` shows Browse again.
+    The tab is derived from the route, never kept from an earlier one."""
+    romm = _read("views/RommView.svelte")
+    assert "const tab = $derived(TAB_OF_ROUTE[ui.libraryTab] ?? defaultTab);" in romm
+    assert "let tab = $state(" not in romm and "tab = routed" not in romm
+    activity = _read("views/ActivityView.svelte")
+    assert "ui.activityTab ??" in activity

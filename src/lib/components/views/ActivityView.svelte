@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from 'svelte';
   /**
    * Activity: what needs you, what's running, and everything that ran. The
    * tab is in the URL (`#/activity/<tab>`); the bare route opens on what
@@ -34,6 +35,12 @@
   $effect(() => {
     void finished;
     ledger.refresh();
+  });
+
+  // Entering Activity reads what needs you now, so the opening tab is right
+  // even when nothing has finished since the last read.
+  onMount(() => {
+    findings.load();
   });
 </script>
 
