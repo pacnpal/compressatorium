@@ -201,10 +201,11 @@ _unreadable: dict[tuple[str, str], str] = {}
 _reported_unrunnable: dict[tuple[str, str, str], str] = {}
 
 # The checks a sweep makes before it runs a conversion Rule, in the order it
-# makes them: its tool is installed, its output folder is inside a Volume, its
-# mode is one for the Platform. A Rule that fails one is skipped with no run
-# recorded, so it is tried again on the next tick (#480).
-_SKIP_CHECKS = ("tool", "output_dir", "platform")
+# makes them: its tool is installed, its output folder is inside a Volume, the
+# Library doesn't ignore its outputs (#532), its mode is one for the Platform.
+# A Rule that fails one is skipped with no run recorded, so it is tried again
+# on the next tick (#480).
+_SKIP_CHECKS = ("tool", "output_dir", "output_excluded", "platform")
 
 # (library id, kind, platform id) -> (check, reason) the sweep last skipped
 # that Rule for: logged once for each reason, not on every tick (#480).
@@ -1661,6 +1662,10 @@ async def _run_kept_delete(
     """One :func:`_run_kept_deletes` attempt."""
     pending = attempt.pending
     deleting = pending.get("state") == KEPT_DELETING
+    # A Source the Library now ignores by name (#532) is left alone, its
+    # entry pending; a delete already under way finishes.
+    if not deleting and library.excluded(Path(str(pending.get("source") or "")).name):
+        return
     try:
         async with job_manager.kept_delete(
             source_path=str(pending.get("source") or ""),
@@ -2035,6 +2040,9 @@ async def sweep(
     notified: dict | None = {"errors": [{"platform_id": None, "error": "sweep_failed"}]}
     result: dict | None = None
     try:
+        # What the Library caches about itself (RomM's structure and
+        # exclusions, #532), read before the lock: bounded, never raises.
+        await library.refresh()
         async with _sweep_lock:
             blocked = library.sweep_blocked()
             if blocked:
@@ -2276,6 +2284,20 @@ async def _sweep_locked(
             )
             continue
 
+        # The Library would ignore every output (#532): RomM told to exclude
+        # the target format would drop each converted game from its catalog.
+        # The extension alone: a name RomM excludes skips only the game whose
+        # output has it (below), not the Rule.
+        output_ext = (spec.output_ext or "").lstrip(".")
+        problem = (
+            f"{library.name} ignores .{output_ext} files, so its outputs would vanish from it"
+            if output_ext and library.excluded_extension(output_ext) else None
+        )
+        _report_skip(library, kind, platform_id, "output_excluded", problem)
+        if problem is not None:
+            result["errors"].append({"platform_id": platform_ref, "error": "output_excluded"})
+            continue
+
         listed_at = _walk_generation(library)
         owned_at = _ownership_generation()
         images = await _list_images(library, platform_id, result, stopping)
@@ -2354,6 +2376,10 @@ async def _sweep_locked(
             if stopping():
                 break
             considered += 1
+            # A file the Library ignores (#532), told apart by name alone.
+            if library.excluded(image.name or ""):
+                result["skipped_filtered"] += 1
+                continue
             # One hop to a worker thread for every disk-touching check on this
             # candidate — the local-path mapping and volume check included,
             # since both resolve paths against a mount that may be remote.
@@ -2429,6 +2455,10 @@ async def _sweep_locked(
                 continue
             if decision["destination"] in claimed_destinations:
                 result["skipped_active"] += 1
+                continue
+            # Its output would be a file the Library ignores by name (#532).
+            if library.excluded(Path(decision["destination"]).name):
+                result["skipped_filtered"] += 1
                 continue
             claimed_destinations.add(decision["destination"])
             batch.append(path)

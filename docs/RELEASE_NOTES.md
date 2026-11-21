@@ -4,6 +4,32 @@
 
 ### Added
 
+- **RomM connects itself** (#532).
+  - On first run, RomM's Settings looks for RomM at `http://romm:8080` and its
+    other usual addresses and offers **Found RomM at …: Use it**.
+  - Type RomM's **pairing code** (RomM 4.8+) instead of pasting a 64-character
+    token. Pasting a token still works. A pairing saves nothing by itself: its
+    token is saved with the URL and Library path by the Save, once they test,
+    so a wrong path leaves the current connection as it was.
+  - The **Library path** fills itself in from RomM's platform folders, matched
+    against your volumes, following RomM's own folder structure (a custom
+    `games/{platform}/{game}` suggests the folder holding `games`).
+  - New games go where RomM's own folder structure says (RomM 5.3+), not a
+    guess from what's on disk. Rules skip files RomM is set to ignore, and
+    refuse a target format RomM ignores; a single file name RomM ignores skips
+    only the game whose output has that name. Scheduled runs, `run-rules` and
+    Inbox placement read RomM's settings themselves, with RomM's page closed.
+    Until RomM's ignore settings have been read once, runs wait, and until its
+    folder structure has, new games aren't placed, rather than guessing; a
+    failed read is retried within a minute.
+  - **Save tests the connection first** and names the field to fix, with
+    **Retry** and **Save anyway**. It saves exactly what was tested, and a
+    Save that leaves the URL and Library path as they were no longer reloads
+    the catalog. A check that couldn't run shows as "not
+    checked" instead of failed.
+  - The three RomM Settings cards are one form with one Save; the re-pin
+    knobs are under **Advanced**.
+  - RomM errors name the field to fix instead of an environment variable.
 - **ES-DE's gamelists are found for you** (#523). ES-DE 2.0 and later read
   gamelists only from `ES-DE/gamelists/<system>`, never from the ROM folders,
   so an ES-DE Library updated nothing until you typed that folder. The Rules

@@ -737,6 +737,15 @@ export const api = {
   testRommConnection: (patch = {}) =>
     jsonPost(`${API_BASE}/romm/settings/test`, patch, {}, 'Connection test failed'),
 
+  // A RomM pairing code, traded for a token the backend holds for the URL
+  // until a Save sent with `paired: true` (#532).
+  pairRomm: (url, code) =>
+    jsonPost(`${API_BASE}/romm/pair`, { url, code }, {}, 'Pairing with RomM failed'),
+
+  // RomM at its usual addresses, or { url: null } (#532).
+  discoverRomm: () =>
+    fetchJson(`${API_BASE}/romm/discover`, undefined, 'Could not look for RomM'),
+
   getRommRules: () =>
     fetchJson(`${API_BASE}/romm/rules`, undefined, 'Failed to load RomM rules'),
 
