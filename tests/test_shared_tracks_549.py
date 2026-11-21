@@ -446,7 +446,9 @@ async def test_an_outside_path_is_refused_before_anything_beside_it_is_read(
     _write(outside / "Private collection.m3u", b"Secret.chd\n")
     asked = []
     real = image_sets.owners_naming
-    monkeypatch.setattr(image_sets, "owners_naming", lambda p, **kw: asked.append(p) or real(p, **kw))
+    monkeypatch.setattr(
+        image_sets, "owners_naming", lambda p, **kw: asked.append(p) or real(p, **kw),
+    )
 
     response = await files_routes.delete_files_batch(
         _confirmed(), files_routes.BulkDeleteRequest(paths=[str(secret)]),
@@ -496,3 +498,57 @@ def test_a_delete_plan_never_scans_outside_the_volumes(split_roots, monkeypatch)
 
     assert asked == []
     assert plan["unsafe_paths"], plan
+
+
+# --- An 8-bit playlist in another code page (Codex 4655165263) -----------------
+
+@pytest.mark.asyncio
+async def test_a_cp1252_playlist_still_owns_its_disc(vol):
+    folder = vol / "psx"
+    disc = _write(folder / "Café.chd")
+    _write(folder / "B.m3u", "Café.chd\r\n".encode("cp1252"))
+
+    response = await files_routes.delete_files_batch(
+        _confirmed(), files_routes.BulkDeleteRequest(paths=[str(disc)]),
+    )
+
+    assert response["results"][0]["success"] is False
+    assert "B.m3u" in response["results"][0]["error"]
+    assert disc.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_cp1252_playlist_folds_its_discs(vol):
+    folder = vol / "psx"
+    disc = _write(folder / "Café.chd")
+    playlist = _write(folder / "B.m3u", "Café.chd\r\n".encode("cp1252"))
+
+    listing = await files_routes.list_files(
+        path=str(folder), show_archives=True, summarize_archives=False,
+    )
+
+    assert {e.name: e.disc_of for e in listing.entries}[disc.name] == str(playlist)
+
+
+def test_every_entry_reads_an_8_bit_playlist_each_way():
+    from services.referrers import m3u
+
+    found = m3u.every_entry("Café.chd\n".encode("cp1252"))
+
+    assert "Café.chd" in found
+
+
+@pytest.mark.asyncio
+async def test_a_cp1252_sheet_still_owns_its_track(vol):
+    folder = vol / "psx"
+    track = _write(folder / "Café.bin")
+    sheet = 'FILE "Café.bin" BINARY\r\n  TRACK 01 MODE1/2352\r\n'
+    _write(folder / "B.cue", sheet.encode("cp1252"))
+
+    response = await files_routes.delete_files_batch(
+        _confirmed(), files_routes.BulkDeleteRequest(paths=[str(track)]),
+    )
+
+    assert response["results"][0]["success"] is False
+    assert "B.cue" in response["results"][0]["error"]
+    assert track.exists()

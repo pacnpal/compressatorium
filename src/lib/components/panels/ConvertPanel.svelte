@@ -101,11 +101,14 @@
   const plan = $derived(conversion.hasPlanFor(paths) ? conversion.plan : null);
   const shownPlan = $derived(plan ?? conversion.plan);
   const actionable = $derived((plan ?? []).filter((row) => row.mode));
+  // The Options read the last plan while a new one is made (a compression
+  // edit re-plans), so a picker being used never unmounts mid-edit.
+  const optionRows = $derived((shownPlan ?? []).filter((row) => row.mode));
 
   // The modes the plan uses, each with how many games it takes.
   const modeCounts = $derived.by(() => {
     const counts = {};
-    for (const row of actionable) counts[row.mode] = (counts[row.mode] ?? 0) + 1;
+    for (const row of optionRows) counts[row.mode] = (counts[row.mode] ?? 0) + 1;
     return counts;
   });
   const specs = $derived(
@@ -115,7 +118,7 @@
   // One compression choice per tool the plan uses, labelled by its format.
   const pickers = $derived.by(() => {
     const byTool = {};
-    for (const row of actionable) {
+    for (const row of optionRows) {
       const spec = registry.specFor(row.mode);
       const tool = registry.toolForMode(row.mode);
       if (!tool || byTool[tool.id]) continue;

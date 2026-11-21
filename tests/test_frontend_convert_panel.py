@@ -153,3 +153,14 @@ def test_a_big_plan_confirm_takes_the_picks_made_in_its_dialog():
     confirmed = confirmed.split("const rows = ", 1)[0]
     assert "target: conversion.target || null," in confirmed
     assert "platformOverrides: conversion.overridesFor(snapshot)," in confirmed
+
+
+def test_the_options_stay_mounted_while_the_plan_is_made_again():
+    """Codex 4655165268: a compression edit re-plans; the Options keep
+    showing the last plan's pickers meanwhile, so none unmounts mid-edit."""
+    rows = "const optionRows = $derived((shownPlan ?? []).filter((row) => row.mode));"
+    assert rows in _PANEL
+    counts = _PANEL.split("const modeCounts = $derived.by(() => {", 1)[1].split("});", 1)[0]
+    pickers = _PANEL.split("const pickers = $derived.by(() => {", 1)[1].split("});", 1)[0]
+    assert "for (const row of optionRows)" in counts
+    assert "for (const row of optionRows)" in pickers

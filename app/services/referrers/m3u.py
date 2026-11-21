@@ -168,7 +168,8 @@ def entries(data: bytes) -> list[str]:
 def every_entry(data: bytes) -> list[str]:
     """Every entry any reader could see in playlist *data*, as posix paths.
 
-    :func:`entries` for plain 8-bit text. A playlist that isn't (UTF-16, or any
+    Plain 8-bit text as :func:`entries` (UTF-8), cp1252 and Latin-1. A playlist
+    that isn't (UTF-16, or any
     NUL byte) is read every way :func:`_wide_text_check` reads it: UTF-16 by
     its BOM or NUL parity (strictly, else with replacements), both byte orders,
     and with NULs dropped as UTF-8 and cp1252. The union is what a check that
@@ -177,7 +178,17 @@ def every_entry(data: bytes) -> list[str]:
     """
     encoding = _utf16_encoding(data)
     if encoding is None and b"\x00" not in data:
-        return entries(data)
+        # A player may read 8-bit text in a legacy code page, so a name is
+        # owned if any reading spells it; Latin-1 decodes every byte, so no
+        # line is left unread.
+        found = entries(data)
+        body = data.removeprefix(_BOM)
+        for codec in ("cp1252", "latin-1"):
+            for line in body.decode(codec, errors="replace").splitlines():
+                parsed = _parse_line(line)
+                if parsed is not None:
+                    found.append(parsed.posix)
+        return list(dict.fromkeys(found))
     texts: list[str] = []
     if encoding is not None:
         texts.append(data.decode(encoding, errors="replace"))

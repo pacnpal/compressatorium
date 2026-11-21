@@ -245,3 +245,30 @@ process.stdout.write(JSON.stringify({ inside, after: fileBrowser.folderQuery }))
 """)
 
     assert data == {"inside": {"query": "", "shown": ["Game.gba"]}, "after": ""}, data
+
+
+def test_leaving_everywhere_drops_what_this_folder_does_not_list(tmp_path):
+    """Codex 4655165264: a nested game ticked in Everywhere results is
+    unticked on the way back to This folder; one the folder lists stays."""
+    data = _run(tmp_path, _LISTING + """
+fileBrowser.currentPath = '/v';
+api.searchFiles = async () => ({
+  files: [
+    { name: 'Loose.iso', path: '/v/Loose.iso' },
+    { name: 'Deep.iso', path: '/v/sub/Deep.iso' },
+  ],
+  archives: [],
+});
+await fileBrowser.setSearchScope('everywhere', '');
+for (const row of fileBrowser.rows) fileBrowser.toggleSelect(row);
+const during = [...fileBrowser.selectedFiles.keys()].sort();
+await fileBrowser.setSearchScope('folder', '');
+process.stdout.write(JSON.stringify({
+  during, after: [...fileBrowser.selectedFiles.keys()],
+  convertible: fileBrowser.convertibleSelection.map((e) => e.path),
+}));
+""")
+
+    assert data["during"] == ["/v/Loose.iso", "/v/sub/Deep.iso"], data
+    assert data["after"] == ["/v/Loose.iso"], data
+    assert data["convertible"] == ["/v/Loose.iso"], data

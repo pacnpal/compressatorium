@@ -822,8 +822,15 @@ class FileBrowserStore {
     this._searchGeneration += 1;
     this._pendingSearchQuery = null;
     this.searching = false;
+    const leaving = this.searchMode;
     this.searchMode = false;
     this.searchResults = null;
+    // A nested result picked Everywhere is not on this folder's screen; a
+    // convert or delete must not act on it unseen.
+    if (leaving) {
+      const listed = Object.fromEntries(this.entries.map((e) => [e.path, true]));
+      this.deselect([...this.selectedFiles.keys()].filter((path) => !listed[path]));
+    }
   }
 
   // ─── RomM catalog mode ────────────────────────────────────────────────

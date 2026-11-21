@@ -154,7 +154,9 @@
   ticks its discs, and Delete takes every file of the game. The Status column
   names the format: "CHD ✓" for a new file that is there, "→ CHD" for a game
   that can be made smaller here, never a tool name. The search box searches
-  this folder as you type, or everywhere under it.
+  this folder as you type, or everywhere under it; going back to this folder
+  unticks the results it doesn't list. A file another playlist or sheet names
+  is kept, whatever code page (UTF-8, cp1252, UTF-16) that file is saved in.
 - **The top bar shows what's running**: "2 converting · 3 waiting", linking to
   Activity. The Activity item in the sidebar counts what needs you (or, when
   nothing does, what's running).
