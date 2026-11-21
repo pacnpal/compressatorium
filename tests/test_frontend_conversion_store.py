@@ -1095,8 +1095,11 @@ process.stdout.write(JSON.stringify({
     assert data == {"typed": 9, "low": 1, "blank": None, "refit": 5, "kept": 7}
 
 
-def test_the_picker_reads_the_stores_one_level_and_range():
-    """The slider and the number box read the same reconciled value and range."""
+def test_the_picker_reads_one_level_and_range():
+    """The slider and the number box read the same value and range, which the
+    controlled picker takes from its `value` (the panel passes the store's)."""
     picker = _PICKER.read_text(encoding="utf-8")
-    assert "conversion.levelRange" in picker
-    assert picker.count("value={level}") == 2
+    assert "const levelRange = $derived(rangeOf(mode, value));" in picker
+    assert picker.count("value={level") == 2
+    panel = (_SRC / "components" / "panels" / "ConvertPanel.svelte").read_text(encoding="utf-8")
+    assert "value={conversion.compressionChoice}" in panel

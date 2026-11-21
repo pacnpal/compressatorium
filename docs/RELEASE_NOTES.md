@@ -76,6 +76,32 @@
 
 ### Changed
 
+- **Four places instead of eleven** (#534). The sidebar is now **Files**,
+  **Libraries**, **Activity** and **Settings**, with **Help** at the foot.
+  Files is the old Workspace; Libraries holds RomM and every folder Library;
+  Activity holds Findings, the job queue and the Ledger, with the space-saved
+  and queue cards on top; Settings holds game identification (DATs),
+  notifications and a new **Converters** list that says which converters can
+  run here and why one can't. The per-tool sidebar section is gone: the
+  Convert panel's **Convert to** list offers every format a ready converter
+  makes, grouped as Make smaller, Unpack and Other, and picking one switches
+  the panel to that converter. Every old link and bookmark (`#/workspace/…`,
+  `#/dashboard`, `#/romm`, `#/rules/…`, `#/findings`, `#/ledger`, `#/dat`)
+  still opens the same screen at its new address.
+- **The top bar shows what's running**: "2 converting · 3 waiting", linking to
+  Activity. The Activity item in the sidebar counts what needs you (or, when
+  nothing does, what's running).
+- **Files** offers **Make this folder a Library** for the open folder, or shows
+  which Library it is in, and a first-run card offers to add a Library or
+  connect RomM until there is one (or it is dismissed). **Add a Library**
+  picks the folder by walking your Drives; there is no path to type.
+- **Help** is three steps and links into the README, instead of a page-long
+  reference.
+- **Compression** keeps "Compatible with…" in view and folds the codec and
+  level controls under **Choose codecs**.
+- New `GET`/`PUT /api/preferences/defaults` store the safety choices new
+  conversions start with (check each new file on, delete the original off).
+  The Settings screen that edits them comes next.
 - **`compressatorium convert` uses the running server** (#533). When the
   server is running on the same `/config`, the command finds it there and
   hands it the jobs: they show in the web UI's queue, share its limit on

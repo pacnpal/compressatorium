@@ -10076,22 +10076,61 @@ new tool or mode silently missed them:
   registry can't express (whether a tool's media reads as an optical disc or a
   cartridge/handheld "game"). `.chd` keeps its own Disc3 glyph and the
   handheld-ROM archives (`.7z`/`.zip`) get the archive glyph.
-- `src/lib/components/views/HelpView.svelte` generates its per-mode reference
-  table from `registry.all()` (one section per tool + mode-group, in registry
-  order) via `helpModeSections()`. The only hand-authored content lives in
-  `src/lib/tools/helpModes.js`: `MODE_BLURBS` (the human one-liner per mode) and
-  `MODE_OUTPUT` (a display override for reversible/companion outputs the
-  registry stores as a single or `null` `outputExt`).
 
-A single Node-evaluated guard, `tests/test_frontend_registry_derives_186.py`,
-fails if either drifts: a filterable extension with no icon bucket, an
-unclassified tool, a mode with no blurb, a stale blurb/override key, or a mode
-that would render a blank Output cell.
+A Node-evaluated guard, `tests/test_frontend_registry_derives_186.py`, fails if
+it drifts: a filterable extension with no icon bucket, or an unclassified tool.
+(Help used to carry a per-mode table built from the registry; the restructure
+moved that detail to the README, and the Convert-to list below is now the
+surface that must cover every mode.)
 
 The same Node harness also pins the behaviour of the registry's own query
 helpers: `infoToolsForPath` ordering, `displayExtension`, and
 `contentClaimsFor`. A new shared helper on `registry` gets its test here, next
 to the facts it reads. A new *tool* still needs no edit to this file.
+
+**Shared pieces on top of the registry (restructure, #534).** Every picker reads
+these instead of keeping its own copy, so a new tool or mode reaches them all
+with no edit:
+
+- `src/lib/tools/compression.js` owns the compression wire format. A choice is
+  `{ codecs: string[], level: number|null }`; `formatCompression(mode, value)`
+  writes the string a job is sent (`"zlib,lzma"`, `"zstd:19"`, `"none"`, or
+  null for the tool's own default, sending only the codecs the mode offers,
+  #471) and `parseCompression` reads it back. `fromRule` / `toRule` map a Rule's
+  `compression` + `compression_level`, `defaultCompression` / `isDefault` drive
+  Reset, and `toggleCodec` / `withCodec` / `withLevel` are the picker's edits
+  (the codec cap, a level pulled into the codec's own range). Tested by
+  `tests/test_frontend_compression_util.py`.
+- `CompressionPicker.svelte` is controlled: `{ mode, value, onchange, compact,
+  label }`. It reads only the registry and the compat table, never a store. The
+  convert store exposes `compressionChoice` / `setCompressionChoice(v)` as thin
+  wrappers (its `compressionValue` stays the wire string a job is sent).
+- `src/lib/tools/convertTargets.js` groups every mode for a "Convert to"
+  select: *Recommended* (best format for each game), *Make smaller* (one option
+  per output format, or per mode with `perMode`), *Unpack* (`kind: 'extract'`)
+  and *Other* (`kind: 'copy'` plus `OTHER_MODES`, which change a container
+  without shrinking it). It narrows by the games at hand (`entries`, by
+  `inputExtensions` or a folder mode's `convertible_by`), a console's
+  `modeIds` / `toolIds`, and the `ready` tools. `PLAIN_MODE_LABELS` names the
+  extract and other modes by what comes out ("BIN/CUE from CHD"). Its guard,
+  `tests/test_frontend_convert_targets.py`, fails when a mode lands in no group
+  or in two.
+- `src/lib/util/safetyOptions.js` (drawn by `SafetyOptions.svelte`) decides
+  which safety choices a set of mode specs offers: check each new file, delete
+  the original (only where `supportsDeleteOnVerify`; the rest are named as
+  kept, with `sourceKeptReason`), and the quick check (only where a Round-trip
+  runs and isn't required). Deleting forces the check on.
+- `FolderPicker.svelte` / `FolderPickerModal.svelte` pick a folder by walking
+  the Drives (`/api/volumes`, then `/api/files`), never through a typed path.
+- The defaults store (`src/lib/stores/defaults.svelte.js`, `GET`/`PUT
+  /api/preferences/defaults`, model `DefaultsPreferences`) holds the safety
+  choices new conversions and new console settings start with. Nothing stored
+  answers the safe defaults: check on, delete off, full check.
+- Routes live in one pure file, `src/lib/router/routes.js`: `VIEWS`,
+  `VIEW_TITLES`, `parseHash`, `hashFor` and `legacyRedirect`, which moves every
+  old route (`#/workspace/<tool>`, `#/rules/<id>`, `#/findings`, …) to its new
+  home. The router applies a redirect with `history.replaceState`, so Back
+  never bounces. `tests/test_frontend_routes_8.py` checks every row.
 
 ---
 

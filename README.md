@@ -360,43 +360,31 @@ docker pull pacnpal/compressatorium:3.7.0-beta-3
 
 ## Quick Start Guide
 
-### 1. Select Your Primary Tool
+The app has four places, in the sidebar: **Files**, **Libraries**, **Activity**
+and **Settings**, plus **Help**.
 
-When you open the Web UI, you'll see the tool options at the top:
+### 1. Open Files and pick your games
 
-* **CHDMAN** - For converting CD/DVD/LaserDisc images to CHD format
-* **Dolphin** - For GameCube/Wii game image conversions
-* **3DS** - For compressing Nintendo 3DS ROMs
-* **Switch** - For compressing/decompressing Nintendo Switch dumps (needs your own prod.keys)
-* **CSO** - For compressing/decompressing PSP/PS2 ISO images to CSO/ZSO (and a one-step CSO → CHD chain)
-* **Handheld ROM** - For compressing/extracting cartridge ROM dumps to .7z/.zip archives (Game Boy/GBC/GBA/DS, NES, SNES, N64, Master System, Genesis, Game Gear, Virtual Boy, WonderSwan, Neo Geo Pocket, Lynx, C64, Atari 2600/7800)
-* **PS3 ISO** - For packing a decrypted PS3 folder into a `.iso` RPCS3 can mount
-* **Wii U** - For compressing Wii U disc images to `.wux` and back
-* **NKit** - For restoring an NKit-shrunk GameCube/Wii image to a full `.iso` (or straight
-  to RVZ)
-* **Xbox** - For trimming an Xbox / Xbox 360 disc image to XISO
-* **rom-converto** - For packing an Xbox 360 disc image to ZAR, a PSP PBP back to ISO,
-  or 3DS CIA to CCI and back
-* **eXoDOS** - For repacking an eXoDOS DOS game zip to `.dosz` for RomM (no setup:
-  point it at your eXoDOS collection)
-* **RAR sets** - For extracting a multi-part RAR set to the one file inside it
+* The **Drives** on the left are the folders you gave the container
+  ([setup guide](docs/DOCKER-COMPOSE.md)). Pick one, then click folders to browse.
+* Tick the games you want to convert. Archives (.zip, .7z, .rar) open like folders.
+* A decrypted PS3 folder is itself selectable when **Convert to** is the PS3 ISO format.
 
-**Choose the tool that matches your files.** The interface then shows only the modes and file types that tool can use.
+### 2. Choose what to convert to, and press Convert
 
-### 2. Browse and Select Files
+* **Convert to** lists every format a ready converter makes, grouped as
+  *Make smaller*, *Unpack* and *Other* (CHD, RVZ, CSO, 7z, NSZ, WUX, ZAR, …).
+  Or tick **Auto** and each game goes to its console's best format, with the plan
+  shown before anything runs.
+* Compression has sensible defaults; **Choose codecs** changes them
+  (see [Compression Settings](#compression-settings)).
+* Press **Start conversion**. The top bar shows what is converting and waiting;
+  click it to open **Activity**, where Running, History and anything that needs you live.
 
-* Navigate through your mounted volumes using the left panel
-* Click on folders to browse subdirectories
-* Check the boxes next to files you want to convert
-* Archives (.zip, .7z, .rar) can be browsed by clicking them
-* With the **PS3 ISO** tool selected, a decrypted PS3 folder is itself selectable as a source (clicking its name still browses into it); the rest of the tools take files
+### 3. Let a Library look after a folder
 
-### 3. Configure and Convert
-
-* Select the appropriate conversion mode from the dropdown
-* Adjust compression settings if available (see [Compression Settings](#compression-settings))
-* Click the action button (Create/Convert/Compress depending on mode)
-* Monitor progress in the job queue panel
+* **Libraries → Add a Library**, or **Make this folder a Library** in Files, turns a
+  games folder (or your RomM) into one that converts new games on its own.
 
 ---
 
@@ -2013,7 +2001,7 @@ API using [z3ds_compress](https://github.com/pacnpal/z3ds_compress) — a fork o
 the original [`energeticokay/z3ds_compress`](https://github.com/energeticokay/z3ds_compress)
 that adds a decompression mode and support for `.cxi`/`.3dsx` files.
 
-Select **3DS** as the primary tool, pick your files, and choose a mode:
+Pick a **3DS** format in **Convert to**, pick your files, and choose a mode:
 **Compress 3DS** (`z3ds_compress`) packs a raw ROM, and **Decompress 3DS**
 (`z3ds_decompress`) restores the original ROM from a Z3DS file. The general
 workflow (queue, verify, delete-on-verify, archives) is in the
@@ -2196,7 +2184,7 @@ decompress step. No keys are required.
 
 ### How to Use
 
-Select **CSO** as the primary tool and pick a mode (the general workflow is in the
+Pick a **CSO** format in **Convert to** and pick a mode (the general workflow is in the
 [Usage Guide](#usage-guide)):
 
 - *Compress ISO → CSO* (`.iso` → `.cso`, CSO v1, the universally-supported default, deflate-based)
@@ -2275,7 +2263,7 @@ but a CHD still extracts back to an ISO; PS3 ISO has no way back at all.)
 
 ### How to Use
 
-Select **PS3 ISO** as the primary tool. A decrypted PS3 folder then shows up as a
+Pick a **PS3 ISO** format in **Convert to**. A decrypted PS3 folder then shows up as a
 selectable source in the file browser and in Search All (clicking its name still
 browses into it). Pick the folder and run the one mode, `folder_to_iso`. The
 output is `<folder>.iso` next to the source, or in a custom output directory
@@ -2352,7 +2340,7 @@ extract features do need your own keys — they are out of scope here.)
 
 ### How to Use
 
-Select **Wii U** as the primary tool, pick a `.wud` (or a `.wux` to go back), and
+Pick a **Wii U** format in **Convert to**, pick a `.wud` (or a `.wux` to go back), and
 run `jwud_compress` / `jwud_decompress`. The output is `<name>.wux` / `<name>.wud`
 next to the source, or in a custom output directory. The general workflow (queue,
 duplicate handling, delete-on-verify) is in the [Usage Guide](#usage-guide).
@@ -2446,7 +2434,7 @@ This is a one-way tool: Compressatorium never *writes* NKit. Once restored, the
 
 ### How to Use
 
-Select **NKit** as the primary tool and pick a `.nkit.iso` or `.nkit.gcz`. There
+Pick a **NKit** format in **Convert to** and pick a `.nkit.iso` or `.nkit.gcz`. There
 are two modes:
 
 - **`nkit_restore`** writes `<name>.iso` next to the source (or in a custom

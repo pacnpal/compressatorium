@@ -10,7 +10,6 @@
 import { api } from '$lib/api/endpoints.js';
 import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
 import { conversion } from '$lib/stores/conversion.svelte.js';
-import { ui } from '$lib/stores/ui.svelte.js';
 import { registry } from '$lib/tools/registry.js';
 import { RulesSource } from '$lib/rules/rulesSource.svelte.js';
 import { LatestSaveQueue } from '$lib/stores/latestSaveQueue.js';
@@ -615,10 +614,7 @@ class RommStore extends RulesSource {
 
     if (!allowed.includes(conversion.primaryTool)) {
       const next = registry.all().find((t) => allowed.includes(t.id));
-      if (next) {
-        conversion.setPrimaryTool(next.id);
-        ui.workspaceTool = next.id;
-      }
+      if (next) conversion.setPrimaryTool(next.id);
     }
     // setPrimaryTool resets to the tool's default mode, which may itself be
     // one this platform disallows; and when the tool did not change, nothing

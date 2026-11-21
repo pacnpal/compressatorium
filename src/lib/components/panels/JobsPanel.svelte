@@ -99,7 +99,7 @@
          keeps every one (#533). -->
     <p class="trimmed">
       Older finished jobs leave this list.
-      <button type="button" class="ledger-link" onclick={() => ui.navigate('ledger')}>
+      <button type="button" class="ledger-link" onclick={() => ui.navigate('activity', { tab: 'history' })}>
         Every job is in the Ledger
       </button>
     </p>

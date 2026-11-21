@@ -90,7 +90,8 @@ process.stdout.write(JSON.stringify({ before, after }));
 
 def test_the_file_listing_refreshes_on_job_identity_not_counts():
     app = (_SRC / "App.svelte").read_text(encoding="utf-8")
-    dashboard = (_SRC / "lib" / "components" / "views" / "Dashboard.svelte").read_text(
+    # The space-saved card moved from the Dashboard to Activity (#534).
+    dashboard = (_SRC / "lib" / "components" / "views" / "ActivityView.svelte").read_text(
         encoding="utf-8",
     )
 

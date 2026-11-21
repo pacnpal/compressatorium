@@ -82,14 +82,14 @@
   // link to another's, or Back, reselects instead of showing the previous one.
   $effect(() => {
     if (embedded) return;
-    const target = ui.rulesTarget;
+    const target = ui.libraryTarget;
     if (target) untrack(() => libraries.select(target));
   });
 
   onMount(() => {
     if (embedded) libraries.select(ROMM_LIBRARY_ID);
     const listed = libraries.load();
-    if (!embedded && !ui.rulesTarget) opening = listed;
+    if (!embedded && !ui.libraryTarget) opening = listed;
     return () => {
       alive = false;
       if (!enteredRomm) return;
@@ -266,7 +266,7 @@
     >
       {#snippet actions()}
         {#if !embedded}
-          <Button onclick={() => ui.navigate('romm')}>Connect RomM</Button>
+          <Button onclick={() => ui.navigate('libraries', { id: 'romm', tab: 'connection' })}>Connect RomM</Button>
         {/if}
       {/snippet}
     </EmptyState>

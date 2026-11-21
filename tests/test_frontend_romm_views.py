@@ -294,7 +294,7 @@ def test_navigating_into_a_catalog_folder_leaves_the_romm_view():
         r"if \(this\.rommPlatformId !== null\) \{(.*?)\n    \}", src, re.DOTALL,
     )
     assert body, "the exit-RomM branch of navigate() is no longer where this guard looks"
-    assert "ui.navigate('workspace')" in body.group(1), (
+    assert "ui.navigate('files')" in body.group(1), (
         "navigate() drops RomM mode without leaving the RomM view, which has "
         "no breadcrumbs to get back with"
     )

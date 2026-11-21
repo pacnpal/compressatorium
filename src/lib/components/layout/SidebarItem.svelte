@@ -1,17 +1,24 @@
 <script>
+  import Badge from '$lib/components/ui/Badge.svelte';
+
   /**
    * @typedef {Object} Props
    * @property {string} label
    * @property {boolean} [active]
    * @property {boolean} [collapsed]
-   * @property {string} [badge]
+   * @property {number|null} [badge] a count shown after the label (a dot when collapsed)
+   * @property {'warning'|'info'} [badgeTone]
    * @property {string} [title]
    * @property {(e: MouseEvent) => void} [onclick]
    * @property {import('svelte').Snippet} [icon]
    */
 
   /** @type {Props} */
-  let { label, active = false, collapsed = false, badge, title, onclick, icon } = $props();
+  let {
+    label, active = false, collapsed = false, badge = null, badgeTone = 'info', title, onclick, icon,
+  } = $props();
+  const counted = $derived(typeof badge === 'number' && badge > 0);
+  const name = $derived(counted ? `${label} (${badge})` : label);
 </script>
 
 <button
@@ -19,14 +26,18 @@
   class="sidebar-item"
   class:active
   class:collapsed
-  title={title ?? label}
+  title={title ?? name}
+  aria-label={collapsed ? name : undefined}
   aria-current={active ? 'page' : undefined}
   {onclick}
 >
-  <span class="icon">{#if icon}{@render icon()}{:else}•{/if}</span>
+  <span class="icon">
+    {#if icon}{@render icon()}{:else}•{/if}
+    {#if collapsed && counted}<span class="dot tone-{badgeTone}" aria-hidden="true"></span>{/if}
+  </span>
   {#if !collapsed}
     <span class="label">{label}</span>
-    {#if badge}<span class="badge">{badge}</span>{/if}
+    {#if counted}<Badge tone={badgeTone}>{badge}</Badge>{/if}
   {/if}
 </button>
 
@@ -71,19 +82,18 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .badge {
-    background: var(--badge-bg);
-    color: var(--badge-text);
+  .icon { position: relative; }
+  .dot {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 8px;
+    height: 8px;
     border-radius: var(--radius-full);
-    padding: 2px 8px;
-    font-size: var(--text-xs);
-    font-weight: var(--weight-semibold);
-    line-height: 1.4;
+    border: 2px solid var(--surface-1);
   }
-  .active .badge {
-    background: var(--accent);
-    color: var(--accent-contrast);
-  }
+  .dot.tone-warning { background: var(--warning); }
+  .dot.tone-info { background: var(--info); }
   .collapsed {
     justify-content: center;
     padding: var(--space-2);

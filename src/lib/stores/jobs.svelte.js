@@ -65,6 +65,8 @@ class JobsStore {
   _evictedIds = Object.create(null);
   _evictedOrder = [];
   _unsubscribe = null;
+  // True once the first /api/jobs snapshot has answered (or failed).
+  hydrated = $state(false);
   _pollTimer = null;
 
   get activeCount() {
@@ -316,6 +318,8 @@ class JobsStore {
       console.error('Job snapshot hydration failed:', e);
     } finally {
       this.loading = false;
+      // Answered (or failed): what runs is now as known as it will get.
+      this.hydrated = true;
     }
   }
 

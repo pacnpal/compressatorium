@@ -181,10 +181,18 @@ class LibrariesStore {
   /** The folder Library *path* is in (its root or below it), or null. */
   folderLibraryFor(path) {
     if (!path) return null;
-    return this.folders.find((lib) => {
+    // Libraries may nest (#514): the nearest root owns the path.
+    let owner = null;
+    let ownerLength = -1;
+    for (const lib of this.folders) {
       const root = String(lib.root ?? '').replace(/\/+$/, '');
-      return !!root && (path === root || path.startsWith(`${root}/`));
-    }) ?? null;
+      if (!root || root.length <= ownerLength) continue;
+      if (path === root || path.startsWith(`${root}/`)) {
+        owner = lib;
+        ownerLength = root.length;
+      }
+    }
+    return owner;
   }
 
   /** The rules source for *id*: the RomM store, or a folder Library's own. */
@@ -323,10 +331,10 @@ class LibrariesStore {
     this.selectedId = id || ROMM_LIBRARY_ID;
   }
 
-  /** Open the Rules view on *id*, kept in the URL so a reload stays there. */
-  open(id = ROMM_LIBRARY_ID) {
+  /** Open Library *id*'s page, on *tab* when given (`#/libraries/<id>[/<tab>]`). */
+  open(id = ROMM_LIBRARY_ID, tab = null) {
     this.select(id);
-    ui.navigate('rules', id);
+    ui.navigate('libraries', { id, tab });
   }
 
   /**

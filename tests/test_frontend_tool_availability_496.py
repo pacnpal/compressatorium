@@ -21,6 +21,8 @@ import pytest
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 _STORE_JS = _SRC / "lib" / "stores" / "ui.svelte.js"
+# The store reads its routes from this pure file; the harness inlines it.
+_ROUTES_JS = _SRC / "lib" / "router" / "routes.js"
 
 _STUBS = """
 const toast = { dismiss() {}, success() {}, warning() {} };
@@ -51,6 +53,9 @@ def _find_node() -> str | None:
 def _plain_js() -> str:
     src = _STORE_JS.read_text(encoding="utf-8")
     body = re.sub(r"^import[\s\S]*?from\s+'[^']+';\s*$", "", src, flags=re.MULTILINE)
+    body = re.sub(r"^export \{[^}]*\};\s*$", "", body, flags=re.MULTILINE)
+    routes = _ROUTES_JS.read_text(encoding="utf-8").replace("export ", "")
+    body = routes + body
     body = re.sub(r"\$state\(", "(", body)
     leftover = [r for r in ("$state.raw(", "$derived(", "$effect(") if r in body]
     assert not leftover, f"ui.svelte.js grew runes this harness does not reduce: {leftover}"
@@ -100,20 +105,18 @@ process.stdout.write(JSON.stringify({{ shown: {_ids('store.visibleTools')} }}));
     assert data["shown"] == ["chdman", "dolphin", "nsz"], data
 
 
-def test_a_hidden_workspace_tool_falls_back_to_a_visible_one(tmp_path):
-    data = _run(tmp_path, """
-const store = new UIStore();
-store.workspaceTool = 'nsz';
-store.applyToolAvailability(['dolphin']);
-process.stdout.write(JSON.stringify({ tool: store.workspaceTool }));
-""")
-    assert data["tool"] == "dolphin", data
+def test_a_hidden_convert_tool_falls_back_to_a_visible_one():
+    """The Convert panel's tool follows availability: App moves it off a tool
+    the backend can't run, onto the first one it can."""
+    app = (_SRC / "App.svelte").read_text(encoding="utf-8")
+    assert "const tools = ui.visibleTools;" in app
+    assert "conversion.setPrimaryTool(tools[0].id)" in app
 
 
-def test_both_consumers_read_the_store_and_a_failed_fetch_marks_it_known():
-    for rel in ("components/layout/Sidebar.svelte", "components/dashboard/QuickToolsCard.svelte"):
+def test_the_consumers_read_the_store_and_a_failed_fetch_marks_it_known():
+    for rel in ("components/panels/ModeSelect.svelte", "components/settings/Converters.svelte"):
         text = (_SRC / "lib" / rel).read_text(encoding="utf-8")
-        assert "ui.visibleTools" in text, rel
+        assert "ui.visibleTools" in text or "ui.toolsKnown" in text, rel
         assert "hiddenTools" not in text, rel
     app = (_SRC / "App.svelte").read_text(encoding="utf-8")
     assert "applyToolAvailability(null)" in app

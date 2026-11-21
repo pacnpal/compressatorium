@@ -43,7 +43,10 @@
   // deletion. The verification store only tracks existing verified outputs,
   // so source inputs must not be pre-filtered or block normal create/compress
   // flows here.
-  const submitDisabled = $derived(convertibleCount === 0 || converting || conversion.autoInFlight);
+  // A RomM catalog switching platforms still shows the old platform's rows.
+  const catalogLoading = $derived(fileBrowser.rommPlatformId !== null && fileBrowser.loading);
+  const blocked = $derived(converting || conversion.autoInFlight || catalogLoading);
+  const submitDisabled = $derived(convertibleCount === 0 || blocked);
 
   // Duplicate preflight: open the modal when the backend reports any
   // output collision; await the user's pick (skip / overwrite / null
@@ -225,8 +228,8 @@
 
   {#if !tool}
     <EmptyState
-      title="No tool selected"
-      description="Pick a tool from the sidebar to configure conversions."
+      title="Nothing to convert to"
+      description="No converter can run here. Settings lists what is missing."
       glyph="◈"
     />
   {:else}
@@ -238,7 +241,11 @@
       />
       {#if !auto}
         <ModeSelect />
-        <CompressionPicker />
+        <CompressionPicker
+          mode={conversion.mode}
+          value={conversion.compressionChoice}
+          onchange={(v) => conversion.setCompressionChoice(v)}
+        />
       {/if}
 
       <label class="field">

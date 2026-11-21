@@ -46,7 +46,8 @@ def test_every_view_has_a_top_bar_title(tmp_path):
     data = _run_ui(tmp_path, """
 process.stdout.write(JSON.stringify({ views: [...VIEWS], titles: VIEW_TITLES }));
 """)
-    assert {"romm", "rules", "findings"} <= set(data["views"]), data
+    # The four places plus Help (#534); the old views redirect into them.
+    assert data["views"] == ["files", "libraries", "activity", "settings", "help"], data
     for view in data["views"]:
         assert data["titles"].get(view), f"{view} has no top-bar title"
     assert "VIEW_TITLES[view]" in _read("lib", "components", "layout", "TopBar.svelte")
@@ -56,21 +57,21 @@ def test_navigating_to_a_library_keeps_its_id_in_the_url(tmp_path):
     data = _run_ui(tmp_path, """
 globalThis.window = { location: { hash: '' } };
 const store = new UIStore();
-store.navigate('rules', 'folder:3');
+store.navigate('libraries', { id: 'folder:3' });
 const hash = window.location.hash;
 store.applyHash(hash);
-process.stdout.write(JSON.stringify({ hash, target: store.rulesTarget }));
+process.stdout.write(JSON.stringify({ hash, target: store.libraryTarget }));
 """)
-    assert data == {"hash": "#/rules/folder%3A3", "target": "folder:3"}, data
+    assert data == {"hash": "#/libraries/folder%3A3", "target": "folder:3"}, data
 
 
 def test_opening_a_library_passes_its_id_to_the_router(tmp_path):
     data = _run_libraries(tmp_path, """
-ui.navigate = function (v, sub) { this.navigated = [v, sub]; };
+ui.navigate = function (v, opts) { this.navigated = [v, opts]; };
 libraries.open('folder:3');
 process.stdout.write(JSON.stringify({ view: ui.navigated }));
 """)
-    assert data["view"] == ["rules", "folder:3"], data
+    assert data["view"] == ["libraries", {"id": "folder:3", "tab": None}], data
 
 
 def test_the_rules_view_skips_romm_when_it_is_not_set_up(tmp_path):
@@ -93,7 +94,7 @@ def test_the_rules_view_wires_the_opening_choice():
     assert "libraries.openOnConfigured(romm.configured)" in src
     # An unconfigured RomM shows one way to connect it, not its Rules.
     assert "{#if rommMissing}" in src
-    assert "ui.navigate('romm')" in src
+    assert "ui.navigate('libraries', { id: 'romm', tab: 'connection' })" in src
 
 
 def test_romms_automation_tab_lists_romm_only():
@@ -138,10 +139,10 @@ def test_no_pointer_names_a_settings_section_that_does_not_exist():
         assert not re.search(r"Settings\s+→\s+Metadata", src), path
 
 
-def test_the_tool_heading_needs_a_tool():
+def test_the_sidebar_has_no_tool_section():
+    """The per-tool section is gone (#534): the Convert-to list reaches every tool."""
     src = _read("lib", "components", "layout", "Sidebar.svelte")
-    heading = src.index('<h2 class="section-title">Tool</h2>')
-    assert src.rfind("{#if tools.length > 0}", 0, heading) != -1
+    assert 'class="section-title">Tool<' not in src
 
 
 def test_the_main_area_draws_no_ring_when_it_takes_focus():

@@ -389,10 +389,9 @@ class ConversionStore {
   setPrimaryTool(toolId) {
     const tool = registry.forTool(toolId);
     if (!tool) return;
-    // No-op guard so the App.svelte $effect that bridges
-    // ui.workspaceTool → this store can fire whenever Svelte considers
-    // the dependency dirty without resetting the user's customized
-    // mode / compression selection on every reactive trigger.
+    // No-op guard so a caller that re-asserts the current tool (App's
+    // availability fallback, a RomM platform pick) never resets the user's
+    // customized mode / compression selection.
     if (this.primaryTool === toolId) return;
     this.primaryTool = toolId;
     writeString(STORAGE_KEYS.PRIMARY_TOOL, toolId);
@@ -703,6 +702,22 @@ class ConversionStore {
       return String(this.compressionLevel) === defaultLevelFor(toolId);
     }
     return true;
+  }
+
+  /**
+   * The current compression as the controlled CompressionPicker takes it
+   * (`{ codecs, level }`, $lib/tools/compression.js). Thin wrappers over the
+   * state above; `compressionValue` stays the wire string a job is sent.
+   */
+  get compressionChoice() {
+    const level = Number.parseInt(this.compressionLevel, 10);
+    return { codecs: this.compressionSelection, level: Number.isFinite(level) ? level : null };
+  }
+
+  setCompressionChoice(value) {
+    this.compressionSelection = [...(value?.codecs ?? [])];
+    this.compressionLevel = value?.level == null ? '' : String(value.level);
+    this.#persistCompression();
   }
 
   // ─── Preflight ────────────────────────────────────────────────────────
