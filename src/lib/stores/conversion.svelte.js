@@ -393,37 +393,43 @@ class ConversionStore {
     this.planError = null;
     return new Promise((resolve) => {
       this.#planResolve = resolve;
-      const run = async () => {
-        this.#planTimer = null;
-        const controller = new AbortController();
-        this.#planAbort = controller;
-        try {
-          const plan = await api.getAutoPlan(snapshot, this.outputDir || null, {
-            signal: controller.signal,
-            target: this.target || null,
-            platformOverrides: this.overridesFor(snapshot),
-          });
-          if (seq !== this.#planSeq) return;
-          this.plan = Array.isArray(plan) ? plan : [];
-          this.planKey = key;
-          resolve(this.plan);
-        } catch (e) {
-          if (seq !== this.#planSeq) return;
-          this.plan = null;
-          this.planKey = null;
-          this.planError = e?.message ?? "Couldn't plan this";
-          resolve(null);
-        } finally {
-          if (seq === this.#planSeq) {
-            this.planning = false;
-            this.#planAbort = null;
-            this.#planResolve = null;
-          }
-        }
-      };
-      if (delay > 0 && isBrowser) this.#planTimer = setTimeout(run, delay);
-      else run();
+      const ask = { seq, snapshot, key, resolve };
+      if (delay > 0 && isBrowser) {
+        this.#planTimer = setTimeout(this.#runPlan.bind(this), delay, ask);
+      } else {
+        this.#runPlan(ask);
+      }
     });
+  }
+
+  /** One plan request, answered only while it is still the newest. */
+  async #runPlan({ seq, snapshot, key, resolve }) {
+    this.#planTimer = null;
+    const controller = new AbortController();
+    this.#planAbort = controller;
+    try {
+      const plan = await api.getAutoPlan(snapshot, this.outputDir || null, {
+        signal: controller.signal,
+        target: this.target || null,
+        platformOverrides: this.overridesFor(snapshot),
+      });
+      if (seq !== this.#planSeq) return;
+      this.plan = Array.isArray(plan) ? plan : [];
+      this.planKey = key;
+      resolve(this.plan);
+    } catch (e) {
+      if (seq !== this.#planSeq) return;
+      this.plan = null;
+      this.planKey = null;
+      this.planError = e?.message ?? "Couldn't plan this";
+      resolve(null);
+    } finally {
+      if (seq === this.#planSeq) {
+        this.planning = false;
+        this.#planAbort = null;
+        this.#planResolve = null;
+      }
+    }
   }
 
   /** Stop a pending or running plan request; its promise resolves null. */

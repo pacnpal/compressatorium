@@ -39,30 +39,38 @@ function loadPageSize() {
 function foldGameRows(entries) {
   // Plain objects as maps: a store module's Map/Set reads as reactive state.
   const listed = Object.fromEntries(entries.map((e) => [e?.path, true]));
-  const partsOf = {};
-  const discsOf = {};
-  const folded = {};
-  const add = (into, key, entry) => {
-    (into[key] ??= []).push(entry);
-    folded[entry.path] = true;
-  };
+  const folds = { partsOf: {}, discsOf: {}, folded: {} };
   for (const e of entries) {
     if (!e?.path) continue;
     if (e.companion_of && e.companion_of !== e.path && listed[e.companion_of]) {
-      add(partsOf, e.companion_of, e);
+      foldUnder(folds, folds.partsOf, e.companion_of, e);
     } else if (e.disc_of && e.disc_of !== e.path && listed[e.disc_of]) {
-      add(discsOf, e.disc_of, e);
+      foldUnder(folds, folds.discsOf, e.disc_of, e);
     }
   }
-  if (Object.keys(folded).length === 0) return entries;
-  const build = (e) => {
-    const discs = discsOf[e.path]?.map(build);
-    const parts = discs ?? partsOf[e.path];
-    if (!parts) return e;
-    const size = (e.size ?? 0) + parts.reduce((n, p) => n + (p.size ?? 0), 0);
-    return { ...e, size, own_size: e.size ?? 0, parts, part_kind: discs ? 'discs' : 'files' };
-  };
-  return entries.filter((e) => !folded[e?.path]).map(build);
+  if (Object.keys(folds.folded).length === 0) return entries;
+  const rows = [];
+  for (const e of entries) {
+    if (!folds.folded[e?.path]) rows.push(gameRow(e, folds));
+  }
+  return rows;
+}
+
+/** File *entry* under the row at *key* in *into* (a part or a disc). */
+function foldUnder(folds, into, key, entry) {
+  if (!into[key]) into[key] = [];
+  into[key].push(entry);
+  folds.folded[entry.path] = true;
+}
+
+/** *e* with its folded parts (a disc keeps its own), or *e* as it is. */
+function gameRow(e, folds) {
+  const discRows = folds.discsOf[e.path];
+  const discs = discRows ? discRows.map((d) => gameRow(d, folds)) : null;
+  const parts = discs ?? folds.partsOf[e.path];
+  if (!parts) return e;
+  const size = (e.size ?? 0) + parts.reduce((n, p) => n + (p.size ?? 0), 0);
+  return { ...e, size, own_size: e.size ?? 0, parts, part_kind: discs ? 'discs' : 'files' };
 }
 
 class FileBrowserStore {

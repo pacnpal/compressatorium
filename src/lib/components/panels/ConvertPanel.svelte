@@ -260,7 +260,8 @@
       const groups = {};
       for (const row of rows) {
         if (!registry.specFor(row.mode)?.supportsDeleteOnVerify) continue;
-        (groups[row.mode] ??= []).push(row.file_path);
+        if (!groups[row.mode]) groups[row.mode] = [];
+        groups[row.mode].push(row.file_path);
       }
       if (Object.keys(groups).length) {
         try {

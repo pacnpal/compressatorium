@@ -71,7 +71,8 @@
         key = `${skip.kind}|${skip.key}`;
         line = skip;
       }
-      (groups[key] ??= { key, ...line, rows: [] }).rows.push(row);
+      if (!groups[key]) groups[key] = { key, ...line, rows: [] };
+      groups[key].rows.push(row);
     }
     const order = { go: 0, pick: 1, skip: 1, done: 2 };
     return Object.values(groups).sort(
