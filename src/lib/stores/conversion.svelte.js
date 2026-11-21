@@ -154,6 +154,10 @@ class ConversionStore {
   // The preference PUTs, one at a time in the order asked for, so an older
   // body can never land after a newer one.
   #saveChain = Promise.resolve();
+  // Why the last preference save failed, or null once one lands. Settings →
+  // Defaults shows it with Try again; the failure is also toasted, so an
+  // edit made in the Convert panel never fails silently either.
+  compressionSaveError = $state(null);
   // Set once the user changes any compression control, so a late boot
   // preference fetch can't revert an edit made while it was in flight.
   #compressionTouched = false;
@@ -478,10 +482,23 @@ class ConversionStore {
 
   #putPrefs() {
     const snapshot = { ...this.#compressionPrefs };
-    this.#saveChain = this.#saveChain
-      .then(() => api.putConversionPrefs(snapshot))
-      .catch(() => {});
+    this.#saveChain = this.#saveChain.then(async () => {
+      try {
+        await api.putConversionPrefs(snapshot);
+        this.compressionSaveError = null;
+      } catch (e) {
+        this.compressionSaveError = e?.message ?? 'Request failed';
+        toast.error(`Couldn't save the compression: ${this.compressionSaveError}`);
+      }
+    });
     return this.#saveChain;
+  }
+
+  /** Send the remembered compression again, after a save failed. */
+  retryCompressionSave() {
+    if (this.#saveTimer) clearTimeout(this.#saveTimer);
+    this.#saveTimer = null;
+    return this.#putPrefs();
   }
 
   /** Send a debounced preference now; resolves once every save so far has landed. */

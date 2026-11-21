@@ -132,6 +132,9 @@ def test_the_defaults_section_edits_the_remembered_compression_and_history():
     assert "conversion.applySavedDefaults(" in src
     assert "api.putConversionPrefs(" not in src and "setTimeout(" not in src
     assert "formatCompression(" in src and "parseCompression(" in src
+    # A save that fails shows under the pickers, with Try again.
+    assert "{#if conversion.compressionSaveError}" in src
+    assert "conversion.retryCompressionSave()" in src
     assert "<CompressionPicker" in src
     # History retention, which nothing in the UI set before.
     assert "api.getLedgerSettings()" in src and "api.putLedgerSettings(" in src

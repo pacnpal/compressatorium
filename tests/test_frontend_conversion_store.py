@@ -1158,3 +1158,26 @@ process.stdout.write(JSON.stringify({ before, flushed, later: puts[puts.length -
         "flushed": [{"chdman": "lzma", "dolphin": "zstd:19"}],
         "later": {"chdman": "zlib"},
     }
+
+
+def test_a_compression_save_that_fails_says_so(tmp_path):
+    """A preference that doesn't save is reported, never swallowed: the store
+    keeps the error for Settings to show (with Try again) and toasts it, which
+    covers a save made from the Convert panel too. The next good save clears it."""
+    data = _run_in_browser(tmp_path, """
+const store = conversion;
+api.putConversionPrefs = async () => { throw new Error('disk full'); };
+store.applySavedDefaults({ chdman: 'lzma' });
+await store.flushCompressionPrefs();
+const failed = store.compressionSaveError;
+const toasted = toasts.filter(([kind]) => kind === 'error').map(([, m]) => m);
+api.putConversionPrefs = async (body) => { puts.push(body); return body; };
+await store.retryCompressionSave();
+process.stdout.write(JSON.stringify({ failed, toasted, after: store.compressionSaveError, puts }));
+""")
+    assert data == {
+        "failed": "disk full",
+        "toasted": ["Couldn't save the compression: disk full"],
+        "after": None,
+        "puts": [{"chdman": "lzma"}],
+    }

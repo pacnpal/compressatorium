@@ -168,6 +168,14 @@
     {:else if prefs == null}
       <div class="state"><Spinner size="sm" /> Loading…</div>
     {:else}
+      {#if conversion.compressionSaveError}
+        <div class="error" role="alert">
+          Couldn't save the compression. {conversion.compressionSaveError}
+          <Button size="sm" variant="secondary" onclick={() => conversion.retryCompressionSave()}>
+            Try again
+          </Button>
+        </div>
+      {/if}
       <div class="pickers">
         {#each pickers as p (p.tool.id)}
           <CompressionPicker
