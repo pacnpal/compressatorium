@@ -367,7 +367,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_findings_is_a_view_of_its_own():
-    assert "'findings'" in _UI.read_text(encoding="utf-8")
+    assert "findings: 'Findings'" in _UI.read_text(encoding="utf-8")
     assert "FindingsView" in _APP.read_text(encoding="utf-8")
     assert "go('findings')" in _SIDEBAR.read_text(encoding="utf-8")
 

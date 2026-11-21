@@ -570,7 +570,7 @@
     align-items: center;
     gap: var(--space-2);
   }
-  .converter-banner :global(svg) { color: var(--warning); }
+  .converter-banner :global(svg) { color: var(--warning-text); }
   .converter-banner p { margin: 0; }
   .converter-banner code {
     background: var(--surface-2);

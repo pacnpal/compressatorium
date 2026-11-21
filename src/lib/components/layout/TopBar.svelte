@@ -1,24 +1,12 @@
 <script>
-  import { ui } from '$lib/stores/ui.svelte.js';
+  import { ui, VIEW_TITLES } from '$lib/stores/ui.svelte.js';
   import ThemeToggle from './ThemeToggle.svelte';
   import IconButton from '$lib/components/ui/IconButton.svelte';
   import Menu from '@lucide/svelte/icons/menu';
 
-  function titleFor(view) {
-    switch (view) {
-      case 'dashboard': return 'Dashboard';
-      case 'workspace': return 'Workspace';
-      case 'dat': return 'DAT Library';
-      case 'settings': return 'Settings';
-      case 'ledger': return 'Ledger';
-      case 'help': return 'Help';
-      default: return '';
-    }
-  }
-
   const version = $derived(ui.appVersion);
   const view = $derived(ui.activeView);
-  const title = $derived(titleFor(view));
+  const title = $derived(VIEW_TITLES[view] ?? '');
 </script>
 
 <header class="topbar">

@@ -1,7 +1,7 @@
 <script>
   import { ui } from '$lib/stores/ui.svelte.js';
   import { registry } from '$lib/tools/registry.js';
-  import { loadInfo } from '$lib/util/fileInfo.js';
+  import { loadInfo, infoRows } from '$lib/util/fileInfo.js';
   import BaseModal from './BaseModal.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -52,8 +52,6 @@
 
   function close() { ui.infoTarget = null; }
 
-  const entriesOf = (info) =>
-    info && typeof info === 'object' ? Object.entries(info) : [];
 </script>
 
 <BaseModal
@@ -71,27 +69,33 @@
       {#await request}
         <div class="ci-loading"><Spinner size="md" /> Loading…</div>
       {:then { info, notes }}
-        {@const entries = entriesOf(info)}
-        {#if entries.length === 0}
+        <!-- Plain facts first; a tool's raw output sits behind Details. -->
+        {@const { rows, details } = infoRows(info, target?.path)}
+        {#if rows.length === 0 && details.length === 0}
           <p class="ci-empty">No info returned.</p>
         {:else}
           {#each notes as note, i (i)}
             <p class="ci-note">{note}</p>
           {/each}
           <dl class="ci-list">
-            {#each entries as [key, value] (key)}
+            {#each rows as row (row.key)}
               <div class="ci-row">
-                <dt class="ci-key">{key}</dt>
-                <dd class="ci-val">
-                  {#if value && typeof value === 'object'}
-                    <pre class="ci-pre">{JSON.stringify(value, null, 2)}</pre>
-                  {:else}
-                    {value ?? ''}
-                  {/if}
-                </dd>
+                <dt class="ci-key">{row.label}</dt>
+                <dd class="ci-val">{row.value}</dd>
               </div>
             {/each}
           </dl>
+          {#if details.length}
+            <details class="ci-details">
+              <summary>Details</summary>
+              {#each details as row (row.key)}
+                <p class="ci-detail-label">{row.label}</p>
+                <pre class="ci-pre">{typeof row.value === 'string'
+                  ? row.value
+                  : JSON.stringify(row.value, null, 2)}</pre>
+              {/each}
+            </details>
+          {/if}
         {/if}
       {:catch e}
         <div class="ci-error" role="alert">
@@ -145,11 +149,12 @@
   .ci-row:last-child { border-bottom: none; }
   .ci-key {
     color: var(--text-2);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-semibold);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
   }
+  .ci-details { margin-top: var(--space-3); font-size: var(--text-sm); }
+  .ci-details summary { cursor: pointer; color: var(--text-2); }
+  .ci-detail-label { margin: var(--space-2) 0 var(--space-1); color: var(--text-2); }
   .ci-val {
     color: var(--text-1);
     font-size: var(--text-sm);

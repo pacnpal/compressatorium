@@ -231,8 +231,10 @@
     min-width: 0;
     background: var(--surface-2);
   }
+  /* <main> takes focus on every route change so a screen reader starts there.
+     It isn't a control (tabindex -1), so it draws no ring. */
   .main { flex: 1; overflow-y: auto; outline: none; }
-  .main:focus-visible { box-shadow: inset 0 0 0 3px var(--accent); }
+  .main:focus, .main:focus-visible { box-shadow: none; }
 
   .skip-link {
     position: fixed;

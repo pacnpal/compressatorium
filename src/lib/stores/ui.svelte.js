@@ -14,7 +14,19 @@ import { STORAGE_KEYS, readBool, writeBool, readString, writeString } from '$lib
 import { api } from '$lib/api/endpoints.js';
 import { registry } from '$lib/tools/registry.js';
 
-const VIEWS = Object.freeze(['dashboard', 'workspace', 'romm', 'rules', 'findings', 'dat', 'ledger', 'settings', 'help']);
+// Each view's top-bar title. VIEWS is its keys, so a new view can't go untitled.
+export const VIEW_TITLES = Object.freeze({
+  dashboard: 'Dashboard',
+  workspace: 'Workspace',
+  romm: 'RomM',
+  rules: 'Rules',
+  findings: 'Findings',
+  dat: 'DAT Library',
+  ledger: 'Ledger',
+  settings: 'Settings',
+  help: 'Help',
+});
+const VIEWS = Object.freeze(Object.keys(VIEW_TITLES));
 // Tool ids come from the registry, single source of truth, no
 // hardcoded set to keep in sync when a 4th tool is added.
 const VALID_TOOLS = registry.ids();
@@ -135,12 +147,17 @@ class UIStore {
     this.mobileDrawerOpen = false;
   }
 
-  /** Navigate by updating the URL hash; the router reads it back into state. */
-  navigate(view, tool) {
+  /**
+   * Navigate by updating the URL hash; the router reads it back into state.
+   * *sub* is the Workspace's tool or the Rules view's Library id.
+   */
+  navigate(view, sub) {
     if (!VIEWS.includes(view)) return;
     let target = `#/${view}`;
-    if (view === 'workspace' && tool && VALID_TOOLS.has(tool)) {
-      target += `/${tool}`;
+    if (view === 'workspace' && sub && VALID_TOOLS.has(sub)) {
+      target += `/${sub}`;
+    } else if (view === 'rules' && sub) {
+      target += `/${encodeURIComponent(sub)}`;
     }
     if (typeof window !== 'undefined') {
       if (window.location.hash === target) {
