@@ -94,8 +94,14 @@ export class RulesSource {
   // apart. A save sends only these (null for one removed) and the server
   // merges them (#541, Codex 4653298940): a table holding none or some of
   // the Rules can never wipe the others.
-  #changedRules = new Set();
-  #changedChecks = new Set();
+  #changedRules = {};
+  #changedChecks = {};
+  // Edits still being checked before they can be saved (a name filter the
+  // server is compiling), and those it refused, by field: Preview, Run now
+  // and the automation switch wait for the first and refuse on the second
+  // (Codex 4653298945), so they never run with a filter the screen doesn't show.
+  #holds = [];
+  #unsaved = {};
 
   constructor(endpoints) {
     this.#endpoints = endpoints;
@@ -198,7 +204,7 @@ export class RulesSource {
   setCheckRule(platformId, rule) {
     const key = String(platformId);
     this.checkRules = { ...this.checkRules, [key]: withoutStaleWindowFlag(this.checkRules[key], rule) };
-    this.#changedChecks.add(key);
+    this.#changedChecks[key] = true;
     this.rulesDirty = true;
     this.#rulesRevision += 1;
   }
@@ -207,7 +213,7 @@ export class RulesSource {
     const next = { ...this.checkRules };
     delete next[String(platformId)];
     this.checkRules = next;
-    this.#changedChecks.add(String(platformId));
+    this.#changedChecks[String(platformId)] = true;
     this.rulesDirty = true;
     this.#rulesRevision += 1;
   }
@@ -215,7 +221,7 @@ export class RulesSource {
   setRule(platformId, rule) {
     const key = String(platformId);
     this.rules = { ...this.rules, [key]: withoutStaleWindowFlag(this.rules[key], rule) };
-    this.#changedRules.add(key);
+    this.#changedRules[key] = true;
     this.rulesDirty = true;
     this.#rulesRevision += 1;
   }
@@ -241,7 +247,7 @@ export class RulesSource {
     const next = { ...this.rules };
     delete next[String(platformId)];
     this.rules = next;
-    this.#changedRules.add(String(platformId));
+    this.#changedRules[String(platformId)] = true;
     this.rulesDirty = true;
     this.#rulesRevision += 1;
   }
@@ -269,10 +275,10 @@ export class RulesSource {
     // this point is NOT in what we just submitted.
     const revision = this.#rulesRevision;
     // Only what changed: each console's Rule as it is now, null when removed.
-    const changed = [...this.#changedRules];
-    const changedChecks = [...this.#changedChecks];
-    this.#changedRules.clear();
-    this.#changedChecks.clear();
+    const changed = Object.keys(this.#changedRules);
+    const changedChecks = Object.keys(this.#changedChecks);
+    this.#changedRules = {};
+    this.#changedChecks = {};
     const patch = (keys, from) => withoutWindowFlags(
       Object.fromEntries(keys.map((k) => [k, from[k] ?? null])),
     );
@@ -284,8 +290,8 @@ export class RulesSource {
       );
     } catch (e) {
       // Not saved: they go with the next save.
-      for (const k of changed) this.#changedRules.add(k);
-      for (const k of changedChecks) this.#changedChecks.add(k);
+      for (const k of changed) this.#changedRules[k] = true;
+      for (const k of changedChecks) this.#changedChecks[k] = true;
       throw e;
     }
     this.#saveGeneration += 1;
@@ -337,7 +343,28 @@ export class RulesSource {
    * table shows. An edit made while a save was out leaves the Rules dirty
    * (see `#saveNow`), so it saves once more before giving up.
    */
+  /** Make `flush()` wait for *promise*: an edit that is still being checked. */
+  hold(promise) {
+    const held = Promise.resolve(promise).catch(() => {});
+    this.#holds.push(held);
+    held.finally(() => {
+      this.#holds = this.#holds.filter((h) => h !== held);
+    });
+  }
+
+  /** Mark field *key* as typed but not saveable (*reason*), or clear it (null). */
+  markUnsaved(key, reason) {
+    if (reason) this.#unsaved[key] = reason;
+    else delete this.#unsaved[key];
+  }
+
   async flush() {
+    while (this.#holds.length) await Promise.all(this.#holds);
+    const refused = Object.values(this.#unsaved)[0];
+    if (refused) {
+      this.saveError = refused;
+      return false;
+    }
     if (this.#saveTimer) {
       clearTimeout(this.#saveTimer);
       this.#saveTimer = null;

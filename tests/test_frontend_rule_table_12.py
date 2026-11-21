@@ -442,3 +442,36 @@ def test_the_table_waits_for_the_rules_before_it_can_change_them():
     guard = src.rfind("{:else if !source.rulesLoaded}", 0, table)
     assert guard != -1, "the table renders before the Rules have loaded"
     assert "disabled={!source.rulesLoaded ||" in src
+
+
+def test_a_run_waits_for_a_pattern_still_being_checked(tmp_path):
+    """Codex 4653298945: Run now within the debounce, or while the server
+    checks a pattern, ran with the old filter. `flush()` waits for every
+    check in progress, and refuses while a typed filter isn't valid."""
+    data = _node(_SOURCE_STUBS + _plain(_SOURCE) + """
+const source = new RulesSource(endpoints);
+await source.loadRules();
+let finish;
+source.hold(new Promise((resolve) => { finish = resolve; }));
+let done = false;
+const flushing = source.flush().then((ok) => { done = ok; });
+await tick();
+const waited = !done;
+source.setRule('ps2', { mode: 'createdvd', include_pattern: 'USA' });
+finish();
+await drain();
+await flushing;
+source.markUnsaved('ps2:include_pattern', 'the name filter "(" is not valid');
+const refused = await source.flush();
+const reason = source.saveError;
+source.markUnsaved('ps2:include_pattern', null);
+const fine = await source.flush();
+process.stdout.write(JSON.stringify({ waited, done, saved: __saves, refused, reason, fine }));
+""", tmp_path)
+    assert data["waited"] is True
+    assert data["done"] is True
+    assert data["saved"] == [{"ps2": {"mode": "createdvd", "include_pattern": "USA"}}]
+    assert data["refused"] is False and "not valid" in data["reason"]
+    assert data["fine"] is True
+    advanced = (_COMPONENTS / "RuleAdvanced.svelte").read_text(encoding="utf-8")
+    assert "source.hold(" in advanced and "source.markUnsaved(" in advanced

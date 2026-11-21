@@ -102,7 +102,11 @@
   (new `GET /api/libraries/{id}/recommended-rules`). **Re-check games every
   night** turns the check on for every converting console at once. A name
   filter is saved only once the server says it is a valid pattern (new
-  `POST /api/rules/check-pattern`); until then it stays in its box with why.
+  `POST /api/rules/check-pattern`); until then it stays in its box with why,
+  and Preview, Run now and turning automation on wait for the check and refuse
+  while a filter isn't valid. Each change saves only the console it changes
+  (new `PATCH .../rules`, which the server merges), so no other console's
+  settings can be lost.
   A console's **Try them again** releases only the games held after a failed
   conversion (`failed_only` on `.../rules/forget-converted`), so a game already
   converted under a rename or overwrite console is never converted again.

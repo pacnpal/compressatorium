@@ -4458,7 +4458,15 @@ saves them through `PUT .../rules`. RomM uses the same route with `id=romm`.
 On the frontend every edit in the console table saves on its own:
 `RulesSource.scheduleSave(delay)` (600 ms for typed fields) goes through the
 existing one-at-a-time `saveRules` chain, and `flush()` sends a waiting edit
-before Preview, Run now or turning automation on. A name filter is saved only
+before Preview, Run now or turning automation on. A save sends only the
+consoles changed since the last one (`{id: rule | null}`) to `PATCH
+.../rules` (`editor.patch_rules`, one merge at a time, then `save_rules` with
+all its checks), so a partial map can never delete the other consoles; the
+table isn't drawn until the Rules have loaded. `PUT` still replaces the whole
+set for the API. An edit still being checked (`hold(promise)`) is waited for by
+`flush()`, and one the check refused (`markUnsaved(key, reason)`) makes it
+refuse with that reason, so Run now never runs with a filter the screen
+doesn't show. A name filter is saved only
 once `POST /api/rules/check-pattern` says it compiles: the route runs
 `rules.pattern_problem`, the one check `_valid_pattern` makes on every save
 (Python's `re`, the 500-character cap, the backtracking guard), so the browser

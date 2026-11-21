@@ -14,6 +14,7 @@
    * @property {(patch: object, delay?: number) => void} onupdate
    * @property {(patch: object|null, delay?: number) => void} oncheck
    */
+  import { onDestroy } from 'svelte';
   import { toast } from 'svelte-sonner';
   import { registry } from '$lib/tools/registry.js';
   import { fromRule, toRule } from '$lib/tools/compression.js';
@@ -80,17 +81,31 @@
   let drafts = $state({});
   let errors = $state({});
   const timers = {};
+  // Each field's check in progress, as the source holds it: Run now waits
+  // for it (Codex 4653298945). Settled when the check ends or is superseded.
+  const settle = {};
+  const fieldKey = (field) => `${platform.id}:${field}`;
   const patternError = (field) => errors[field] ?? null;
+
+  function release(field) {
+    settle[field]?.();
+    delete settle[field];
+  }
+
   function setPattern(field, text) {
     drafts = { ...drafts, [field]: text };
     clearTimeout(timers[field]);
+    release(field);
     if (!text.trim()) {
       errors = { ...errors, [field]: null };
+      source.markUnsaved(fieldKey(field), null);
       onupdate({ [field]: null });
       return;
     }
+    source.hold(new Promise((resolve) => { settle[field] = resolve; }));
     timers[field] = setTimeout(() => checkPattern(field, text), TEXT_DELAY);
   }
+
   async function checkPattern(field, text) {
     let error;
     try {
@@ -101,8 +116,23 @@
     }
     if (drafts[field] !== text) return;
     errors = { ...errors, [field]: error };
+    const label = field === 'include_pattern' ? 'Only names matching' : 'Skip names matching';
+    source.markUnsaved(
+      fieldKey(field), error ? `${platform.name}'s "${label}" isn't saved: ${error}` : null,
+    );
     if (!error) onupdate({ [field]: text });
+    release(field);
   }
+
+  // Closing the panel drops what was typed and not saved: Run now no longer
+  // waits for it or refuses over it.
+  onDestroy(() => {
+    for (const field of ['include_pattern', 'exclude_pattern']) {
+      clearTimeout(timers[field]);
+      release(field);
+      source.markUnsaved(fieldKey(field), null);
+    }
+  });
   const patternValue = (field) => drafts[field] ?? rule[field] ?? '';
 
   async function forget() {
