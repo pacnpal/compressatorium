@@ -29,6 +29,13 @@
   let { source, library } = $props();
 
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  // A folder is read one listing at a time: while one runs, look again in 3 s.
+  const RETRY_MS = 3000;
+  $effect(() => {
+    if (!source.platformsBusy) return;
+    const timer = setTimeout(() => source.loadPlatforms(), RETRY_MS);
+    return () => clearTimeout(timer);
+  });
   const platforms = $derived(source.platforms ?? []);
   const ids = $derived(platforms.map((p) => String(p.id)));
   const nightly = $derived(nightlyCheckState(ids, source.rules, source.checkRules));
@@ -239,7 +246,18 @@
         Couldn't load this Library's settings. {source.rulesError}
         <Button size="sm" variant="secondary" onclick={() => source.loadRules().catch(() => {})}>Try again</Button>
       </p>
-    {:else if source.rulesLoading && platforms.length === 0}
+    {:else if source.platformsBusy}
+      <!-- A listing of the folder is still running: a wait, not an error. -->
+      <p class="state" role="status">
+        <Spinner size="sm" label="Reading" /> The folder is still being read.
+        <Button size="sm" variant="ghost" onclick={() => source.loadPlatforms()}>Try again</Button>
+      </p>
+    {:else if source.platformsError}
+      <p class="state" role="alert">
+        Couldn't list this Library's consoles. {source.platformsError}
+        <Button size="sm" variant="secondary" onclick={() => source.loadPlatforms()}>Try again</Button>
+      </p>
+    {:else if (source.rulesLoading || source.platformsLoading) && platforms.length === 0}
       <p class="muted"><Spinner size="sm" label="Loading" /> Loading…</p>
     {:else if platforms.length === 0}
       <p class="muted">No consoles found yet. Add games, or a watch folder, and they show up here.</p>

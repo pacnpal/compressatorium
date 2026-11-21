@@ -269,3 +269,16 @@ def test_browse_opens_where_each_consoles_games_are():
     browse = (_COMPONENTS / "LibraryBrowse.svelte").read_text(encoding="utf-8")
     assert "platform.folder" in browse
     assert "getLibraryPlacements" not in browse
+
+
+def test_the_console_table_says_when_the_consoles_cannot_be_listed():
+    """Codex 4652664862: a listing still running or one that failed is not
+    "no consoles found yet". Each has its own line and a way to try again,
+    as the Rules view had."""
+    src = (_COMPONENTS / "LibraryAutomation.svelte").read_text(encoding="utf-8")
+    busy = src.index("{:else if source.platformsBusy}")
+    error = src.index("{:else if source.platformsError}")
+    empty = src.index("No consoles found yet")
+    assert busy < empty and error < empty
+    assert src.count("source.loadPlatforms()") >= 2
+    assert "setTimeout(() => source.loadPlatforms(), RETRY_MS)" in src
