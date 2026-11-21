@@ -472,16 +472,14 @@ def test_the_ownership_walk_never_opens_a_sheet_outside_the_volume(split_roots, 
     out_sheet = _write(outside / "Out.cue", b'FILE "Track.bin" BINARY\n')
     (volume / "psx" / "Link.cue").symlink_to(out_sheet)
     opened = []
-    real_readable = sheet_text.sheet_is_readable
-    monkeypatch.setattr(
-        sheet_text, "sheet_is_readable", lambda p: opened.append(str(p)) or real_readable(p),
-    )
+    monkeypatch.setattr(sheet_text, "sheet_is_readable", lambda p: opened.append(str(p)))
+    monkeypatch.setattr(sheet_text, "sheet_track_list", lambda p, **kw: opened.append(str(p)))
 
     with pytest.raises(image_sets.SheetOwnerUnknown) as err:
         image_sets.owners_naming(str(track), stop_at=str(volume))
 
     assert "Out.cue" not in str(err.value)
-    assert not any("private" in p for p in opened), opened
+    assert not opened, opened
 
 
 def test_a_delete_plan_never_scans_outside_the_volumes(split_roots, monkeypatch):
@@ -552,3 +550,18 @@ async def test_a_cp1252_sheet_still_owns_its_track(vol):
     assert response["results"][0]["success"] is False
     assert "B.cue" in response["results"][0]["error"]
     assert track.exists()
+
+
+@pytest.mark.parametrize("data", [
+    "\ufeffA\u2028B.chd\r\n".encode("utf-16-le"),
+    b"A\x85B.chd\r\n",
+    b"A\x1cB.chd\n",
+])
+def test_every_entry_splits_on_cr_and_lf_only(data):
+    """CodeRabbit 4655194805: U+2028, NEL (Latin-1 0x85) and the other
+    breaks str.splitlines knows are part of a name, not line ends."""
+    from services.referrers import m3u
+
+    found = m3u.every_entry(data)
+
+    assert "A" not in found and "B.chd" not in found, found

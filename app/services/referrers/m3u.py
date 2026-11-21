@@ -155,6 +155,13 @@ def _lines(data: bytes) -> list[bytes]:
     return data.splitlines()
 
 
+def _text_lines(text: str) -> list[str]:
+    """Split decoded text the way :func:`_lines` splits bytes: on CR and LF
+    only. ``str.splitlines`` would also break a name at U+2028, NEL (U+0085)
+    and the other breaks a byte reader keeps as ordinary characters."""
+    return re.split(r"\r\n|\r|\n", text)
+
+
 def entries(data: bytes) -> list[str]:
     """The entries a reader sees in playlist *data*, as posix paths, in order."""
     found = []
@@ -184,7 +191,7 @@ def every_entry(data: bytes) -> list[str]:
         found = entries(data)
         body = data.removeprefix(_BOM)
         for codec in ("cp1252", "latin-1"):
-            for line in body.decode(codec, errors="replace").splitlines():
+            for line in _text_lines(body.decode(codec, errors="replace")):
                 parsed = _parse_line(line)
                 if parsed is not None:
                     found.append(parsed.posix)
@@ -201,7 +208,7 @@ def every_entry(data: bytes) -> list[str]:
     ]
     found: list[str] = []
     for text in texts:
-        for line in text.lstrip("\ufeff").splitlines():
+        for line in _text_lines(text.lstrip("\ufeff")):
             parsed = _parse_line(line)
             if parsed is not None and "\x00" not in parsed.posix:
                 found.append(parsed.posix)
@@ -337,7 +344,7 @@ def _legacy_text_check(playlist: str, data: bytes, renames: Renames) -> None:
     except UnicodeDecodeError:
         pass
     text = data.removeprefix(_BOM).decode("cp1252", errors="replace")
-    for line in text.splitlines():
+    for line in _text_lines(text):
         parsed = _parse_line(line)
         if parsed is not None and named_file(parsed.path) in renames.names:
             raise ReferrerError(
@@ -439,7 +446,7 @@ def _entry_reaches_replaced(
 def _text_reaches_replaced(text: str, playlist_dir: str, renames: Renames) -> str | None:
     """The first replaced file decoded playlist *text* still reaches, by any
     reading of any entry line (``_entry_reaches_replaced``), or None."""
-    for line in re.split(r"\r\n|\r|\n", text):
+    for line in _text_lines(text):
         parsed = _parse_line(line)
         if parsed is None:
             continue
