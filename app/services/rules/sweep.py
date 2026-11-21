@@ -2036,6 +2036,9 @@ async def sweep(
     notified: dict | None = {"errors": [{"platform_id": None, "error": "sweep_failed"}]}
     result: dict | None = None
     try:
+        # What the Library caches about itself (RomM's structure and
+        # exclusions, #532), read before the lock: bounded, never raises.
+        await library.refresh()
         async with _sweep_lock:
             blocked = library.sweep_blocked()
             if blocked:
@@ -2279,10 +2282,12 @@ async def _sweep_locked(
 
         # The Library would ignore every output (#532): RomM told to exclude
         # the target format would drop each converted game from its catalog.
+        # The extension alone: a name RomM excludes skips only the game whose
+        # output has it (below), not the Rule.
         output_ext = (spec.output_ext or "").lstrip(".")
         problem = (
             f"{library.name} ignores .{output_ext} files, so its outputs would vanish from it"
-            if output_ext and library.excluded(f"output.{output_ext}") else None
+            if output_ext and library.excluded_extension(output_ext) else None
         )
         _report_skip(library, kind, platform_id, "output_excluded", problem)
         if problem is not None:
@@ -2446,6 +2451,10 @@ async def _sweep_locked(
                 continue
             if decision["destination"] in claimed_destinations:
                 result["skipped_active"] += 1
+                continue
+            # Its output would be a file the Library ignores by name (#532).
+            if library.excluded(Path(decision["destination"]).name):
+                result["skipped_filtered"] += 1
                 continue
             claimed_destinations.add(decision["destination"])
             batch.append(path)

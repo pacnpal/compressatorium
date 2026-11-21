@@ -392,6 +392,15 @@ class RommLibrary(LibraryDefaults):
         """RomM's ``exclude:`` settings ignore files named *name* (#532)."""
         return romm_connect.excluded(name)
 
+    def excluded_extension(self, ext: str) -> bool:
+        """RomM's ``exclude:`` settings ignore every ``.<ext>`` file (#532)."""
+        return romm_connect.excluded_extension(ext)
+
+    async def refresh(self) -> None:
+        """Re-read RomM's folder structure and exclusions, at most every few
+        minutes (#532)."""
+        await romm_connect.refresh_layout()
+
     def schedule_enabled(self) -> bool:
         return bool(romm_settings.effective().get("auto_convert"))
 

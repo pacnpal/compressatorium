@@ -247,6 +247,12 @@ class _FolderLike:
     def excluded(self, name):
         return False
 
+    def excluded_extension(self, ext):
+        return False
+
+    async def refresh(self):
+        return None
+
     def summary_fields(self):
         return {}
 

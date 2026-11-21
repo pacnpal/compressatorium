@@ -449,15 +449,13 @@ class RommStore extends RulesSource {
   }
 
   /**
-   * Connect with a RomM pairing code (#532). The backend trades it for a
-   * token and saves it with the URL; the answer names the scopes the token
-   * lacks. The catalog refresh is left to the Save that follows.
+   * Trade a RomM pairing code for a token (#532). The backend holds the
+   * token for that URL, saving nothing: a test or Save sent with
+   * `paired: true` uses it, so the new connection is committed whole. The
+   * answer names the scopes the token lacks.
    */
-  async pair(url, code) {
-    const answer = await api.pairRomm(url, code);
-    this.#settingsTicket += 1;
-    this.settings = answer.settings;
-    return answer;
+  pair(url, code) {
+    return api.pairRomm(url, code);
   }
 
   /** RomM at its usual addresses (#532): `{ url, version, library_root }`. */

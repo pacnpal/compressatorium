@@ -21,6 +21,9 @@ from config import settings as app_settings
 
 from .fake_romm import FakeRomm
 
+# The sweeps here read RomM's layout from the fake (see conftest).
+READS_ROMM_LAYOUT = True
+
 TOKEN = {
     "id": 3, "name": "compressatorium", "scopes": ["platforms.read", "roms.read"],
     "expires_at": None, "last_used_at": None, "created_at": "2026-11-20T00:00:00Z",
@@ -72,19 +75,47 @@ def test_the_client_trades_a_pairing_code_for_its_token(fake):
 
 
 @pytest.mark.asyncio
-async def test_pairing_saves_the_url_and_token_and_never_returns_the_token(romm_db, fake):
+async def test_pairing_holds_the_token_until_the_save_and_never_returns_it(romm_db, fake):
+    """A pairing changes nothing on its own (Codex PRRT_kwDOQ9nULM66RDFs): the
+    token waits for the Save that commits it with the URL and library path, so
+    a library path that then fails its test leaves the old connection whole."""
+    from fastapi import HTTPException
     from services.romm import settings as romm_settings
 
+    await romm_settings.save({"url": "http://old-romm:8080", "token": "rmm_old"})
     answer = await romm_routes.pair_romm(
         romm_routes.PairRequest(url=fake.url, code="ABCD-2345"),
     )
 
-    assert romm_settings.effective()["url"] == fake.url
-    assert romm_settings.token() == TOKEN["raw_token"]
     assert TOKEN["raw_token"] not in repr(answer)
-    assert answer["settings"]["token_set"] is True
     # What the token can't do yet, so the user knows before a feature fails.
     assert answer["missing_scopes"] == ["roms.write", "tasks.run"]
+    assert romm_settings.effective()["url"] == "http://old-romm:8080"
+    assert romm_settings.token() == "rmm_old"
+
+    # The test and the Save use the held token, for that URL only.
+    tested = await romm_routes.test_romm_connection(
+        romm_routes.RommSettingsPatch(url=fake.url, paired=True),
+    )
+    assert tested["authorized"] is True, tested
+    with pytest.raises(HTTPException) as caught:
+        await romm_routes.put_romm_settings(
+            romm_routes.RommSettingsPatch(url="http://elsewhere:8080", paired=True),
+        )
+    assert caught.value.status_code == 400
+    assert romm_settings.effective()["url"] == "http://old-romm:8080"
+
+    saved = await romm_routes.put_romm_settings(
+        romm_routes.RommSettingsPatch(url=fake.url, paired=True),
+    )
+    assert saved["token_set"] is True
+    assert romm_settings.effective()["url"] == fake.url
+    assert romm_settings.token() == TOKEN["raw_token"]
+    # Spent by the Save: a second one has nothing to use.
+    with pytest.raises(HTTPException):
+        await romm_routes.put_romm_settings(
+            romm_routes.RommSettingsPatch(url=fake.url, paired=True),
+        )
 
 
 @pytest.mark.asyncio
@@ -236,7 +267,7 @@ def test_placement_refuses_a_structure_with_a_folder_per_game(romm_root):
 
 
 @pytest.mark.asyncio
-async def test_a_rule_skips_files_romm_excludes(romm_db):
+async def test_a_rule_skips_files_romm_excludes(romm_db, fake):
     """A file RomM ignores is never converted, and a target format RomM
     ignores isn't written at all (the game would vanish from RomM)."""
     from services.job_manager import job_manager
@@ -248,7 +279,7 @@ async def test_a_rule_skips_files_romm_excludes(romm_db):
     lib.mkdir(parents=True)
     (lib / "Game.iso").write_bytes(b"\0" * 32)
     (lib / "Skip.iso").write_bytes(b"\0" * 32)
-    await romm_settings.save({"url": "http://romm:8080", "library_root": str(lib.parents[1])})
+    await romm_settings.save({"url": fake.url, "library_root": str(lib.parents[1])})
     await romm_auto.set_rules({"7": {"mode": "dolphin_rvz", "enabled": True}})
     roms = [
         {"id": n, "name": name, "full_path": f"roms/gc/{name}.iso", "fs_name": f"{name}.iso",
@@ -270,7 +301,87 @@ async def test_a_rule_skips_files_romm_excludes(romm_db):
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(job_manager, "get_active_job_candidates", return_value=[]), \
             patch.object(rules_sweep, "is_within_configured_volumes", return_value=True), \
-            patch.object(romm_connect, "excluded", side_effect=lambda n: n.endswith(".rvz")):
+            patch.object(romm_connect, "excluded_extension", side_effect=lambda e: e == "rvz"):
         refused = await romm_auto.sweep(ignore_schedule=True, dry_run=True)
     assert refused["queued"] == 0, refused
     assert {"platform_id": 7, "error": "output_excluded"} in refused["errors"], refused
+
+
+@pytest.mark.asyncio
+async def test_a_filename_exclusion_skips_that_output_not_the_rule(romm_db, fake):
+    """RomM excluding one file name skips the game whose output has that name,
+    not the whole Rule (Codex PRRT_kwDOQ9nULM66RDFy); excluding the extension
+    still refuses the Rule."""
+    from services.job_manager import job_manager
+    from services.romm import auto as romm_auto
+    from services.romm import settings as romm_settings
+    from services.rules import sweep as rules_sweep
+
+    lib = romm_db / "library" / "roms" / "gc"
+    lib.mkdir(parents=True)
+    roms = []
+    for n, name in ((1, "Game"), (2, "output"), (3, "Other")):
+        (lib / f"{name}.iso").write_bytes(b"\0" * 32)
+        roms.append({
+            "id": n, "name": name, "full_path": f"roms/gc/{name}.iso",
+            "fs_name": f"{name}.iso", "fs_size_bytes": 32, "platform_slug": "ngc",
+        })
+    await romm_settings.save(
+        {"url": fake.url, "token": "rmm_x", "library_root": str(lib.parents[1])},
+    )
+    await romm_auto.set_rules({"7": {"mode": "dolphin_rvz", "enabled": True}})
+
+    async def preview(excluded: dict) -> dict:
+        fake.excluded = excluded
+        await romm_connect.refresh_layout(force=True)
+        with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
+                patch.object(job_manager, "get_active_job_candidates", return_value=[]), \
+                patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
+            return await romm_auto.sweep(ignore_schedule=True, dry_run=True)
+
+    named = await preview({"EXCLUDED_SINGLE_FILES": ["output.rvz", "Other.rvz"]})
+    assert named["queued"] == 1, named
+    assert named["skipped_filtered"] == 2, named
+    assert not any(e["error"] == "output_excluded" for e in named["errors"]), named
+
+    by_ext = await preview({"EXCLUDED_SINGLE_EXT": ["rvz"]})
+    assert by_ext["queued"] == 0, by_ext
+    assert {"platform_id": 7, "error": "output_excluded"} in by_ext["errors"], by_ext
+
+
+@pytest.mark.asyncio
+async def test_an_unattended_sweep_reads_romms_layout(romm_db, fake):
+    """The scheduler's and run-rules' sweeps read RomM's layout themselves
+    (Codex PRRT_kwDOQ9nULM66RDFw): nobody has to open the RomM page first."""
+    from services.romm import settings as romm_settings
+    from services.romm.library import romm_library
+    from services.rules import sweep as rules_sweep
+
+    await romm_settings.save({"url": fake.url, "token": "rmm_x"})
+    assert romm_connect.layout() == {}
+
+    with patch.object(romm_routes.romm_client, "roms", return_value=[]):
+        await rules_sweep.sweep(romm_library, dry_run=True)
+
+    assert romm_connect.structure() == (("roms",), ())
+    assert romm_connect.excluded("Game.BAK")
+
+
+@pytest.mark.asyncio
+async def test_an_inbox_poll_reads_the_librarys_layout_before_placing():
+    """Placement from an Inbox reads the Library's layout first (Codex
+    PRRT_kwDOQ9nULM66RDFw), as the sweep does."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from services import libraries
+    from services.inbox import intake
+
+    library = MagicMock()
+    library.refresh = AsyncMock()
+    inbox = MagicMock(id="inbox-refresh", library_id="lib", folder="/nowhere")
+    with patch.object(libraries, "get", return_value=library), \
+            patch.object(intake, "_settle_flights", AsyncMock()), \
+            patch.object(intake, "run_detached_within_stall_bound",
+                         AsyncMock(side_effect=intake.InboxUnavailable("gone"))):
+        await intake.poll(inbox)
+    library.refresh.assert_awaited_once()

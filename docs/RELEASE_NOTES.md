@@ -8,12 +8,16 @@
   - On first run, RomM's Settings looks for RomM at `http://romm:8080` and its
     other usual addresses and offers **Found RomM at …: Use it**.
   - Type RomM's **pairing code** (RomM 4.8+) instead of pasting a 64-character
-    token. Pasting a token still works.
+    token. Pasting a token still works. A pairing saves nothing by itself: its
+    token is saved with the URL and Library path by the Save, once they test,
+    so a wrong path leaves the current connection as it was.
   - The **Library path** fills itself in from RomM's platform folders, matched
     against your volumes.
   - New games go where RomM's own folder structure says (RomM 5.3+), not a
     guess from what's on disk. Rules skip files RomM is set to ignore, and
-    refuse a target format RomM ignores.
+    refuse a target format RomM ignores; a single file name RomM ignores skips
+    only the game whose output has that name. Scheduled runs, `run-rules` and
+    Inbox placement read RomM's settings themselves, with RomM's page closed.
   - **Save tests the connection first** and names the field to fix, with
     **Retry** and **Save anyway**. A check that couldn't run shows as "not
     checked" instead of failed.

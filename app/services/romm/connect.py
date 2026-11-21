@@ -266,6 +266,13 @@ def structure() -> tuple[tuple[str, ...], tuple[str | None, ...]] | None:
     return layout().get("structure")
 
 
+def excluded_extension(ext: str) -> bool:
+    """Whether RomM's ``exclude:`` settings ignore every file ending in
+    ``.<ext>``, whatever its name. In memory."""
+    wanted = ext.lower().lstrip(".")
+    return bool(wanted) and wanted in layout().get("excluded_exts", ())
+
+
 def excluded(name: str) -> bool:
     """Whether RomM's ``exclude:`` settings make it ignore a file or game
     folder named *name*, as RomM matches them (``exclude_single_files`` in

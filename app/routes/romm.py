@@ -1777,6 +1777,9 @@ class RommSettingsPatch(BaseModel):
     token: str | None = None
     # Explicitly drop the stored token. A blank `token` means "unchanged".
     clear_token: bool | None = None
+    # Use the token a pairing code was just traded for (#532), held for this
+    # URL until a Save commits it with the rest.
+    paired: bool | None = None
     library_root: str | None = None
     auto_convert: bool | None = None
     auto_convert_interval_minutes: int | None = None
@@ -1818,7 +1821,7 @@ async def put_romm_settings(patch: RommSettingsPatch) -> dict:
     layer's dependency runs the other way (``romm_auto`` reads settings), and
     a route is where cross-service consequences belong.
     """
-    submitted = patch.model_dump(exclude_unset=True)
+    submitted = _with_paired_token(patch.model_dump(exclude_unset=True))
     # Before anything is persisted, and before any lock: the probes are bounded
     # but slow, and a refusal must change nothing.
     if submitted.get("swap_keep_rom_id") is True:
@@ -1843,9 +1846,36 @@ async def put_romm_settings(patch: RommSettingsPatch) -> dict:
             saved = await _save_settings(submitted)
     except libraries.LibraryPathError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+    if patch.paired:
+        _paired.clear()
     if submitted.keys() & {"url", "token", "clear_token"}:
         await romm_connect.refresh_layout(force=True)
     return saved
+
+
+# The token the last pairing code was traded for, by the RomM URL it came from
+# (#532): held, never saved, until a Save (or a connection test) names it with
+# `paired`, so a pairing alone changes no connection. In memory: a restart
+# drops it, and the user pairs again.
+_paired: dict[str, str] = {}
+
+
+def _with_paired_token(submitted: dict) -> dict:
+    """*submitted* with ``paired`` swapped for the held token. A 400 when no
+    pairing for the URL it would save is held: fail closed, never another
+    token."""
+    if not submitted.pop("paired", None):
+        return submitted
+    url = str(submitted.get("url") or romm_settings.effective().get("url") or "")
+    token = _paired.get(url.strip().rstrip("/"))
+    if token is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No pairing for this RomM URL is waiting. Press Pair in RomM again "
+                   "and type the new code.",
+        )
+    submitted.pop("clear_token", None)
+    return {**submitted, "token": token}
 
 
 async def _save_settings(submitted: dict) -> dict:
@@ -2091,7 +2121,7 @@ async def test_romm_connection(patch: RommSettingsPatch | None = None) -> dict:
     library path is unset or wrong, ``library_root_suggestion`` is where RomM's
     platform folders are in the Volumes, if they are (#532).
     """
-    override = patch.model_dump(exclude_unset=True) if patch else {}
+    override = _with_paired_token(patch.model_dump(exclude_unset=True)) if patch else {}
     saved = romm_settings.effective()
 
     def _field(name: str) -> str:
@@ -2215,9 +2245,12 @@ async def pair_romm(payload: PairRequest) -> dict:
 
     In RomM, the owner presses Pair on a client API token and gets a short
     code. RomM trades it, once, for a new secret for that token
-    (``POST /api/client-tokens/exchange``, RomM 4.8+), which is saved here
-    with the URL, as a Save would. The token is never sent back; the answer
-    says which of the scopes the features use it lacks.
+    (``POST /api/client-tokens/exchange``, RomM 4.8+). Nothing is saved:
+    the token is held for that URL until a Save with ``paired`` commits it
+    with the URL and library path, so a pairing whose library path then fails
+    its test leaves the current connection, and its history, alone. The token
+    is never sent back; the answer says which of the scopes the features use
+    it lacks.
     """
     url = (payload.url or "").strip().rstrip("/") or str(
         romm_settings.effective().get("url") or "",
@@ -2231,10 +2264,11 @@ async def pair_romm(payload: PairRequest) -> dict:
         logger.warning("romm: pairing failed: %s", exc)
         detail = _PAIR_ERRORS.get(exc.status) or _safe_error(exc)
         raise HTTPException(status_code=400, detail=detail) from None
-    saved = await put_romm_settings(RommSettingsPatch(url=url, token=token["raw_token"]))
+    _paired.clear()
+    _paired[url] = token["raw_token"]
     scopes = {s for s in token.get("scopes") or () if isinstance(s, str)}
     return {
-        "settings": saved,
+        "url": url,
         "name": token.get("name"),
         "missing_scopes": [s for s in romm_connect.RECOMMENDED_SCOPES if s not in scopes],
     }

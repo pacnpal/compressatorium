@@ -32,6 +32,9 @@
   // A pairing code from RomM, or a pasted `rmm_` token.
   let credential = $state('');
   let clearToken = $state(false);
+  // The URL a pairing code was traded for: the backend holds that token
+  // until the Save that commits it with the rest (#532).
+  let pairedUrl = $state('');
   let repinEnabled = $state(true);
   let repinOnLoad = $state(true);
   let repinAbandonDays = $state(7);
@@ -98,6 +101,7 @@
     const typed = credential.trim();
     if (clearToken) out.clear_token = true;
     else if (typed && !isPairCode(typed)) out.token = typed;
+    else if (pairedUrl && pairedUrl === out.url.replace(/\/+$/, '')) out.paired = true;
     return out;
   }
 
@@ -121,8 +125,9 @@
           problem = { field: 'token', error: e?.message ?? 'Pairing with RomM failed' };
           return;
         }
-        // Single use: RomM has already spent it.
+        // Single use: RomM has already spent it. Nothing is saved yet.
         credential = '';
+        pairedUrl = paired.url;
         const missing = paired.missing_scopes ?? [];
         toast.success(missing.length
           ? `Paired with RomM. The token lacks ${missing.join(', ')}, so the features that need them stay off.`
@@ -157,9 +162,10 @@
     await romm.saveSettings(body);
     // Reset the credential buffers only when the request actually carried
     // them, so a pairing code that failed stays there to fix.
-    if ('token' in body || 'clear_token' in body) {
+    if ('token' in body || 'clear_token' in body || body.paired) {
       credential = '';
       clearToken = false;
+      pairedUrl = '';
     }
     // "Keep the ROM id" (#390) is saved on its own, and only when it changed:
     // turning it on makes the backend check the token, and a refusal names
