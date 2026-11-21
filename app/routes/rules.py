@@ -11,7 +11,7 @@ from fastapi.concurrency import run_in_threadpool
 from services import libraries
 from services.rules import editor, store
 from services.rules.library import Library, UnsupportedPolicy
-from services.rules.rules import UnusableCompression
+from services.rules.rules import UnusableCompression, pattern_problem
 
 router = APIRouter()
 
@@ -67,3 +67,13 @@ async def get_rule_notices() -> dict:
 async def dismiss_check_level_notice() -> dict:
     """Stop showing the check-level notice. Stored, so it stays dismissed."""
     return {"check_level": await store.dismiss_check_level_notice(await _libraries())}
+
+
+@router.post("/rules/check-pattern")
+async def check_pattern(payload: dict) -> dict:
+    """Whether ``pattern`` can be a Rule's name filter: the check saving one
+    runs (`rules.pattern_problem`), asked first so the console table never
+    autosaves a filter the save would refuse and pause the console for
+    (#541). Pure: compiles a string of at most 500 characters."""
+    problem = pattern_problem(payload.get("pattern"))
+    return {"ok": problem is None, "error": problem}

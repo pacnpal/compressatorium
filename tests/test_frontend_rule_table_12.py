@@ -222,20 +222,17 @@ process.stdout.write(JSON.stringify(ruleUpdate(paused, { enabled: true })));
     assert "update(platform.id, { enabled: e.currentTarget.checked })" in table
 
 
-def test_an_unfinished_pattern_is_never_saved(tmp_path):
+def test_an_unfinished_pattern_is_never_saved():
     """Codex 4652664855: autosave of `(` would be refused by the backend,
-    which nulls it and pauses the console. It is checked here first."""
-    data = _node(_plain(_TABLE) + """
-process.stdout.write(JSON.stringify({
-  open: patternProblem('('),
-  fine: patternProblem('\\\\(USA\\\\)'),
-  blank: patternProblem(''),
-}));
-""", tmp_path)
-    assert data["open"]
-    assert data["fine"] is None and data["blank"] is None
+    which nulls it and pauses the console. The server is asked first, and
+    only an answer for the text still in the box saves it
+    (tests/test_rule_pattern_check_541.py checks the server's side)."""
     advanced = (_COMPONENTS / "RuleAdvanced.svelte").read_text(encoding="utf-8")
-    assert "patternProblem(" in advanced
+    body = advanced[advanced.index("async function checkPattern("):]
+    body = body[: body.index("\n  }\n")]
+    assert "api.checkRulePattern(text)" in body
+    assert body.index("if (drafts[field] !== text) return;") < body.index("onupdate(")
+    assert "if (!error) onupdate({ [field]: text });" in body
 
 
 def test_fixing_what_validation_paused_resumes_the_console(tmp_path):

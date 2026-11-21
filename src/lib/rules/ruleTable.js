@@ -45,21 +45,6 @@ const VALIDATED = Object.freeze({
   invalid_window: ['window_start', 'window_end'],
 });
 
-/**
- * Why *text* isn't a name filter the server can read, or null when it is
- * (blank is no filter). Checked before saving: a refused one is nulled and
- * pauses the console (Codex 4652664855).
- */
-export function patternProblem(text) {
-  if (!text) return null;
-  try {
-    new RegExp(text);
-    return null;
-  } catch (e) {
-    return e?.message ?? 'not a valid pattern';
-  }
-}
-
 /** A number field's value, or null when it's blank or not a number (nothing is saved). */
 export function numberValue(raw) {
   if (raw === '' || raw == null) return null;

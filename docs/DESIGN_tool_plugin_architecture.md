@@ -4458,7 +4458,12 @@ saves them through `PUT .../rules`. RomM uses the same route with `id=romm`.
 On the frontend every edit in the console table saves on its own:
 `RulesSource.scheduleSave(delay)` (600 ms for typed fields) goes through the
 existing one-at-a-time `saveRules` chain, and `flush()` sends a waiting edit
-before Preview, Run now or turning automation on.
+before Preview, Run now or turning automation on. A name filter is saved only
+once `POST /api/rules/check-pattern` says it compiles: the route runs
+`rules.pattern_problem`, the one check `_valid_pattern` makes on every save
+(Python's `re`, the 500-character cap, the backtracking guard), so the browser
+never builds a RegExp from what was typed and never autosaves a filter the
+save would refuse and pause the console for.
 
 `ModeSpec.reads_extensions` is the mode's real input domain when it is
 narrower than `input_extensions`; empty means "every input extension". It must

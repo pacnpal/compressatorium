@@ -98,7 +98,9 @@
   console with games and no format yet to its best one in one click, checks
   each new file and keeps originals, and never changes a console you set
   (new `GET /api/libraries/{id}/recommended-rules`). **Re-check games every
-  night** turns the check on for every converting console at once.
+  night** turns the check on for every converting console at once. A name
+  filter is saved only once the server says it is a valid pattern (new
+  `POST /api/rules/check-pattern`); until then it stays in its box with why.
 - **Watch folders** (Inboxes) are picked from your Drives, never typed, and
   each row says when it was last checked, what's still downloading, what
   needs you and what was taken in, refreshed every 15 seconds. **Where new

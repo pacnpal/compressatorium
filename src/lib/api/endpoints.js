@@ -924,6 +924,11 @@ export const api = {
   runLibrary: (id, body = {}) =>
     jsonPost(`${API_BASE}/libraries/${encodeURIComponent(id)}/run`, body, {}, 'Run failed'),
 
+  // Whether a name filter can be saved (#541): `{ ok, error }`, from the
+  // same compile a Rule save runs.
+  checkRulePattern: (pattern) =>
+    jsonPost(`${API_BASE}/rules/check-pattern`, { pattern }, {}, "Couldn't check the pattern"),
+
   // Apply recommended (#541): `{ rules: {platform_id: {mode, enabled}}, skipped }`
   // for the consoles with games and no target. Read-only; the caller saves.
   getRecommendedRules: (id) =>

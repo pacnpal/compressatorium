@@ -17,7 +17,8 @@
   import { toast } from 'svelte-sonner';
   import { registry } from '$lib/tools/registry.js';
   import { fromRule, toRule } from '$lib/tools/compression.js';
-  import { numberValue, patternProblem } from '$lib/rules/ruleTable.js';
+  import { api } from '$lib/api/endpoints.js';
+  import { numberValue } from '$lib/rules/ruleTable.js';
   import { safetyControls } from '$lib/util/safetyOptions.js';
   import { CHECK_LEVEL } from '$lib/util/checkLevels.js';
   import { DAY_LABELS, ORDER_LABELS } from '$lib/stores/romm.svelte.js';
@@ -73,12 +74,34 @@
 
   // Name filters as typed. A pattern the server can't read is shown with
   // why and never saved: the server would null it and pause the console.
+  // The server checks it with the same compile a save runs (Python's `re`,
+  // not the browser's), once typing stops; only an answer for the text still
+  // in the box counts, and only a valid one is saved.
   let drafts = $state({});
-  const patternError = (field) => patternProblem(drafts[field] ?? '');
+  let errors = $state({});
+  const timers = {};
+  const patternError = (field) => errors[field] ?? null;
   function setPattern(field, text) {
     drafts = { ...drafts, [field]: text };
-    if (patternProblem(text)) return;
-    onupdate({ [field]: text || null }, TEXT_DELAY);
+    clearTimeout(timers[field]);
+    if (!text.trim()) {
+      errors = { ...errors, [field]: null };
+      onupdate({ [field]: null });
+      return;
+    }
+    timers[field] = setTimeout(() => checkPattern(field, text), TEXT_DELAY);
+  }
+  async function checkPattern(field, text) {
+    let error;
+    try {
+      const answer = await api.checkRulePattern(text);
+      error = answer?.ok ? null : (answer?.error ?? 'not a valid pattern');
+    } catch (e) {
+      error = `couldn't check it: ${e?.message ?? 'the server did not answer'}`;
+    }
+    if (drafts[field] !== text) return;
+    errors = { ...errors, [field]: error };
+    if (!error) onupdate({ [field]: text });
   }
   const patternValue = (field) => drafts[field] ?? rule[field] ?? '';
 
