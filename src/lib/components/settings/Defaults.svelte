@@ -6,8 +6,8 @@
    *   and a new console row start from it).
    * - The remembered compression per format: the same per-tool preference the
    *   Convert panel saves (`/api/preferences/conversion`), one picker per tool
-   *   whose default mode compresses. The conversion store saves the merged
-   *   object (`applySavedDefaults`): its debounce outlives this section, and
+   *   whose default mode compresses. The conversion store saves each edited
+   *   tool (`applySavedDefault`) over the server copy: its debounce outlives this section, and
    *   the saved value becomes the Convert panel's live one.
    * - How long History keeps its rows (`/api/ledger/settings`).
    *
@@ -68,12 +68,12 @@
   }
 
   function setCompression(p, value) {
-    prefs = { ...prefs, [p.tool.id]: formatCompression(p.mode, value) };
-    // The conversion store debounces and saves it (so leaving this page
-    // can't drop it) and makes it the live choice in the Convert panel.
-    conversion.applySavedDefaults(
-      Object.fromEntries(Object.entries(prefs).filter(([, v]) => v != null)),
-    );
+    const wire = formatCompression(p.mode, value);
+    prefs = { ...prefs, [p.tool.id]: wire };
+    // The conversion store debounces and saves just this tool over the
+    // server's current copy (so leaving this page can't drop it, and another
+    // tool's change made elsewhere survives) and makes it the live choice.
+    conversion.applySavedDefault(p.tool.id, wire);
   }
 
   // ─── History ────────────────────────────────────────────────────────────

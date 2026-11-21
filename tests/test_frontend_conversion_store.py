@@ -1107,8 +1107,11 @@ def test_the_picker_reads_one_level_and_range():
 
 _BROWSER = """
 globalThis.window = {};
+// The server's copy: reads see it, writes replace it (the PUT is whole-object).
+let server = {};
 const puts = [];
-api.putConversionPrefs = async (body) => { puts.push(body); return body; };
+api.getConversionPrefs = async () => ({ ...server });
+api.putConversionPrefs = async (body) => { puts.push(body); server = { ...body }; return body; };
 """
 
 
@@ -1134,7 +1137,7 @@ def test_a_default_saved_in_settings_applies_even_after_an_edit(tmp_path):
     data = _run_in_browser(tmp_path, """
 const store = conversion;
 store.setCompression(['zlib']);           // the user's own pick: touched
-store.applySavedDefaults({ chdman: 'lzma' });
+store.applySavedDefault('chdman', 'lzma');
 process.stdout.write(JSON.stringify({ live: store.compressionSelection }));
 """)
     assert data == {"live": ["lzma"]}
@@ -1145,18 +1148,44 @@ def test_a_debounced_preference_survives_leaving_the_page(tmp_path):
     section, so leaving Settings can't drop it; and a flush sends it at once."""
     data = _run_in_browser(tmp_path, """
 const store = conversion;
-store.applySavedDefaults({ chdman: 'lzma', dolphin: 'zstd:19' });
+store.applySavedDefault('chdman', 'lzma');
+store.applySavedDefault('dolphin', 'zstd:19');
 const before = puts.length;
 await store.flushCompressionPrefs();
 const flushed = puts.slice();
-store.applySavedDefaults({ chdman: 'zlib' });
+store.applySavedDefault('chdman', 'zlib');
 await new Promise((r) => setTimeout(r, 700));   // past the debounce, no component left
 process.stdout.write(JSON.stringify({ before, flushed, later: puts[puts.length - 1] }));
 """)
     assert data == {
         "before": 0,
         "flushed": [{"chdman": "lzma", "dolphin": "zstd:19"}],
-        "later": {"chdman": "zlib"},
+        "later": {"chdman": "zlib", "dolphin": "zstd:19"},
+    }
+
+
+def test_a_save_sends_only_the_tools_changed_here(tmp_path):
+    """CodeRabbit 4652269814: the PUT replaces the whole object, so a save built
+    from an old copy wiped a change another tab (or the CLI) saved meanwhile.
+    A queued save reads the server's current copy when it runs and changes
+    only the tools edited here; going back to a tool's default drops its key."""
+    data = _run_in_browser(tmp_path, """
+const store = conversion;
+server = { chdman: 'zlib', nsz: 'solid:18' };
+await store.loadServerPrefs();
+// Elsewhere, after this tab read the prefs: dolphin and nsz change.
+server = { chdman: 'zlib', nsz: 'solid:9', dolphin: 'zstd:19' };
+store.applySavedDefault('chdman', 'lzma');
+await store.flushCompressionPrefs();
+const first = puts[puts.length - 1];
+store.applySavedDefault('nsz', null);      // back to the tool's own default
+await store.flushCompressionPrefs();
+process.stdout.write(JSON.stringify({ first, second: puts[puts.length - 1], count: puts.length }));
+""")
+    assert data == {
+        "first": {"chdman": "lzma", "nsz": "solid:9", "dolphin": "zstd:19"},
+        "second": {"chdman": "lzma", "dolphin": "zstd:19"},
+        "count": 2,
     }
 
 
@@ -1166,12 +1195,13 @@ def test_a_compression_save_that_fails_says_so(tmp_path):
     covers a save made from the Convert panel too. The next good save clears it."""
     data = _run_in_browser(tmp_path, """
 const store = conversion;
+const put = api.putConversionPrefs;
 api.putConversionPrefs = async () => { throw new Error('disk full'); };
-store.applySavedDefaults({ chdman: 'lzma' });
+store.applySavedDefault('chdman', 'lzma');
 await store.flushCompressionPrefs();
 const failed = store.compressionSaveError;
 const toasted = toasts.filter(([kind]) => kind === 'error').map(([, m]) => m);
-api.putConversionPrefs = async (body) => { puts.push(body); return body; };
+api.putConversionPrefs = put;
 await store.retryCompressionSave();
 process.stdout.write(JSON.stringify({ failed, toasted, after: store.compressionSaveError, puts }));
 """)
@@ -1189,10 +1219,12 @@ def test_a_late_boot_read_never_overwrites_a_newer_local_change(tmp_path):
     live choice, or what the pending save sends; nor after a Convert-panel edit."""
     data = _run_in_browser(tmp_path, """
 const store = conversion;
+const read = api.getConversionPrefs;
 let answer;
 api.getConversionPrefs = () => new Promise((r) => { answer = r; });
 const boot = store.loadServerPrefs();
-store.applySavedDefaults({ chdman: 'lzma' });
+api.getConversionPrefs = read;
+store.applySavedDefault('chdman', 'lzma');
 answer({ chdman: 'zlib' });
 await boot;
 const live = store.compressionSelection;
@@ -1200,7 +1232,9 @@ await store.flushCompressionPrefs();
 const saved = puts[puts.length - 1];
 
 // The same with an edit made in the Convert panel while the read is out.
+api.getConversionPrefs = () => new Promise((r) => { answer = r; });
 const boot2 = store.loadServerPrefs();
+api.getConversionPrefs = read;
 store.setCompression(['huff']);
 answer({ chdman: 'zlib' });
 await boot2;
