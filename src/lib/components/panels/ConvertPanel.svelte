@@ -4,6 +4,7 @@
   // the selection changes and shows every game's new format before anything
   // runs; Convert queues exactly that plan through /api/jobs/auto.
   import { onDestroy, untrack } from 'svelte';
+  import { toast } from 'svelte-sonner';
   import { conversion, PLAN_LIVE_LIMIT } from '$lib/stores/conversion.svelte.js';
   import { defaults, SAFE_DEFAULTS } from '$lib/stores/defaults.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
@@ -192,10 +193,14 @@
   // Leaving the view aborts a submit still waiting on its RomM snapshot, and
   // any plan still on its way.
   let submitAbort = null;
+  // A dialog still open is answered "no": its flag would otherwise stay set
+  // and hold App's background refreshes after the panel is gone.
   onDestroy(() => {
     submitAbort?.abort();
     submitAbort = null;
     conversion.cancelPlan();
+    if (planPrompt) resolvePlanPrompt(false);
+    if (deletePrompt) resolveDeletePlan(false);
   });
 
   const converting = $derived(conversion.converting);
@@ -236,10 +241,12 @@
       ui.planPromptOpen = true;
       const waiting = new Promise((resolve) => { planPrompt = resolve; });
       confirmed = await conversion.requestPlan(snapshot, { delay: 0 });
-      if (!confirmed || !(await waiting)) {
+      if (!confirmed) {
         if (planPrompt) resolvePlanPrompt(false);
+        if (conversion.planError) toast.error(`Couldn't plan this: ${conversion.planError}`);
         return;
       }
+      if (!(await waiting)) return;
     }
     const rows = confirmed.filter((row) => row.mode);
     const options = {

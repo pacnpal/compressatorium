@@ -1,6 +1,8 @@
 <script>
   /**
-   * RomM connection settings, editable in-app: one form, one Save (#532).
+   * RomM's Connection tab: one form, one Save (#532). What happens to RomM's
+   * details when a game is converted folds under More (#541); RomM's own
+   * converter shows on the Automation tab, with its "Use RomM's choices".
    *
    * Save tests the connection first and saves only when it works, so a typo
    * never becomes live config. The test reports reachable / token accepted /
@@ -19,8 +21,6 @@
   import Minus from '@lucide/svelte/icons/minus';
   import Save from '@lucide/svelte/icons/save';
   import RotateCw from '@lucide/svelte/icons/rotate-cw';
-  import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
-  import Import from '@lucide/svelte/icons/import';
 
   let { onsaved } = $props();
 
@@ -195,78 +195,9 @@
       swapRefusal = e?.message ?? 'Failed to save settings';
     }
   }
-
-  // RomM's own converter (#385), when it is switched on. A warning and an
-  // offer, never a block: nothing here stops either converter.
-  const converter = $derived(romm.activeConverter);
-  const rommTargets = $derived(
-    Object.entries(converter?.platformFormats ?? {}).sort(([a], [b]) => a.localeCompare(b))
-  );
-  let importing = $state(false);
-
-  async function handleImport() {
-    importing = true;
-    try {
-      const { created, skipped } = await romm.importConverterTargets();
-      const made = created === 1 ? '1 Rule' : `${created} Rules`;
-      const left = skipped.length
-        ? ` Skipped ${skipped.map((p) => `${p.name} (${p.target.toUpperCase()})`).join(', ')}: `
-          + 'no mode here writes that format.'
-        : '';
-      if (created > 0) {
-        toast.success(`Imported ${made}, off until you turn them on in Automation.${left}`);
-      } else {
-        toast.info(`No Rules to import: every Platform RomM converts already has one.${left}`);
-      }
-    } catch (e) {
-      toast.error(e?.message ?? "Could not import RomM's targets");
-    } finally {
-      importing = false;
-    }
-  }
 </script>
 
 <div class="settings">
-  {#if converter}
-    <section class="card converter-banner" role="status" aria-live="polite">
-      <header>
-        <h2><TriangleAlert size={18} /> RomM's own converter is on</h2>
-      </header>
-      <p>
-        RomM converts the Platforms listed in its config and then deletes the
-        sources. It checks only that the conversion tool exited cleanly, and
-        never reads the output back. Compressatorium checks every output before
-        it deletes a source. Two converters on one library can convert the same
-        game twice, so we suggest switching RomM's off
-        (<code>ROM_CONVERTO_ENABLED=false</code>). Nothing here is blocked: the
-        choice is yours.
-      </p>
-      {#if rommTargets.length}
-        <p class="targets">
-          RomM converts:
-          {#each rommTargets as [slug, target], i (slug)}
-            {#if i > 0}, {/if}<code>{slug}</code> → {target.toUpperCase()}
-          {/each}
-        </p>
-      {/if}
-      {#if converter.error}
-        <p class="error">Could not read RomM's targets: {converter.error}</p>
-      {/if}
-      <div class="actions">
-        <Button
-          variant="secondary"
-          onclick={handleImport}
-          loading={importing}
-          disabled={!rommTargets.length}
-          icon={importIcon}
-        >
-          Import RomM's targets as Rules
-        </Button>
-        <span class="hint">Only for Platforms that have no Rule yet. New Rules start off.</span>
-      </div>
-    </section>
-  {/if}
-
   {#if found && found.url !== url.trim()}
     <section class="card found" role="status" aria-live="polite">
       <p>
@@ -280,18 +211,11 @@
   {/if}
 
   <form class="card" onsubmit={(e) => { e.preventDefault(); handleSave(); }}>
-    <header>
-      <h2>Connection</h2>
-      <p>
-        Compressatorium reads RomM's catalog over the API, but the ROM files
-        themselves through the filesystem — no disc image is ever copied over
-        HTTP.
-      </p>
-    </header>
+    <h2>Connection</h2>
 
     <label class="field">
       <span class="label">
-        RomM URL
+        RomM address
         {#if envPinned.has('url')}<Badge tone="neutral" size="sm">from env</Badge>{/if}
       </span>
       <input
@@ -336,7 +260,7 @@
 
     <label class="field">
       <span class="label">
-        Library path (in this container)
+        Where RomM's games are, as Compressatorium sees them
         {#if envPinned.has('library_root')}<Badge tone="neutral" size="sm">from env</Badge>{/if}
       </span>
       <input
@@ -348,23 +272,19 @@
         aria-invalid={problem?.field === 'library_root'}
         aria-describedby={problem?.field === 'library_root' ? 'romm-problem' : undefined}
       />
-      <span class="hint">
-        Where RomM's library folder is mounted <em>here</em>, inside a
-        Compressatorium volume. Leave it empty and Save finds it from RomM's
-        platform folders.
-      </span>
+      <span class="hint">Leave it empty and Save finds it from RomM's console folders.</span>
     </label>
 
     {#if busy || romm.testing}
       <div class="test"><Spinner /> Checking the connection…</div>
     {:else if test}
       <ul class="test-results">
-        {@render row(test.reachable, 'RomM reachable', test.version ? `(v${test.version})` : '')}
+        {@render row(test.reachable, 'RomM answers', test.version ? `(v${test.version})` : '')}
         {@render row(
-          test.authorized, 'Token accepted',
-          test.platform_count != null ? `(${test.platform_count} platforms)` : '',
+          test.authorized, 'The token works',
+          test.platform_count != null ? `(${test.platform_count} consoles)` : '',
         )}
-        {@render row(test.library_root_mounted, 'Library folder mounted here', '')}
+        {@render row(test.library_root_mounted, 'The games folder is here', '')}
       </ul>
     {/if}
     {#if problem}
@@ -378,57 +298,43 @@
       </div>
     {/if}
 
-    <fieldset>
-      <legend>Metadata</legend>
-      <p class="hint">
-        RomM identifies a CHD by the hash inside its header and an archive by its
-        largest member, so CHD, ZIP and 7z keep their Redump/No-Intro match
-        automatically. Other formats are matched on the file's own hash, which
-        conversion changes — so their metadata is saved first and re-applied
-        after RomM rescans, unless RomM re-identified the game by itself.
-      </p>
+    <details class="advanced">
+      <summary>More</summary>
       <Checkbox
         bind:checked={repinEnabled}
-        label="Save metadata before converting to a format RomM can't hash"
+        label="Keep RomM's details (cover, notes, play history) when converting"
+        description="For formats RomM can't match by hash, they are saved first and put back after RomM's next scan."
       />
-      <Checkbox
-        bind:checked={hasheousWriteIds}
-        disabled={!repinEnabled}
-        label="Write Hasheous ids onto converted ROMs"
-        description="When the app's Hasheous match knows a game RomM couldn't fully identify, write its provider ids (IGDB, TheGamesDB and others) onto the ROM in RomM after converting it, so RomM shows the cover and description. Only ids the ROM doesn't already have. Needs the snapshot above, which carries them."
-      />
-    </fieldset>
-
-    <fieldset>
-      <legend>Keep the ROM id</legend>
       <Checkbox
         bind:checked={swapKeepRomId}
-        label="Keep the ROM id when converting"
-        description="When a conversion replaces a file, rename RomM's record to the new file instead of letting RomM add a new game, so its saves, states, notes and collections stay put. For a single-file game converted to one file beside it, with the source deleted after its check. If RomM refuses the rename, the source is kept and the job says why. Needs a token with roms.read, roms.write and tasks.run, which RomM gives only to an admin's token: Save checks it with RomM first."
+        label="Keep the same RomM entry when the file changes"
+        description="Renames RomM's entry to the new file, so its saves, states and collections stay. Save checks your token with RomM first."
       />
       {#if swapRefusal}
         <p class="error" role="alert">{swapRefusal}</p>
+      {:else if swap?.keepRomId && swap.missing?.length}
+        <p class="error" role="alert">
+          Your token can't rename RomM's entries. Make a token with {swap.missing.join(', ')}.
+        </p>
       {:else if swap?.keepRomId && swap.error}
         <p class="error" role="alert">{swap.error}</p>
       {/if}
-    </fieldset>
-
-    <details class="advanced">
-      <summary>Advanced</summary>
+      <Checkbox
+        bind:checked={hasheousWriteIds}
+        disabled={!repinEnabled}
+        label="Add online IDs to converted games"
+        description="Writes the IDs Hasheous knows (IGDB and others) onto games RomM couldn't fully identify."
+      />
       <Checkbox
         bind:checked={repinOnLoad}
-        label="Re-apply saved metadata when the RomM page opens"
+        label="Put RomM's details back when this page opens"
       />
       <label class="field">
-        <span>Give up on a saved snapshot after</span>
+        <span>Stop waiting for RomM's scan after</span>
         <div class="days">
           <input type="number" min="1" max="365" bind:value={repinAbandonDays} />
           <span class="unit">days</span>
         </div>
-        <span class="hint">
-          A snapshot waits for RomM to rescan the converted file. Raise this if
-          your queue or RomM's scan schedule runs longer.
-        </span>
       </label>
     </details>
 
@@ -459,7 +365,6 @@
 {/snippet}
 {#snippet saveIcon()}<Save size={14} />{/snippet}
 {#snippet retryIcon()}<RotateCw size={14} />{/snippet}
-{#snippet importIcon()}<Import size={14} />{/snippet}
 
 <style>
   .days {
@@ -490,15 +395,10 @@
     display: grid;
     gap: var(--space-3);
   }
-  header h2 {
+  .card h2 {
     margin: 0;
     font-size: var(--text-lg);
     font-weight: var(--weight-semibold);
-  }
-  header p {
-    margin: var(--space-1) 0 0;
-    color: var(--text-2);
-    font-size: var(--text-sm);
   }
   .field { display: grid; gap: var(--space-1); }
   .label {
@@ -541,21 +441,6 @@
   .test-results li.ok { color: var(--text-1); }
   .muted { color: var(--text-2); }
   .error { color: var(--danger-text, var(--text-1)); margin: 0; }
-  fieldset {
-    border: 0;
-    border-top: 1px solid var(--border-subtle);
-    margin: 0;
-    padding: var(--space-3) 0 0;
-    display: grid;
-    gap: var(--space-3);
-    min-width: 0;
-  }
-  legend {
-    padding: 0;
-    font-size: var(--text-lg);
-    font-weight: var(--weight-semibold);
-  }
-  fieldset > legend + * { margin-top: var(--space-1); }
   .advanced {
     border-top: 1px solid var(--border-subtle);
     padding-top: var(--space-3);
@@ -571,21 +456,4 @@
   .test-results li.skipped { color: var(--text-3, var(--text-2)); }
   .found p { margin: 0; overflow-wrap: anywhere; }
   .found code, .hint code { overflow-wrap: anywhere; }
-  .converter-banner {
-    background: var(--warning-muted);
-    border-color: var(--warning);
-  }
-  .converter-banner h2 {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-  }
-  .converter-banner :global(svg) { color: var(--warning-text); }
-  .converter-banner p { margin: 0; }
-  .converter-banner code {
-    background: var(--surface-2);
-    padding: 0 4px;
-    border-radius: var(--radius-sm);
-  }
-  .converter-banner .actions { align-items: center; }
 </style>

@@ -949,7 +949,7 @@ class FileBrowserStore {
   /**
    * The subset of the current selection that the active conversion
    * mode would accept as input. ConvertPanel filters through this
-   * before calling `conversion.submit()` so the worker never sees
+   * before calling `conversion.submitAuto()` so the worker never sees
    * paths it would reject.
    */
   get convertibleSelection() {

@@ -88,7 +88,7 @@ def test_the_panel_and_the_rule_editor_say_which_proof_each_mode_uses():
     # named in the delete preview, over every group the plan deletes.
     store = (src.parent / "stores" / "conversion.svelte.js").read_text(encoding="utf-8")
     assert "CHECK_STRENGTH.find((c) => checks.includes(c))" in store
-    editor = (src / "views" / "RuleEditor.svelte").read_text(encoding="utf-8")
-    assert "DELETE_CHECK_HINTS[ruleDeleteCheck(spec, rule)]" in editor
+    table = (src / "library" / "RuleTable.svelte").read_text(encoding="utf-8")
+    assert "DELETE_CHECK_HINTS[ruleDeleteCheck(spec, rule)]" in table
     modal = (src / "modals" / "DeletePlanModal.svelte").read_text(encoding="utf-8")
     assert "conversion.deleteCheck === 'recognized'" in modal

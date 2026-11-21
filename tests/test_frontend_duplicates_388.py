@@ -12,7 +12,7 @@ from .test_frontend_findings_view import _run
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 _VIEW = _SRC / "lib" / "components" / "views" / "FindingsView.svelte"
-_RULES = _SRC / "lib" / "components" / "views" / "RulesView.svelte"
+_LIBRARY_VIEW = _SRC / "lib" / "components" / "views" / "LibraryView.svelte"
 _ENDPOINTS = _SRC / "lib" / "api" / "endpoints.js"
 _JOBS = _SRC / "lib" / "stores" / "jobConstants.js"
 
@@ -97,10 +97,10 @@ def test_the_findings_view_shows_each_copy_and_what_was_not_checked() -> None:
     assert "deletePlan" not in view and "deleteFile" not in view
 
 
-def test_the_rules_view_starts_a_run_for_the_library() -> None:
-    rules = _RULES.read_text(encoding="utf-8")
-    assert "api.findDuplicates(lib.id)" in rules
-    assert "Find duplicates" in rules
+def test_the_library_page_starts_a_run_for_the_library() -> None:
+    page = _LIBRARY_VIEW.read_text(encoding="utf-8")
+    assert "api.findDuplicates(id)" in page
+    assert "Find duplicates" in page
     endpoints = _ENDPOINTS.read_text(encoding="utf-8")
     assert "/find-duplicates`" in endpoints
     # The run's job has a name in the Jobs panel.

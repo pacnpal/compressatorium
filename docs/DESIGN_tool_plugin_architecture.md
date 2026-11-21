@@ -4456,6 +4456,33 @@ read off the spec, so it holds for any tool. Today the only such row is a
 GameCube/Wii `.rvz` under `dolphin_rvz` ("Already RVZ"); a `.wia` or `.gcz`
 still converts to RVZ.
 
+**Apply recommended** (#541) reuses it for a whole Library:
+`GET /api/libraries/{id}/recommended-rules` routes up to 25 games of each
+console with games and no conversion Rule through `auto_route`, keeps the most
+common mode, and drops one that `mode_is_automatable` refuses or whose tool is
+not in `ready_tool_ids()` (that console goes to `skipped` with the tool's own
+`not_ready_message`). It runs off the loop under the platforms route's bound
+and saves nothing; the Automation tab merges `rules` into the Rules it holds
+(`RulesSource.applyRecommended`, never over a console that has a target) and
+saves them through `PUT .../rules`. RomM uses the same route with `id=romm`.
+On the frontend every edit in the console table saves on its own:
+`RulesSource.scheduleSave(delay)` (600 ms for typed fields) goes through the
+existing one-at-a-time `saveRules` chain, and `flush()` sends a waiting edit
+before Preview, Run now or turning automation on. A save sends only the
+consoles changed since the last one (`{id: rule | null}`) to `PATCH
+.../rules` (`editor.patch_rules`, one merge at a time, then `save_rules` with
+all its checks), so a partial map can never delete the other consoles; the
+table isn't drawn until the Rules have loaded. `PUT` still replaces the whole
+set for the API. An edit still being checked (`hold(promise)`) is waited for by
+`flush()`, and one the check refused (`markUnsaved(key, reason)`) makes it
+refuse with that reason, so Run now never runs with a filter the screen
+doesn't show. A name filter is saved only
+once `POST /api/rules/check-pattern` says it compiles: the route runs
+`rules.pattern_problem`, the one check `_valid_pattern` makes on every save
+(Python's `re`, the 500-character cap, the backtracking guard), so the browser
+never builds a RegExp from what was typed and never autosaves a filter the
+save would refuse and pause the console for.
+
 `ModeSpec.reads_extensions` is the mode's real input domain when it is
 narrower than `input_extensions`; empty means "every input extension". It must
 be a subset of `input_extensions`, which keeps gating manual selection and
@@ -5089,7 +5116,10 @@ Knulli) key each game's artwork, favourite flag and play count on its
   `parent` (`os.scandir`) whose resolved path holds the resolved file,
   returned as listed. When more than one does (an alias, `alias -> ps2`), the
   answer would depend on the listing's order, so it raises `AmbiguousFolder`
-  and the gamelist Referrer keeps the Source. So `ROMs/ps2/psx/Game.iso` is
+  and the gamelist Referrer keeps the Source. `folder_holder(parent)` is the
+  same answer for many paths, listing `parent` once: a Library's listing finds
+  every game's console folder through `FolderLibrary.platform_folders()`, one
+  listing of the root (and `roms`), not one per game (#541). So `ROMs/ps2/psx/Game.iso` is
   `ps2` and the `psx` system's gamelist is never read. Only
   `<gamelists folder>/<system>/gamelist.xml` is read, with the Platform
   folder as the entries' base: `ROMs/ps2/Game.iso` reaches
@@ -8895,6 +8925,40 @@ wouldn't. Markers expire after `READY_SECONDS`. `trigger.check` is the
 dry run the UI's **Test** uses; for a path that lands nowhere,
 `trigger.suggest` looks for the same tail of folders under each Volume and
 offers the rewrite. The last 20 paths received are kept in memory for the UI.
+
+A path no Inbox holds but a Library does (an *arr importing straight into the
+games folder, #541) is that Library's: `check` names its `library_id`
+(`libraries.library_for`, so overlapping Libraries pick the nearest root and an
+ambiguous one is refused), and `_checked` works out, in the same bounded
+worker, the Library's console ids for the game: what `detect_platform` says,
+the person's folder mappings included, matched on the console's id or slug;
+only a game detection can't name at all falls back to the folder it sits in
+(`Library.platform_folder`, matched on the console's folder, RomM's renamed
+ones), and one whose header and folder disagree runs nothing. `_due_in_library` then fails closed: the path is converted only when
+the Library converts on its own (`schedule_enabled()`), the console's
+conversion Rule has a mode and is on, and now is inside its window
+(`schedule._in_window`); otherwise it is skipped with why (only a console
+outside its hours waits for its next scheduled run). Then
+`rules_sweep.sweep(library, platform_ids=..., ignore_schedule=True,
+kinds=(CONVERT,), honour_pauses=True)` runs, the same pass as Run now for those
+consoles: its containment, filters, duplicate policy and in-flight checks
+decide. `kinds` (default every kind) keeps a console's check Rule from spending
+a budget on an import. `honour_pauses` drops Run now's named-Platform override
+(a sweep that names its Platforms runs a Rule the person paused): the pause is
+read again under `_sweep_lock`, so a console paused after the import was
+accepted stays paused, and it holds for the deferred deletes of kept Sources
+too: an import never deletes an original for a paused console. Consoles that
+are one to detection (RomM's `nes` and `famicom`) are narrowed to the one
+whose folder holds the file, or none. The Library's listing is dropped once
+per request (`note_paths_changed` with every accepted path), not once per path. `trigger.check_one`, the UI's **Test a path**, returns
+`_due_in_library`'s answer for a Library path, so it never says "works" for an
+import that would be skipped.
+
+`rules_sweep.release_failed` drops a console's failed holds and nothing else:
+the console table's **Try them again** sends `failed_only` to
+`.../rules/forget-converted`, which keeps the converted history a rename or
+overwrite Rule needs to never convert a game twice. Forget history still
+clears both.
 
 ### 3.3.26 Event streams end cleanly on shutdown (`services/event_stream.py`, #465)
 

@@ -85,3 +85,13 @@ def test_one_click_starts_one_run_and_queues_what_was_planned():
         assert read in before_await, read
     assert "conversion.fetchDeletePlan(groups, outputDir)" in run
     assert "rommPlatformId: platformId," in run
+
+
+def test_leaving_the_view_answers_an_open_dialog():
+    """Unmounting mid-dialog answers it "no", so `ui.planPromptOpen` and
+    `ui.deletePlanPromptOpen` never stay set and hold App's refreshes."""
+    teardown = _PANEL.split("onDestroy(() => {", 1)[1].split("});", 1)[0]
+    assert "if (planPrompt) resolvePlanPrompt(false);" in teardown
+    assert "if (deletePrompt) resolveDeletePlan(false);" in teardown
+    assert "ui.planPromptOpen = false;" in _PANEL
+    assert "ui.deletePlanPromptOpen = false;" in _PANEL

@@ -37,6 +37,17 @@ CHECKED_FILES = [
     "panels/FileList.svelte",
     "panels/FileRow.svelte",
     "modals/DeletePlanModal.svelte",
+    # PR 3: Libraries.
+    "views/LibraryView.svelte",
+    "views/LibraryPlacement.svelte",
+    "views/RommSettings.svelte",
+    "library/LibraryBrowse.svelte",
+    "library/RommBrowse.svelte",
+    "library/LibraryAutomation.svelte",
+    "library/RuleTable.svelte",
+    "library/RuleAdvanced.svelte",
+    "library/WatchFolders.svelte",
+    "library/FrontendSelect.svelte",
     # PR 5: Settings.
     "settings/Connections.svelte",
     "settings/HasheousQuestion.svelte",
