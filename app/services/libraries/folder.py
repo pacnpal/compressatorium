@@ -63,6 +63,7 @@ import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -705,6 +706,18 @@ class FolderLibrary(LibraryDefaults):
         self._rewalk_thread = thread
         thread.start()
 
+    def _games_folder(self, entries: list[Entry]) -> str | None:
+        """Where most of a console's games are, relative to the root (#541):
+        their console folder, whatever the layout says new ones get. None
+        when they sit in the root itself."""
+        held = Counter(
+            folder for folder in (self.platform_folder(e.path) for e in entries) if folder
+        )
+        if not held:
+            return None
+        folder = held.most_common(1)[0][0]
+        return os.path.relpath(folder, self.root).replace(os.sep, "/")
+
     def summary(self, *, refresh: bool = False) -> dict[str, Any]:
         """Detected Platforms with Image counts, and the Images left out."""
         scan = self.scan(refresh=refresh)
@@ -721,6 +734,7 @@ class FolderLibrary(LibraryDefaults):
                 {
                     "id": slug, "slug": slug,
                     "name": platform_detect.platform_name(slug), "images": len(entries),
+                    "folder": self._games_folder(entries),
                 }
                 for slug, entries in sorted(scan.by_platform().items())
             ],

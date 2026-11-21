@@ -261,3 +261,11 @@ def test_a_blank_number_saves_nothing(tmp_path):
 process.stdout.write(JSON.stringify([numberValue(''), numberValue('abc'), numberValue('12')]));
 """, tmp_path)
     assert data == [None, None, 12]
+
+
+def test_browse_opens_where_each_consoles_games_are():
+    """Codex 4652664869: not the placement for new arrivals, which after a
+    layout change is an empty folder."""
+    browse = (_COMPONENTS / "LibraryBrowse.svelte").read_text(encoding="utf-8")
+    assert "platform.folder" in browse
+    assert "getLibraryPlacements" not in browse

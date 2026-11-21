@@ -1,17 +1,16 @@
 <script>
   /**
    * A folder Library's Browse tab: its consoles, how many games each has, and
-   * the folder they're in, each a link into Files. The view (LibraryView)
-   * loads the consoles; this adds where each one's folder is.
+   * the folder they're in (where its games are, which the listing says,
+   * not where new ones would go), each a link into Files. The view
+   * (LibraryView) loads the consoles.
    *
    * @typedef {Object} Props
    * @property {object} source the folder Library's rules source
    * @property {object} library the Library row
    */
-  import { api } from '$lib/api/endpoints.js';
   import { hashFor } from '$lib/router/routes.js';
   import { ui } from '$lib/stores/ui.svelte.js';
-  import { PlacementsLoad } from '$lib/util/libraryPlacements.js';
   import Button from '$lib/components/ui/Button.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -22,31 +21,16 @@
   // A folder is read one listing at a time: while one runs, look again in 3 s.
   const RETRY_MS = 3000;
 
-  const placementsLoad = new PlacementsLoad((id) => api.getLibraryPlacements(id));
-  let folders = $state({});
-
   $effect(() => {
     if (!source.platformsBusy) return;
     const timer = setTimeout(() => source.loadPlatforms(), RETRY_MS);
     return () => clearTimeout(timer);
   });
 
-  // Each console's folder, once the console listing is done (both walk the folder).
-  $effect(() => {
-    const id = library?.id;
-    void source.platforms;
-    if (!id || source.platformsLoading || source.platformsBusy) return;
-    placementsLoad.load(id).then((answer) => {
-      // Only the Library still shown: another one opened meanwhile keeps its own.
-      if (!answer || answer.error || answer.id !== library?.id) return;
-      folders = Object.fromEntries(answer.placements.map((row) => [row.id, row.folder]));
-    });
-  });
-
   const needConsole = $derived((source.counts?.unsorted ?? 0) + (source.counts?.conflicted ?? 0));
-  const folderOf = (platform) => folders[platform.id] ?? platform.id;
+  const folderOf = (platform) => platform.folder ?? '';
   const openHref = (platform) => hashFor('files', {
-    path: `${library.root}/${folderOf(platform)}`.replace(/\/+$/, ''),
+    path: folderOf(platform) ? `${library.root.replace(/\/+$/, '')}/${folderOf(platform)}` : library.root,
   });
 </script>
 
@@ -86,7 +70,7 @@
         <tr>
           <td>{platform.name}</td>
           <td class="num">{platform.images ?? 0}</td>
-          <td><code>{folderOf(platform)}/</code></td>
+          <td><code>{folderOf(platform) ? `${folderOf(platform)}/` : '(the top folder)'}</code></td>
           <td class="open"><a href={openHref(platform)}>Open</a></td>
         </tr>
       {/each}

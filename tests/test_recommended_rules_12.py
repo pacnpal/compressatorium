@@ -88,3 +88,18 @@ async def test_an_unknown_library_is_404(db: Path) -> None:
     with pytest.raises(HTTPException) as err:
         await routes.recommended_rules("folder:999")
     assert err.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_each_console_says_where_its_games_are(mixed: Path) -> None:
+    """Codex 4652664869: Browse links to where a console's games are, not to
+    where new ones would go (RomM style puts those in roms/<console>)."""
+    from routes import libraries as routes
+
+    lib = await _register(mixed)
+    await routes.update_library(lib["id"], routes.UpdateLibraryRequest(layout="romm"))
+
+    listed = await routes.library_platforms(lib["id"])
+
+    folders = {p["id"]: p["folder"] for p in listed["platforms"]}
+    assert folders == {"psx": "psx", "gba": "gba"}
