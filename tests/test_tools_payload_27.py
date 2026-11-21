@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import fields
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -196,6 +197,32 @@ def test_the_registry_is_empty_until_loaded(tmp_path):
                 "[registry.loaded, registry.all().length, registry.specFor('copy') ?? null]));\n",
                 src)
     assert got == [False, 0, None]
+
+
+def test_a_reply_that_names_no_tools_never_empties_a_loaded_registry(tmp_path):
+    """A stale or broken /api/tools answer (no `tools`, an empty list, an error
+    body) must not wipe what is loaded: `load` says False and keeps it."""
+    got = _node(tmp_path, """
+const results = [registry.load({}), registry.load({ tools: [] }), registry.load(null)];
+process.stdout.write(JSON.stringify([results, registry.loaded, registry.specFor('copy')?.mode]));
+""")
+    assert got == [[False, False, False], True, "copy"]
+
+
+def test_app_retries_the_tools_until_they_load_and_stops_when_unmounted():
+    """App loads the registry once: a failure says so and retries with a
+    growing delay, a reply after unmount is ignored, and no retry is left
+    scheduled after unmount."""
+    app = (Path(__file__).resolve().parents[1] / "src" / "App.svelte").read_text("utf-8")
+    start = app.index("const loadTools")
+    body = app[start:app.index("loadTools();", start)]
+    assert "if (disposed) return;" in body
+    assert "if (!registry.load(t))" in body
+    assert "toolsError = " in body
+    assert "setTimeout(() => loadTools(Math.min(delay * 2, 10000)), delay)" in body
+    assert "disposed = true;" in app and "clearTimeout(toolsRetry);" in app
+    # The waiting state says what is wrong once a fetch failed.
+    assert "{toolsError || " in app
 
 
 # ─── One registry-driven info route ───────────────────────────────────────

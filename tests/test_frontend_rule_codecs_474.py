@@ -19,7 +19,9 @@ import pytest
 from .test_frontend_registry_derives_186 import _find_node, loaded_registry_src
 
 _SRC = Path(__file__).resolve().parents[1] / "src" / "lib"
-_EDITOR = _SRC / "components" / "views" / "RuleEditor.svelte"
+_ADVANCED = _SRC / "components" / "library" / "RuleAdvanced.svelte"
+_TABLE = _SRC / "components" / "library" / "RuleTable.svelte"
+_COMPRESSION = _SRC / "tools" / "compression.js"
 _STORE = _SRC / "stores" / "conversion.svelte.js"
 
 
@@ -64,24 +66,24 @@ def test_only_the_codecs_the_mode_offers_are_kept(tmp_path):
 
 
 def _function(src: str, name: str) -> str:
-    found = re.search(rf"function {name}\([^)]*\) \{{.*?\n  \}}", src, re.DOTALL)
+    found = re.search(rf"function {name}\([^)]*\) \{{.*?\n\s*\}}", src, re.DOTALL)
     assert found, f"{name} not found"
     return found.group(0)
 
 
 def test_the_rule_editor_counts_and_presses_only_offered_codecs():
-    """``selectedCodecs`` feeds the chips' pressed state, the "(N selected)"
-    count, the cap check and the toggle, so narrowing it narrows all four, and
-    a toggle drops a hidden codec instead of keeping it unseen."""
-    src = _EDITOR.read_text(encoding="utf-8")
-
-    assert "registry.offeredCodecs(rule.mode" in _function(src, "selectedCodecs")
-    assert "({chosen.length} selected)" in src
-    assert "selectedCodecs(rule)" in _function(src, "toggleCodec")
+    """A console's codecs go through the shared picker and compression.js,
+    whose toggle keeps only the codecs the mode offers, so a hidden codec is
+    dropped instead of kept unseen (#474)."""
+    advanced = _ADVANCED.read_text(encoding="utf-8")
+    assert "value={fromRule(rule)}" in advanced
+    src = _COMPRESSION.read_text(encoding="utf-8")
+    assert "registry.offeredCodecs(mode, value?.codecs ?? [])" in _function(src, "toggleCodec")
+    assert "registry.offeredCodecs(mode, chosen)" in src
 
 
 def test_the_rule_editor_says_which_codecs_were_dropped():
-    src = _EDITOR.read_text(encoding="utf-8")
+    src = _TABLE.read_text(encoding="utf-8")
 
     assert "rule.dropped_codecs?.length" in src
 

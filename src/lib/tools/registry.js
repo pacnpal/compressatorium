@@ -537,11 +537,16 @@ export const registry = {
   /**
    * Fill the registry from a `GET /api/tools` payload (its `tools`). Called
    * once at start, by App.svelte, before any view renders; every method
-   * below reads what this built. Until then the registry is empty.
+   * below reads what this built. Until then the registry is empty. A payload
+   * that names no tools (an error body, a broken reply) changes nothing and
+   * answers false, so it can never empty a loaded registry.
    */
   load: (payload) => {
-    TOOLS = buildTools(payload);
+    const tools = buildTools(payload);
+    if (!tools.length) return false;
+    TOOLS = tools;
     index();
+    return true;
   },
 
   /** Whether `load` has run with a payload that named tools. */

@@ -70,8 +70,8 @@ async def test_the_route_lists_what_it_found(vol):
 
 def test_the_editor_offers_a_frontend_select_and_no_muos_claim():
     root = Path(__file__).resolve().parents[1]
-    editor = (root / "src/lib/components/views/RuleEditor.svelte").read_text()
-    assert 'label="Frontend"' in editor
+    editor = (root / "src/lib/components/library/FrontendSelect.svelte").read_text()
+    assert 'label="Game list app"' in editor
     assert "api.findGamelistsFolders" in editor
     assert "Knulli or muOS" not in editor
     gamelist = (root / "app/services/referrers/gamelist.py").read_text()

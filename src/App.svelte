@@ -40,6 +40,8 @@
   import MappingModal from '$lib/components/modals/MappingModal.svelte';
 
   let mainEl;
+  // Why the tools have not loaded yet, once a fetch of them failed.
+  let toolsError = $state('');
 
   $effect(() => {
     ui.focusBump;
@@ -140,18 +142,24 @@
     // The tools, their formats and modes come from the backend, and so does
     // which of them can run and why the others can't (#515). The views wait
     // for it; a failed fetch is retried, since nothing converts without it.
+    // One request at a time: the next is only scheduled once this one failed,
+    // so no older reply can land after a newer one. Nothing runs after unmount.
     let toolsRetry;
+    let disposed = false;
     const loadTools = (delay = 1000) => {
       api.getTools()
         .then((t) => {
-          registry.load(t);
-          if (!registry.loaded) throw new Error('The server named no tools');
+          if (disposed) return;
+          if (!registry.load(t)) throw new Error('The server named no tools');
+          toolsError = '';
           conversion.adoptRegistry();
           ui.applyToolAvailability(t?.available, t?.reasons);
           // Remembered per-tool compression settings, applied over the defaults.
           conversion.loadServerPrefs();
         })
         .catch(() => {
+          if (disposed) return;
+          toolsError = "Can't reach the server to load the tools. Trying again…";
           toolsRetry = setTimeout(() => loadTools(Math.min(delay * 2, 10000)), delay);
         });
     };
@@ -169,6 +177,7 @@
     jobs.connect();
     const stopRouter = startRouter();
     return () => {
+      disposed = true;
       clearTimeout(toolsRetry);
       datMatching.stopWatchingAvailability();
       stopRouter();
@@ -222,7 +231,9 @@
     <main id="main-content" bind:this={mainEl} class="main" tabindex="-1" aria-label="Main content">
       <svelte:boundary onerror={onBoundaryError}>
         {#if !ui.toolsKnown}
-          <div class="tools-loading" role="status"><Spinner size="md" /> Loading the tools…</div>
+          <div class="tools-loading" role="status">
+            <Spinner size="md" /> {toolsError || 'Loading the tools…'}
+          </div>
         {:else if ui.activeView === 'files'}<FilesView />
         {:else if ui.activeView === 'libraries'}<LibrariesView />
         {:else if ui.activeView === 'activity'}<ActivityView />
@@ -260,7 +271,10 @@
   }
   /* <main> takes focus on every route change so a screen reader starts there.
      It isn't a control (tabindex -1), so it draws no ring. */
-  .main { flex: 1; overflow-y: auto; outline: none; }
+  /* The page (not <main>) scrolls: the shell's row grows with its content. So
+     <main> clips sideways without being a scroll box, or a sticky child (the
+     Settings section list) would stick to a box that never scrolls. */
+  .main { flex: 1; overflow-x: clip; outline: none; }
   .main:focus, .main:focus-visible { box-shadow: none; }
 
   .skip-link {

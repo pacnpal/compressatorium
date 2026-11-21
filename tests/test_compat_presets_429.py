@@ -113,15 +113,16 @@ async def test_the_route_serves_the_table_and_is_mounted():
 def test_both_pickers_read_the_served_table_and_never_block():
     src = Path(__file__).resolve().parents[1] / "src" / "lib"
     picker = (src / "components/panels/CompressionPicker.svelte").read_text(encoding="utf-8")
-    editor = (src / "components/views/RuleEditor.svelte").read_text(encoding="utf-8")
+    # A console's settings (#541) render the same picker.
+    advanced = (src / "components/library/RuleAdvanced.svelte").read_text(encoding="utf-8")
     endpoints = (src / "api/endpoints.js").read_text(encoding="utf-8")
 
     assert "/compat-presets" in endpoints
-    for page in (picker, editor):
-        assert "Compatible with" in page
-        assert "compatWarning" in page
+    assert "<CompressionPicker" in advanced
+    assert "Compatible with" in picker
+    assert "compatWarning" in picker
     # The warning is advisory: no disabled state hangs off it.
-    assert "disabled={compat" not in picker and "disabled={compat" not in editor
+    assert "disabled={compat" not in picker
 
 
 def test_the_warning_names_unread_codecs_and_ignores_none_and_unknown_modes(tmp_path):
@@ -195,8 +196,10 @@ def test_an_empty_selection_is_checked_against_the_tools_implicit_codecs(tmp_pat
 
 def test_both_views_pass_the_served_implicit_codecs_to_the_warning():
     src = Path(__file__).resolve().parents[1] / "src" / "lib"
-    for rel in ("components/panels/CompressionPicker.svelte", "components/views/RuleEditor.svelte"):
-        assert "compat.table" in (src / rel).read_text(encoding="utf-8"), rel
+    picker = (src / "components/panels/CompressionPicker.svelte").read_text(encoding="utf-8")
+    assert "compat.table" in picker
+    advanced = (src / "components/library/RuleAdvanced.svelte").read_text(encoding="utf-8")
+    assert "<CompressionPicker" in advanced
 
 
 def test_a_mode_whose_default_codecs_depend_on_the_input_is_served_as_unknown():
