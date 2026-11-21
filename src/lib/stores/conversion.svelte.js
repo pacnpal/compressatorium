@@ -553,29 +553,23 @@ class ConversionStore {
         this.clearAutoPlan();
         return null; // the panel is gone, or Auto is off: never open the modal
       }
-      // Confirm, then queue the confirmed plan. When the server finds the plan
-      // changed since (409, with the new plan), show that plan and ask again.
-      for (;;) {
-        const answer = await untilAborted(confirm(), signal);
-        // An abort resolves the confirmation as cancelled.
-        const proceed = !signal?.aborted && !answer?.aborted && Boolean(answer)
-          && !(autoAtStart && !this.auto);
-        const plan = this.autoPlan ?? [];
-        this.clearAutoPlan();
-        if (!proceed) return null;
-        let replanned = null;
-        try {
-          return await this.submitAuto(snapshot, {
-            plan, rommRepin: fromRomm, rommPlatformId: platformId, outputDir, signal,
-          });
-        } catch (e) {
-          // Toast already raised in submitAuto.
-          replanned = e?.status === 409 && Array.isArray(e?.detail?.plan) ? e.detail.plan : null;
-          if (!replanned || signal?.aborted) return null;
-        } finally {
-          if (fromRomm) onRepinPending?.(this.lastRepinPending);
-        }
-        this.autoPlan = replanned;
+      // Confirm, then queue the confirmed plan. An Image whose plan changed
+      // since is left out and named in the result toast (#520).
+      const answer = await untilAborted(confirm(), signal);
+      // An abort resolves the confirmation as cancelled.
+      const proceed = !signal?.aborted && !answer?.aborted && Boolean(answer)
+        && !(autoAtStart && !this.auto);
+      const plan = this.autoPlan ?? [];
+      this.clearAutoPlan();
+      if (!proceed) return null;
+      try {
+        return await this.submitAuto(snapshot, {
+          plan, rommRepin: fromRomm, rommPlatformId: platformId, outputDir, signal,
+        });
+      } catch (_e) {
+        return null; // toast already raised in submitAuto
+      } finally {
+        if (fromRomm) onRepinPending?.(this.lastRepinPending);
       }
     } finally {
       this.#autoInFlight = false;
@@ -846,8 +840,8 @@ class ConversionStore {
     const wanted = new Set(filePaths);
     // Only the confirmed plan's actionable rows go to the server, each with the
     // target the user saw: an Image the preview skipped is never sent. The
-    // server replans them and refuses with 409 (and the new plan) when one
-    // changed, so nothing is queued that the user did not confirm.
+    // server replans them and leaves out (and reports) any whose target
+    // changed, so nothing is queued that the user did not confirm (#520).
     const items = (plan ?? [])
       .filter((row) => row?.mode && wanted.has(row.file_path))
       .map((row) => ({ file_path: row.file_path, mode: row.mode }));
@@ -861,32 +855,20 @@ class ConversionStore {
       groupByMode(Object.keys(modeOf), modeOf),
       { duplicateAction: 'skip', rommRepin, rommPlatformId, outputDir, signal },
       async () => {
-        let result;
-        try {
-          // After the RomM snapshot, right before queueing: an abort (the
-          // panel unmounted) stops here. Nothing becomes a job, so the shared
-          // path retires the metadata just recorded, without an error toast.
-          if (signal?.aborted) {
-            const stopped = new Error('Auto run aborted');
-            stopped.aborted = true;
-            throw stopped;
-          }
-          result = await api.createAutoJobs(items, outputDir, 'skip');
-        } catch (e) {
-          // A later group was refused after earlier jobs had already
-          // finished: the route returns those in `detail.jobs`. They are real
-          // jobs, so adopt them and let the shared path reconcile against
-          // them before it retires any snapshot.
-          const kept = Array.isArray(e?.detail?.jobs) ? e.detail.jobs : null;
-          if (kept) {
-            jobs.adopt(kept);
-            e.createdJobs = kept;
-          }
-          throw e;
+        // After the RomM snapshot, right before queueing: an abort (the
+        // panel unmounted) stops here. Nothing becomes a job, so the shared
+        // path retires the metadata just recorded, without an error toast.
+        if (signal?.aborted) {
+          const stopped = new Error('Auto run aborted');
+          stopped.aborted = true;
+          throw stopped;
         }
+        const result = await api.createAutoJobs(items, outputDir, 'skip');
         const createdJobs = Array.isArray(result?.jobs) ? result.jobs : [];
         jobs.adopt(createdJobs);
-        return { result, createdJobs };
+        // Each Image left out and why (a plan that changed, an output another
+        // job holds), for the shared result toast (#520).
+        return { result, createdJobs, skipped: result?.skipped ?? [] };
       },
     );
   }

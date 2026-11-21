@@ -43,7 +43,10 @@
   // deletion. The verification store only tracks existing verified outputs,
   // so source inputs must not be pre-filtered or block normal create/compress
   // flows here.
-  const submitDisabled = $derived(convertibleCount === 0 || converting || conversion.autoInFlight);
+  // A RomM catalog switching platforms still shows the old platform's rows.
+  const catalogLoading = $derived(fileBrowser.rommPlatformId !== null && fileBrowser.loading);
+  const blocked = $derived(converting || conversion.autoInFlight || catalogLoading);
+  const submitDisabled = $derived(convertibleCount === 0 || blocked);
 
   // Duplicate preflight: open the modal when the backend reports any
   // output collision; await the user's pick (skip / overwrite / null
@@ -385,13 +388,13 @@
     display: flex;
     gap: var(--space-2);
     background: var(--warning-muted);
-    color: var(--warning);
+    color: var(--warning-text);
     border-radius: var(--radius-md);
     padding: var(--space-2) var(--space-3);
     font-size: var(--text-sm);
     align-items: flex-start;
   }
-  .warning.info { background: var(--info-muted); color: var(--info); }
+  .warning.info { background: var(--info-muted); color: var(--info-text); }
 
   .actions {
     display: flex;

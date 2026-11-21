@@ -872,7 +872,6 @@ async def test_process_job_revalidates_split_companions_after_locking(
     from app.models import ConversionJob, ConversionMode, JobStatus
     from app.services import job_manager as job_manager_module
     from app.services.job_manager import job_manager
-    from services.concurrency_manager import concurrency_manager
     from services.lock_manager import lock_manager
 
     volume = tmp_path / "volume"
@@ -933,7 +932,6 @@ async def test_process_job_revalidates_split_companions_after_locking(
         assert existing.read_bytes() == b"the user's prior output"
     finally:
         lock_manager.release_lock(out)
-        concurrency_manager.release(job.id)
         job_manager.jobs.pop(job.id, None)
         job_manager._cancel_events.pop(job.id, None)
         job_manager._cancelled.discard(job.id)

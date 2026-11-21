@@ -3,10 +3,11 @@ import functools
 from logging_setup import get_logger
 import os
 import re
+from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 from config import settings
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -55,7 +56,7 @@ from services.output_conflicts import (
     get_unique_output_path as _get_unique_output_path,
 )
 from services.tools import InputKind, ModeKind, not_ready_message, registry
-from services.tools.base import compression_problem, without_unusable_codecs
+from services.tools.base import clamp_levels, compression_problem, without_unusable_codecs
 from services.event_stream import event_stream
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
 from utils.path_utils import (
@@ -184,7 +185,7 @@ def _validate_request_compression(
             status_code=400, detail=f"{spec.label} takes one codec at a time",
         )
     # A codec the mode does not take (dolphin-tool refuses zstd in WIA), or a
-    # level outside that codec's range (lzma2 takes 1-9). Never clamped.
+    # level that isn't a number. A level out of range was clamped already.
     problem = compression_problem(spec, compression)
     if problem:
         raise HTTPException(status_code=400, detail=problem)
@@ -723,6 +724,7 @@ async def plan_job(
     output_dir: str | None,
     duplicate_action: DuplicateAction,
     delete_on_verify: bool,
+    ready_tool_ids: Collection[str] | None = None,
 ) -> JobPlan:
     """Resolve one input file into a concrete ``JobPlan``.
 
@@ -738,9 +740,15 @@ async def plan_job(
     A tool that isn't ready (#505) is refused first, before anything is read:
     ``SkipFile(TOOL_NOT_READY)`` with ``not_ready_message(tool)`` as its
     detail, so every caller says it the way the info routes do.
+    ``ready_tool_ids`` answers for the process that will run the job instead
+    of probing here: a CLI that hands its jobs to a server plans with the
+    server's ``GET /api/tools`` (#533), whose own planning has the last word.
     """
     tool = registry.get(spec.tool_id)
-    if not await registry.tool_is_ready(tool):
+    if not (
+        tool.id in ready_tool_ids if ready_tool_ids is not None
+        else await registry.tool_is_ready(tool)
+    ):
         raise SkipFile(SkipReason.TOOL_NOT_READY, not_ready_message(tool))
     # Directory-as-input mode (makeps3iso folder->iso): a folder, not a file with
     # a suffix. Validate isdir + the tool's source-layout detector instead of
@@ -1140,10 +1148,10 @@ async def create_job(request: JobCreateRequest):
             status_code=400,
             detail=f"{request.mode.value} is not a valid conversion mode",
         )
-    compression = normalize_compression(request.compression)
     mode = request.mode.value
     output_dir = normalize_output_dir(request.output_dir)
     spec = registry.spec(mode)
+    compression = clamp_levels(spec, normalize_compression(request.compression))
     _validate_request_compression(spec, mode, compression, request.delete_on_verify)
     _validate_delete_on_verify(spec, request.delete_on_verify)
     # Containment off the event loop, bounded (#327).
@@ -1219,6 +1227,9 @@ async def create_job(request: JobCreateRequest):
 # writes (the batch keeps the higher-priority one). Not a ``SkipReason``: a
 # single job never answers it.
 SAME_OUTPUT_CODE = "same_output"
+# ...for a file whose output a live job was already writing when the batch was
+# queued (#520): that one file is left out, the rest of the batch is queued.
+OUTPUT_CLAIMED_CODE = "output_claimed"
 
 
 @dataclass(frozen=True)
@@ -1283,26 +1294,27 @@ def _check_queue_room(adding: int) -> None:
 
 
 async def queue_prepared(batch: PreparedBatch) -> list[ConversionJob]:
-    """Queue a prepared batch as one atomic job-manager call."""
+    """Queue a prepared batch as one job-manager call.
+
+    A file whose destination another live job already holds is left out and
+    added to ``batch.skips`` (``OUTPUT_CLAIMED_CODE``, #520); the rest are
+    queued. One collision no longer fails a Select-All of thousands.
+    """
+    claimed: list[tuple[str, str]] = []
     try:
-        return await job_manager.create_jobs_atomic(
+        jobs = await job_manager.create_jobs_atomic(
             batch.job_specs,
             batch.request.mode,
             compression=batch.compression,
             delete_on_verify=batch.request.delete_on_verify,
             container_only=batch.request.container_only,
             split=batch.request.split,
+            skipped=claimed,
         )
     except OutputIsSourceError as exc:
         # The queue's own check: the output would be the Source or one of its
         # files (planning saw it clear; a header read answered differently).
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except OutputClaimedError as exc:
-        # A concurrency outcome, not a malformed request: another live job took
-        # this destination between planning and queueing. 409 so the caller can
-        # retry or skip; a 500 said "server broke" for something working
-        # exactly as designed.
-        raise HTTPException(status_code=409, detail=exc.detail) from exc
     except DestinationUnresolvableError as exc:
         # Transient and on the storage's side, not the caller's: the volume
         # holding the destination did not answer inside the probe bound, so the
@@ -1312,6 +1324,11 @@ async def queue_prepared(batch: PreparedBatch) -> list[ConversionJob]:
         raise HTTPException(status_code=503, detail=exc.detail) from exc
     except QueueBackpressureError as exc:
         raise HTTPException(status_code=429, detail=exc.detail) from exc
+    batch.skips.extend(
+        BatchSkip(path=path, reason=reason, code=OUTPUT_CLAIMED_CODE)
+        for path, reason in claimed
+    )
+    return jobs
 
 
 @router.post("/jobs/batch", response_model=list[ConversionJob] | BatchJobsResponse)
@@ -1386,20 +1403,23 @@ def _check_job_paths(file_path: str, output_dir: str | None) -> None:
     _check_within_volumes([], output_dir)
 
 
-async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
+async def prepare_batch(
+    request: BatchJobCreateRequest, *, ready_tool_ids: Collection[str] | None = None,
+) -> PreparedBatch:
     """Validate and plan every file of a batch, queueing nothing.
 
     Raises the same HTTP errors ``create_batch_jobs`` always has. Split out so
     Auto can prepare every group before it queues any of them.
+    ``ready_tool_ids``: see :func:`plan_job`.
     """
     if is_external_mode(request.mode):
         raise HTTPException(
             status_code=400,
             detail=f"{request.mode.value} is not a valid conversion mode",
         )
-    compression = normalize_compression(request.compression)
     mode = request.mode.value
     spec = registry.spec(mode)
+    compression = clamp_levels(spec, normalize_compression(request.compression))
     output_dir = normalize_output_dir(request.output_dir)
     _validate_request_compression(spec, mode, compression, request.delete_on_verify)
     _validate_delete_on_verify(spec, request.delete_on_verify)
@@ -1440,6 +1460,7 @@ async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
                 output_dir=output_dir,
                 duplicate_action=request.duplicate_action,
                 delete_on_verify=request.delete_on_verify,
+                ready_tool_ids=ready_tool_ids,
             )
         except SkipFile as skip:
             skipped[file_path] = BatchSkip.of(file_path, skip)
@@ -1495,7 +1516,9 @@ def checked_compression(mode: str, compression: str | None) -> str | None:
         return None
     try:
         spec = registry.spec(mode)
-        value, dropped = without_unusable_codecs(spec, normalize_compression(compression))
+        value, dropped = without_unusable_codecs(
+            spec, clamp_levels(spec, normalize_compression(compression)),
+        )
         if dropped:
             logger.warning(
                 "Saved compression %r: %s can't use %s; dropped",
@@ -1585,6 +1608,14 @@ async def auto_plan(request: AutoPlanRequest):
     return [_plan_item(target) for target in await _plan_auto(request)]
 
 
+# Why an Auto item was not queued (#520), as ``BatchSkip`` codes.
+PLAN_CHANGED_CODE = "plan_changed"
+PLAN_CHANGED_REASON = (
+    "Its plan changed since you confirmed it; convert it again to see the new one"
+)
+QUEUE_FAILED_CODE = "queue_failed"
+
+
 @router.post("/jobs/auto", response_model=AutoBatchResponse)
 async def create_auto_jobs(request: AutoJobCreateRequest):
     """Queue the Auto plan the user confirmed.
@@ -1592,26 +1623,19 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
     ``request.items`` are the confirmed plan's actionable rows, each
     ``{file_path, mode}``; an Image the preview skipped (Conflicted, Unsorted,
     an output another Image writes) is never sent. The paths are planned
-    again, and if any item's target differs from the confirmed one (another
-    tool, or now skipped) the request is refused with 409 and
-    ``detail = {"message", "plan"}``, the new plan, before anything is
-    queued: the client shows it and asks again. Queueing what the user never
-    saw would also skip its RomM metadata snapshot.
+    again, and each item whose target is still the confirmed one is queued
+    (#520). An item whose target changed (another tool, or now skipped) is
+    not: queueing what the user never saw would also skip its RomM metadata
+    snapshot. It comes back in ``skipped`` (code ``plan_changed``) and its
+    plan row says why, so the user can convert it again.
 
     Images are grouped by target mode and each group goes through the ordinary
     batch planning, so validation, duplicate handling and backpressure are the
-    same as a hand-picked batch. An Image preparation skips is reported in the
-    returned plan.
-
-    Every group is prepared before any is queued, so a planning error queues
-    nothing. Each group is still its own atomic queue call, so if a later group
-    is refused at queue time (another job took a destination, a volume stopped
-    answering) the jobs this request already queued are withdrawn and the error
-    is returned. The rollback waits for running jobs to settle
-    (``_cancel_queued``); a job that completed with an output, or is still
-    running at the bound, is kept, logged, and returned in the error as
-    ``detail = {"message", "jobs"}``, with
-    ``jobs`` in the same shape a success returns.
+    same as a hand-picked batch. Every group is prepared before any is queued,
+    so a planning error queues nothing. A file preparation or the queue left
+    out is reported in ``skipped`` and its plan row; a group the queue refused
+    as a whole (a volume stopped answering) reports each of its files
+    (``queue_failed``) and the other groups stay queued.
     """
     confirmed: dict[str, str] = {}
     for item in request.items:
@@ -1625,19 +1649,18 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
     plan = await _plan_auto(AutoPlanRequest(
         file_paths=list(confirmed), output_dir=request.output_dir,
     ))
-    if any(target.mode != confirmed.get(target.file_path) for target in plan) or (
-        {target.file_path for target in plan} != set(confirmed)
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "The plan changed since you confirmed it. Review it and confirm again.",
-                "plan": [_plan_item(target).model_dump(mode="json") for target in plan],
-            },
+    skips: list[BatchSkip] = [
+        BatchSkip(
+            path=target.file_path,
+            reason=PLAN_CHANGED_REASON + (f" ({target.skip_reason})" if target.skip_reason else ""),
+            code=PLAN_CHANGED_CODE,
         )
+        for target in plan if target.mode != confirmed.get(target.file_path)
+    ]
+    changed = {skip.path for skip in skips}
     groups: dict[tuple[str, str | None], list[str]] = {}
     for target in plan:
-        if target.mode:
+        if target.mode and target.file_path not in changed:
             groups.setdefault((target.mode, target.compression), []).append(
                 target.file_path,
             )
@@ -1653,61 +1676,48 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
         for (mode, compression), paths in groups.items()
     ]
     _check_queue_room(sum(len(batch.plans) for batch in prepared))
-    # An Image preparation skipped (its output appeared after planning, say)
-    # is reported in the plan, not shown as headed for a target it never got.
-    skipped_now = {
-        path: reason for batch in prepared for path, reason in batch.skipped.items()
-    }
-    plan = [
-        replace(t, mode=None, tool_id=None, compression=None, skip_reason=skipped_now[t.file_path])
-        if t.mode and t.file_path in skipped_now else t
-        for t in plan
-    ]
 
     jobs: list[ConversionJob] = []
     for batch in prepared:
         try:
             jobs += await queue_prepared(batch)
-        except HTTPException as exc:
-            kept = await _cancel_queued(jobs)
-            if kept:
-                # The kept jobs go back in the shape a success returns them,
-                # so the client can adopt them and keep their re-pin records
-                # instead of retiring every snapshot it took for this batch.
-                names = ", ".join(job.filename or job.id for job in kept)
-                exc.detail = {
-                    "message": f"{exc.detail} Kept (finished or still running): {names}.",
-                    "jobs": [job.model_dump(mode="json") for job in kept],
-                }
-            raise
         except Exception as exc:
-            # An unexpected failure: withdraw, log the original error with its
-            # traceback, and still hand back any job that finished, in the
-            # same shape as above, so the client keeps its re-pin records.
-            kept = await _cancel_queued(jobs)
-            logger.error(
-                "Auto batch failed after %d job(s) were queued", len(jobs), exc_info=exc,
-            )
-            if not kept:
-                raise
-            names = ", ".join(job.filename or job.id for job in kept)
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "message": f"Auto batch failed. Kept (finished or still running): {names}.",
-                    "jobs": [job.model_dump(mode="json") for job in kept],
-                },
-            ) from exc
+            if isinstance(exc, HTTPException):
+                reason = str(exc.detail)
+            else:
+                logger.error("Auto group %s failed to queue", batch.request.mode, exc_info=exc)
+                reason = "Could not be queued; the server log has the details"
+            skips += [
+                BatchSkip(path=plan_.file_path, reason=reason, code=QUEUE_FAILED_CODE)
+                for plan_ in batch.plans
+            ]
         except BaseException:
-            # A client disconnect's CancelledError and the like: still withdraw
-            # what this request queued, then let it propagate.
+            # A client disconnect's CancelledError and the like: nobody is
+            # left to tell, so withdraw what this request queued.
             await _cancel_queued(jobs)
             raise
-    return AutoBatchResponse(plan=[_plan_item(t) for t in plan], jobs=jobs)
+        skips += batch.skips
+    # A file left out is reported in the plan, not shown as headed for a
+    # target it never got.
+    why = {skip.path: skip.reason for skip in skips}
+    plan = [
+        replace(t, mode=None, tool_id=None, compression=None, skip_reason=why[t.file_path])
+        if t.file_path in why else t
+        for t in plan
+    ]
+    return AutoBatchResponse(
+        plan=[_plan_item(t) for t in plan],
+        jobs=jobs,
+        skipped=[
+            BatchSkippedItem(path=skip.path, reason=skip.reason, code=skip.code)
+            for skip in skips
+        ],
+    )
 
 
 async def _cancel_queued(jobs: list) -> list:
-    """Withdraw jobs an Auto request queued before a later group failed.
+    """Withdraw the jobs an Auto request queued when the request itself is
+    cancelled (a client disconnect) before it could answer.
 
     Returns the jobs that were not withdrawn, judged by their real final
     states, never by ``cancel_job()``'s answer: for a processing job that only
@@ -1788,18 +1798,6 @@ async def job_events():
         # that don't subscribe to "snapshot" events drop them silently (SSE
         # listener semantics), preserving backwards compatibility.
         snapshot_sent = False
-        # Last `history` state pushed to this client. The history cap deletes
-        # finished jobs behind the client's back, so a client that only ever
-        # sees live jobs has no way to know its Completed/Failed counts have
-        # stopped tracking reality. Emitting the evicted totals whenever they
-        # change (absolute values, never deltas, so a dropped frame or a
-        # reconnect can't skew the count) keeps them true. `last_seq` is the
-        # client's cursor into the eviction log: it rides along so each event
-        # also names the jobs evicted since the previous one, which the client
-        # must drop or it would count them twice (stale row + tally).
-        last_history = None
-        last_seq = None
-
         try:
             while True:
                 try:
@@ -1813,14 +1811,6 @@ async def job_events():
 
                     # Then emit the one-time snapshot of every known job.
                     if not snapshot_sent:
-                        # Cursor captured BEFORE the first snapshot frame goes
-                        # out. Emitting the snapshot suspends this generator
-                        # between jobs, so a job can be evicted after the
-                        # client has already been handed its row; opening the
-                        # cursor here means the first `history` frame names it
-                        # and the client drops it, instead of counting it as
-                        # both a retained row and an evicted job.
-                        last_seq = job_manager.history_eviction_seq()
                         for job in job_manager.get_all_jobs():
                             yield {
                                 "event": "snapshot",
@@ -1832,21 +1822,6 @@ async def job_events():
                                 ),
                             }
                         snapshot_sent = True
-
-                    # Emit the evicted-history totals on connect and on every
-                    # subsequent change. Legacy clients that don't listen for
-                    # "history" drop it silently, as with "snapshot".
-                    history = job_manager.get_history_overflow(
-                        since=last_seq, generation=job_manager.history_generation
-                    )
-                    counts = (history["evicted"], history["seq"])
-                    if counts != last_history:
-                        last_history = counts
-                        last_seq = history["seq"]
-                        yield {
-                            "event": "history",
-                            "data": json.dumps({"type": "history", "history": history}),
-                        }
 
                     # Drain every followed job's queue: taking one event a
                     # tick let a burst fill the queue and drop the end state.
@@ -1884,37 +1859,6 @@ async def job_events():
     return event_stream(event_generator())
 
 
-@router.get("/jobs/stuck-status")
-async def check_stuck_status():
-    """Check if the job queue is in a stuck state."""
-    return job_manager.get_stuck_state_info()
-
-
-@router.get("/jobs/history-overflow")
-async def job_history_overflow(since: Optional[int] = None, generation: Optional[str] = None):
-    """Counts of finished jobs already evicted by the MAX_JOB_HISTORY cap.
-
-    /api/jobs can only return retained jobs, so a client counting that list
-    reports at most ``max_job_history`` no matter how much work finishes.
-    Adding these evicted counts to it gives the real total. Also pushed over
-    the job event stream as a `history` event, so a connected client stays
-    current without polling this.
-
-    Pass ``since`` (a previously returned ``seq``) to also get the ids evicted
-    after that point. A poll-only client needs them: it reads /api/jobs and
-    this endpoint at two different moments, and a job evicted in between is
-    still in the job list *and* in these counts — double-counted — unless it
-    can be named and dropped. Read the job list first, then pass the cursor
-    here, and the two reads reconcile.
-
-    Pass ``generation`` with it — the generation the cursor came from. A cursor
-    minted by an earlier process means nothing to this one, and reading it
-    literally would return no ids at all, which is exactly the double-count the
-    cursor exists to prevent.
-    """
-    return job_manager.get_history_overflow(since=since, generation=generation)
-
-
 @router.get("/jobs/{job_id}", response_model=ConversionJob)
 async def get_job(job_id: str):
     """Get a specific job by ID (including recently archived jobs)."""
@@ -1939,34 +1883,11 @@ async def delete_completed_jobs(request: Request):
         if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
             if await job_manager.delete_job(job.id):
                 deleted_ids.append(job.id)
-    # Clear wipes history wholesale, so the record of what the cap evicted
-    # goes with it: otherwise the tab badges would still count jobs that are
-    # gone from every list, on an empty Completed tab. Report those alongside
-    # the deleted rows — with history capped at 500, clearing a 1,153-job run
-    # deletes 500 rows but clears 1,153 jobs' worth of history, and a
-    # "Removed 500" toast under a "Remove 1,153?" prompt reads like a failure.
-    forgotten = job_manager.history_overflow_total()
-    history_seq = job_manager.reset_history_overflow()
     client_host = request.client.host if request.client else "unknown"
     logger.info(
-        "Clear completed requested from %s; deleted=%d history_forgotten=%d",
-        client_host,
-        len(deleted_ids),
-        forgotten,
+        "Clear completed requested from %s; deleted=%d", client_host, len(deleted_ids),
     )
-    return {
-        "deleted": deleted_ids,
-        "count": len(deleted_ids),
-        "history_forgotten": forgotten,
-        "total_cleared": len(deleted_ids) + forgotten,
-        # Post-reset cursor, so the caller can discard a history read that was
-        # already in flight when this cleared — it would restore the tally.
-        # The generation rides along because the sequence is only comparable
-        # within one: a backend restart mid-request resets it to a small
-        # number that would otherwise read as stale.
-        "history_seq": history_seq,
-        "history_generation": job_manager.history_generation,
-    }
+    return {"deleted": deleted_ids, "count": len(deleted_ids)}
 
 
 @router.post("/jobs/cancel-all")
@@ -1988,31 +1909,6 @@ async def cancel_all_jobs(request: Request):
         result.get("processing", 0),
         result.get("requested", 0),
     )
-    return result
-
-
-
-
-
-@router.post("/jobs/recover")
-async def recover_stuck_jobs():
-    """Manually trigger recovery from a stuck job queue state.
-
-    This endpoint can be called when jobs are queued but not processing,
-    typically due to stale or orphaned locks.
-
-    It attempts to clean up stale locks and restore the queue to a healthy state
-    so that new or pending jobs can be processed again. It does not automatically
-    restart or requeue individual jobs that were previously stuck.
-    """
-    result = await job_manager.recover_from_stuck_state()
-
-    if not result.get("success"):
-        raise HTTPException(
-            status_code=429,
-            detail=result.get("message", "Recovery failed")
-        )
-
     return result
 
 

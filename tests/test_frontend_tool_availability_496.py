@@ -122,5 +122,19 @@ def test_the_consumers_read_the_store_and_a_failed_fetch_is_retried():
     # retried rather than shown as "every tool": with no payload there is none.
     app = (_SRC / "App.svelte").read_text(encoding="utf-8")
     assert "registry.load(t)" in app
-    assert "ui.applyToolAvailability(t?.available)" in app
+    assert "ui.applyToolAvailability(t?.available, t?.reasons)" in app
     assert "setTimeout(() => loadTools(" in app
+
+
+def test_an_unavailable_tool_is_listed_with_its_reason(tmp_path):
+    """#515: a tool that can't run is shown with the backend's fix, not hidden."""
+    data = _run(tmp_path, """
+const store = new UIStore();
+const before = store.unavailableTools.length;
+store.applyToolAvailability(['chdman', 'dolphin'], { nsz: 'Switch isn\\'t ready: no prod.keys' });
+process.stdout.write(JSON.stringify({ before, listed: store.unavailableTools }));
+""")
+    assert data["before"] == 0, data
+    assert [(t["id"], t["reason"]) for t in data["listed"]] == [
+        ("nsz", "Switch isn't ready: no prod.keys"),
+    ], data

@@ -3,7 +3,8 @@ version: '3.8'
 # Example: CLI mode for batch/automated conversion
 # Usage: docker-compose -f docker-compose.cli.yml up
 # Converts the top-level .cue/.gdi/.iso files of each volume to CHD and exits.
-# Mount the same ./config as a web UI container to share its job locks.
+# Mount the same ./config as a web UI container: with the server running, the
+# jobs go to it; otherwise this container runs them and the server waits.
 
 services:
   compressatorium-cli:

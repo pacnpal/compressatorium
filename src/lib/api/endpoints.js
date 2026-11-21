@@ -103,6 +103,10 @@ export const api = {
     fetchJson(buildApiUrl('/ledger', query), undefined, 'Failed to fetch ledger'),
   getLedgerFacets: () =>
     fetchJson(`${API_BASE}/ledger/facets`, undefined, 'Failed to fetch ledger filters'),
+  // Finished jobs by status, all time (the job list keeps only the newest).
+  getLedgerTotals: () =>
+    fetchJson(`${API_BASE}/ledger/totals`, undefined, 'Failed to fetch job totals'),
+
   getLedgerSavings: () =>
     fetchJson(`${API_BASE}/ledger/savings`, undefined, 'Failed to fetch savings'),
 
@@ -355,32 +359,6 @@ export const api = {
 
   getJobs: () => fetchJson(`${API_BASE}/jobs`, undefined, 'Failed to fetch jobs'),
 
-  // Counts of finished jobs the backend history cap (MAX_JOB_HISTORY) has
-  // already evicted. /jobs only returns what is still retained, so this is
-  // what turns a capped list into a true total. Live updates arrive as
-  // `history` events on the job stream; this is the hydration read.
-  //
-  // `since` is the caller's last applied `seq`. Passing it also returns the
-  // ids evicted after that point — read /jobs first, then pass the cursor
-  // here, and a job evicted between the two reads is named rather than
-  // counted twice (once as a row still in the list, once in the totals).
-  //
-  // `generation` is the backend process the cursor came from. Without it, a
-  // cursor minted before a backend restart reads as a huge sequence against a
-  // log that restarted at 0, so the reply names nothing — the exact
-  // double-count the cursor exists to prevent.
-  getJobHistoryOverflow(since, generation) {
-    const params = typeof since === 'number' && since >= 0
-      ? new URLSearchParams({ since: String(since) })
-      : undefined;
-    if (params && generation) params.set('generation', generation);
-    return fetchJson(
-      buildApiUrl('/jobs/history-overflow', params),
-      undefined,
-      'Failed to fetch job history totals',
-    );
-  },
-
   getJob: (jobId) => fetchJson(`${API_BASE}/jobs/${jobId}`, undefined, 'Failed to fetch job'),
 
   cancelJob: (jobId) =>
@@ -400,12 +378,6 @@ export const api = {
       'Failed to delete completed jobs',
     ),
 
-  checkStuckStatus: () =>
-    fetchJson(`${API_BASE}/jobs/stuck-status`, undefined, 'Failed to check stuck status'),
-
-  recoverStuckJobs: () =>
-    fetchJson(`${API_BASE}/jobs/recover`, { method: 'POST' }, 'Failed to recover stuck jobs'),
-
   /**
    * Subscribe to the global job event stream. Auto-reconnects on error.
    * Returns an unsubscribe function.
@@ -414,16 +386,13 @@ export const api = {
    * sends on connect (and re-sends after each reconnect) flows through
    * the same handler as live updates. See convert.py:event_generator.
    *
-   * `history` carries the counts of finished jobs the backend's history cap
-   * has evicted — absolute totals, re-sent whenever they change.
-   *
    * @param {(evt: { type: string, data: any }) => void} onEvent
    * @param {{onOpen?: () => void, onReconnecting?: () => void}} [status]
    */
   subscribeToJobs(onEvent, status) {
     const conn = sseConnectNamed(
       `${API_BASE}/jobs/events`,
-      ['snapshot', 'progress', 'complete', 'error', 'status', 'cancelled', 'history'],
+      ['snapshot', 'progress', 'complete', 'error', 'status', 'cancelled'],
       onEvent,
       status,
     );
@@ -441,7 +410,7 @@ export const api = {
   },
 
   // Every tool's formats and modes (the registry is built from them), and
-  // which can run: Switch is unavailable when no prod.keys are configured.
+  // which can run, with `reasons`: why each of the others can't, and the fix.
   getTools() {
     return fetchJson(`${API_BASE}/tools`, undefined, 'Failed to load the tools');
   },
@@ -631,15 +600,24 @@ export const api = {
     fetchJson(`${API_BASE}/chd-metadata/scan/status`, undefined, 'Failed to get scan status'),
 
   // ─── DAT library ──────────────────────────────────────────────────────
-  importDAT(file) {
+  // .dat / .xml files and .zip files of them (No-Intro's daily pack, a Redump
+  // zip), all in one request -> { imported: [...], errors: [{file, error}], message }.
+  importDATs(files) {
     const formData = new FormData();
-    formData.append('file', file);
+    for (const file of files) formData.append('files', file);
     return fetchJson(
-      `${API_BASE}/dat/import`,
+      `${API_BASE}/dat/import-batch`,
       { method: 'POST', body: formData },
-      'Failed to import DAT',
+      'Failed to import DATs',
     );
   },
+
+  // The disc Platforms in your Libraries Redump has a DAT for: { running, systems }.
+  getRedump: () => fetchJson(`${API_BASE}/dat/redump`, undefined, 'Failed to read Redump status'),
+
+  // Waits for the sync: { systems, imported, up_to_date, failed, changed, message }.
+  syncRedump: (force = false) =>
+    jsonPost(`${API_BASE}/dat/redump/sync`, { force }, {}, 'Redump sync failed'),
 
   // ─── Patch bench (#428) ──────────────────────────────────────────────
   // Keeps an .ips/.bps in the app's data directory; answers { upload_id, ... }.
@@ -698,6 +676,15 @@ export const api = {
   // Probes without saving, so the user can check a URL/token before committing.
   testRommConnection: (patch = {}) =>
     jsonPost(`${API_BASE}/romm/settings/test`, patch, {}, 'Connection test failed'),
+
+  // A RomM pairing code, traded for a token the backend holds for the URL
+  // until a Save sent with `paired: true` (#532).
+  pairRomm: (url, code) =>
+    jsonPost(`${API_BASE}/romm/pair`, { url, code }, {}, 'Pairing with RomM failed'),
+
+  // RomM at its usual addresses, or { url: null } (#532).
+  discoverRomm: () =>
+    fetchJson(`${API_BASE}/romm/discover`, undefined, 'Could not look for RomM'),
 
   getRommRules: () =>
     fetchJson(`${API_BASE}/romm/rules`, undefined, 'Failed to load RomM rules'),
@@ -758,6 +745,14 @@ export const api = {
   // A Library id goes in the path (`romm`, `folder:3`), so it is encoded.
   listLibraries: () =>
     fetchJson(`${API_BASE}/libraries`, undefined, 'Failed to list Libraries'),
+
+  // ES-DE gamelists folders found in the Volumes (#523).
+  findGamelistsFolders: () =>
+    fetchJson(
+      `${API_BASE}/libraries/gamelists-folders`,
+      undefined,
+      'Failed to search the Volumes for ES-DE gamelists',
+    ),
 
   registerLibrary: (path, name = null) =>
     jsonPost(`${API_BASE}/libraries`, { path, name }, {}, 'Failed to register the Library'),
@@ -830,6 +825,23 @@ export const api = {
       { method: 'DELETE' },
       'Failed to remove the Inbox',
     ),
+
+  // The *arr webhook (#522): its setup, path rewrites and a dry-run check.
+  getArrHook: () => fetchJson(`${API_BASE}/hooks/arr`, undefined, 'Could not read the webhook setup'),
+
+  saveArrRewrites: (rewrites) =>
+    fetchJson(
+      `${API_BASE}/hooks/arr/rewrites`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rewrites }),
+      },
+      'Could not save the rewrites',
+    ),
+
+  checkArrPath: (path) =>
+    jsonPost(`${API_BASE}/hooks/arr/check`, { path }, {}, 'Could not check the path'),
 
   getLibraryRules: (id) =>
     fetchJson(

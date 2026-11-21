@@ -242,23 +242,23 @@ def test_a_codec_without_a_level_gets_one_in_its_range(mode) -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_out_of_range_level_is_refused_before_the_tool_runs(env) -> None:
+async def test_an_out_of_range_level_is_clamped_and_the_tool_still_refuses_one(env) -> None:
+    """The routes clamp a level into its codec's range (#520); the plugin
+    still refuses one that reaches it some other way, before the tool runs."""
     from app.models import ConversionMode, JobCreateRequest
     from app.routes import convert as convert_routes
-    from fastapi import HTTPException
 
     iso = _gamecube(env["tmp"] / "gc" / "Melee.iso")
-    with pytest.raises(HTTPException) as refused:
-        await convert_routes.create_job(JobCreateRequest(
-            file_path=iso, mode=ConversionMode.DOLPHIN_WIA, compression="lzma2:19",
-        ))
+    await convert_routes.create_job(JobCreateRequest(
+        file_path=iso, mode=ConversionMode.DOLPHIN_WIA, compression="lzma2:19",
+    ))
+    await _run_all()
+    assert [(_codec(c), dolphin_option(c, "-l")) for c in env["commands"]] == [("lzma2", "9")]
 
-    assert refused.value.status_code == 400
-    assert "lzma2" in refused.value.detail and "1-9" in refused.value.detail
     tool = registry.for_mode("dolphin_wia")
     with pytest.raises(ValueError, match="1-9"):
-        tool.convert(iso, str(env["tmp"] / "Melee.wia"), "dolphin_wia", compression="lzma2:19")
-    assert env["commands"] == []
+        tool.convert(iso, str(env["tmp"] / "Melee2.wia"), "dolphin_wia", compression="lzma2:19")
+    assert len(env["commands"]) == 1
 
 
 def test_the_codec_is_read_after_a_priority_prefix(monkeypatch) -> None:

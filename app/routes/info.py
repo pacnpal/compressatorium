@@ -1058,8 +1058,15 @@ async def list_tools():
     """
     ready = set(await registry.ready_tool_ids())
     available = [t.id for t in registry.all() if t.id in ready]
-    unavailable = [t.id for t in registry.all() if t.id not in ready]
-    return {"available": available, "unavailable": unavailable, "tools": tool_catalog()}
+    unavailable = [t for t in registry.all() if t.id not in ready]
+    # Why each one can't run, in the tool's own words with the fix (#515), so
+    # the UI shows the tool and what to do rather than hiding it.
+    return {
+        "available": available,
+        "unavailable": [t.id for t in unavailable],
+        "reasons": {t.id: not_ready_message(t) for t in unavailable},
+        "tools": tool_catalog(),
+    }
 
 
 # ============ Generic verify routes (registry-driven) ============

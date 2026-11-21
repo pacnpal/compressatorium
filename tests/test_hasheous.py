@@ -99,6 +99,20 @@ def _reset_cooldown():
     hasheous._clear_cooldown()
 
 
+@pytest.fixture(autouse=True)
+def _no_shared_generation(monkeypatch):
+    """These tests match against the process-wide store with no database
+    behind it; the stamp's shared half (PR #527) would read one. Keep the
+    in-memory half, which is all these tests exercise."""
+    store = dat_routes.dat_store
+
+    def local_only(session=None):
+        with store._index_lock:
+            return None if store._index_changes_in_flight else store._index_generation
+
+    monkeypatch.setattr(store, "index_generation", local_only)
+
+
 @pytest.fixture
 def hasheous_on(monkeypatch):
     """Enable remote lookup for the duration of a test."""

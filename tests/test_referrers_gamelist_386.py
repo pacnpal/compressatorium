@@ -605,7 +605,7 @@ def test_the_rules_view_shows_the_switch_with_its_note():
     editor = (src / "components" / "views" / "RuleEditor.svelte").read_text()
     folder = (src / "stores" / "libraries.svelte.js").read_text()
     romm = (src / "stores" / "romm.svelte.js").read_text()
-    assert "Used by an EmulationStation frontend" in editor
+    assert "label: 'Batocera or Knulli'" in editor  # the Frontend select (#523)
     assert "Close ES-DE" in editor
     assert "source.setEsFrontend" in editor
     assert "es_frontend" in folder and "es_frontend" in romm

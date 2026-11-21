@@ -62,6 +62,24 @@ def compression_problem(spec: ModeSpec, compression: str | None) -> str | None:
     return None
 
 
+def clamp_levels(spec: ModeSpec, compression: str | None) -> str | None:
+    """*compression* with each codec's level pulled into that codec's range
+    (``spec.level_range``, #520): ``zstd:99`` on RVZ runs as ``zstd:22``.
+    Everything else is returned as it is, for ``compression_problem`` to
+    judge."""
+    if not compression:
+        return compression
+    parts = []
+    for part in compression.split(","):
+        codec, sep, level = part.partition(":")
+        levels = spec.level_range(codec) if codec and level.isdigit() else None
+        if levels:
+            low, high, _default = levels
+            level = str(min(max(int(level), low), high))
+        parts.append(f"{codec}{sep}{level}")
+    return ",".join(parts)
+
+
 def without_unusable_codecs(
     spec: ModeSpec, compression: str | None,
 ) -> tuple[str | None, list[str]]:
@@ -643,10 +661,11 @@ class ToolPlugin(Protocol):
 
         A tool that cannot run at all in the current deployment — a missing
         user-supplied key file, an absent optional binary — reports ``False``
-        so ``GET /api/tools`` lists it as unavailable and the frontend hides
-        it entirely, rather than offering a converter that can only fail at
-        job time. Planning a job asks it too (#505): ``POST /api/jobs``
-        answers 503 and a batch skips the file with ``tool_not_ready``.
+        so ``GET /api/tools`` lists it as unavailable with its reason and the
+        frontend shows it as not ready with that fix (#515), rather than
+        offering a converter that can only fail at job time. Planning a job
+        asks it too (#505): ``POST /api/jobs`` answers 503 and a batch skips
+        the file with ``tool_not_ready``.
 
         Async because a readiness probe may touch the disk (nsz searches the
         configured volumes for ``prod.keys``); implementations that block

@@ -56,7 +56,7 @@ def test_a_completed_job_with_a_warning_resolves_as_a_warning(tmp_path):
     assert out["kept"]["kind"] == "warning"
     assert kept in out["kept"]["description"]
     assert out["clean"] == {
-        "kind": "success", "description": "→ /v/Game.rvz", "duration": 4000,
+        "kind": "success", "description": "→ Game.rvz", "duration": 4000,
     }
     assert out["bare"]["kind"] == "success"
     assert out["bare"]["description"] == "Completed"

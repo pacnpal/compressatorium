@@ -15,6 +15,7 @@
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import { registry } from '$lib/tools/registry.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { terminalJobIds } from '$lib/stores/jobConstants.js';
   import { jobToasts } from '$lib/stores/jobToasts.svelte.js';
   import { conversion } from '$lib/stores/conversion.svelte.js';
   import { api } from '$lib/api/endpoints.js';
@@ -67,7 +68,7 @@
   //
   // Refresh interferes with whatever the user was doing if we don't
   // gate it carefully. Skip while any of the following hold; the
-  // counter advances only after refresh actually fires so the gates
+  // ids it refreshed for advance only once refresh fires, so the gates
   // clearing (modal closes, batch finishes, etc.) immediately re-runs
   // the effect and lets the deferred refresh through.
   //   - User toggled auto-refresh off explicitly.
@@ -76,26 +77,35 @@
   //   - A verify batch is running.
   //   - fileBrowser is already loading.
   //   - We're in search mode (refresh() short-circuits anyway).
-  let _lastTerminal = $state(0);
+  //
+  // Keyed on which jobs finished, not how many, as the dashboard is: at the
+  // history cap a newly finished job replaces an evicted one and the counts
+  // stay flat. Clearing history only drops ids, so nothing refreshes then.
+  let _refreshedFor = new Set();
   $effect(() => {
-    const total = jobs.completedCount + jobs.failedCount + jobs.cancelledCount;
-    // The count can drop when the user clears terminal history
-    // (jobs.clearCompleted). Track the watermark down too, otherwise a
-    // post-clear conversion whose new total is still below the old
-    // high-water mark would never trigger a refresh.
-    if (total < _lastTerminal) {
-      _lastTerminal = total;
+    const finished = terminalJobIds(jobs.jobs);
+    if (finished.every((id) => _refreshedFor.has(id))) {
+      _refreshedFor = new Set(finished);
       return;
     }
-    if (total <= _lastTerminal) return;
     if (!fileBrowser.autoRefresh) return;
     if (fileBrowser.loading) return;
     if (fileBrowser.searchMode) return;
     if (ui.anyEntryModalOpen) return;
     if (conversion.converting) return;
     if (verification.batchRun) return;
-    _lastTerminal = total;
+    _refreshedFor = new Set(finished);
     fileBrowser.refresh().catch(() => {});
+  });
+
+  // What needs attention can change whenever a run finishes (a check, a
+  // duplicate scan, a watch folder's intake), so the sidebar badge and
+  // Activity's opening tab reload it then, whether or not Needs attention is
+  // on screen. Keyed on which jobs finished, as the refresh above is.
+  const finishedRuns = $derived(terminalJobIds(jobs.jobs).join(','));
+  $effect(() => {
+    void finishedRuns;
+    findings.load();
   });
 
   // Surface a live toast for every RUNNING job and resolve it on
@@ -128,8 +138,8 @@
   onMount(() => {
     ui.loadVersion();
     // The tools, their formats and modes come from the backend, and so does
-    // which of them can run (Switch needs prod.keys). The views wait for it;
-    // a failed fetch is retried, since nothing can be converted without it.
+    // which of them can run and why the others can't (#515). The views wait
+    // for it; a failed fetch is retried, since nothing converts without it.
     let toolsRetry;
     const loadTools = (delay = 1000) => {
       api.getTools()
@@ -137,7 +147,7 @@
           registry.load(t);
           if (!registry.loaded) throw new Error('The server named no tools');
           conversion.adoptRegistry();
-          ui.applyToolAvailability(t?.available);
+          ui.applyToolAvailability(t?.available, t?.reasons);
           // Remembered per-tool compression settings, applied over the defaults.
           conversion.loadServerPrefs();
         })
@@ -148,8 +158,6 @@
     loadTools();
     // The safety choices new conversions start with.
     defaults.load();
-    // What needs attention, for the sidebar's Activity badge.
-    findings.load();
     // Rehydrate the verified set + DAT-library state so OK / DAT badges
     // survive reloads. Fire and forget, failure leaves the cache empty.
     verification.loadVerified();
@@ -250,8 +258,10 @@
     min-width: 0;
     background: var(--surface-2);
   }
+  /* <main> takes focus on every route change so a screen reader starts there.
+     It isn't a control (tabindex -1), so it draws no ring. */
   .main { flex: 1; overflow-y: auto; outline: none; }
-  .main:focus-visible { box-shadow: inset 0 0 0 3px var(--accent); }
+  .main:focus, .main:focus-visible { box-shadow: none; }
 
   .skip-link {
     position: fixed;

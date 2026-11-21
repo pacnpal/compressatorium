@@ -97,7 +97,7 @@ def test_cross_site_state_change_is_forbidden(monkeypatch):
     _reset_auth(monkeypatch)
 
     response = _run(_request(
-        "/api/jobs/recover",
+        "/api/jobs/cancel-all",
         method="POST",
         headers={"Authorization": "Bearer test-token", "Sec-Fetch-Site": "cross-site"},
     ))
@@ -109,7 +109,7 @@ def test_same_origin_state_change_is_allowed(monkeypatch):
     _reset_auth(monkeypatch)
 
     response = _run(_request(
-        "/api/jobs/recover",
+        "/api/jobs/cancel-all",
         method="POST",
         headers={"Authorization": "Bearer test-token", "Sec-Fetch-Site": "same-origin"},
     ))
@@ -121,7 +121,7 @@ def test_cross_origin_via_origin_header_is_forbidden(monkeypatch):
     _reset_auth(monkeypatch)
 
     response = _run(_request(
-        "/api/jobs/recover",
+        "/api/jobs/cancel-all",
         method="POST",
         headers={
             "Authorization": "Bearer test-token",
@@ -137,7 +137,7 @@ def test_non_browser_state_change_is_allowed(monkeypatch):
     _reset_auth(monkeypatch)
 
     response = _run(_request(
-        "/api/jobs/recover",
+        "/api/jobs/cancel-all",
         method="POST",
         headers={"Authorization": "Bearer test-token"},
     ))

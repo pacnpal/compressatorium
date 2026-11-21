@@ -195,9 +195,15 @@ class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
 class RommClient:
     """Thin synchronous client over RomM's REST API."""
 
-    def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
+    def __init__(
+        self, base_url: str | None = None, token: str | None = None, *,
+        anonymous: bool = False,
+    ) -> None:
+        """*token* overrides the saved one; *anonymous* sends none at all and
+        never falls back to the saved one (discovery and pairing, #532)."""
         self._explicit_base = base_url
         self._explicit_token = token
+        self._anonymous = anonymous
 
     # ------------------------------------------------------------------
     # configuration
@@ -269,7 +275,10 @@ class RommClient:
         headers = {"Accept": "application/json", "User-Agent": _USER_AGENT}
         if content_type:
             headers["Content-Type"] = content_type
-        token = self._explicit_token if self._explicit_token is not None else _token()
+        if self._anonymous:
+            token = None
+        else:
+            token = self._explicit_token if self._explicit_token is not None else _token()
         if authenticated and token:
             # RomM client API tokens ("rmm_" + 64 hex) are sent as bearer
             # credentials. RomM's CSRF middleware short-circuits on a bearer or
@@ -319,15 +328,49 @@ class RommClient:
     # catalog reads
     # ------------------------------------------------------------------
 
-    def heartbeat(self) -> dict:
+    def heartbeat(self, *, timeout: float | None = None) -> dict:
         """Return RomM's public heartbeat (version, config, enabled providers).
 
         Unauthenticated on RomM's side, which makes it the right probe for a
         "test connection" button: it separates "cannot reach RomM" from "reached
         RomM, token rejected".
         """
-        result = self._request("GET", "/api/heartbeat", authenticated=False)
+        result = self._request(
+            "GET", "/api/heartbeat", authenticated=False, timeout=timeout,
+        )
         return result if isinstance(result, dict) else {}
+
+    def config(self, *, timeout: float | None = None) -> dict:
+        """RomM's ``GET /api/config``: its ``config.yml`` as RomM reads it,
+        exclusions (``EXCLUDED_*``) included. Needs no scope (#532)."""
+        result = self._request("GET", "/api/config", timeout=timeout)
+        return result if isinstance(result, dict) else {}
+
+    def library_structure(self, *, timeout: float | None = None) -> str | None:
+        """RomM's ``filesystem.structure.default`` template, such as
+        ``roms/{platform}/{game}`` (RomM 5.3+, ``GET /api/setup/library``,
+        which needs ``platforms.read`` once RomM has an admin). None when this
+        RomM doesn't say (#532)."""
+        result = self._request("GET", "/api/setup/library", timeout=timeout)
+        value = result.get("library_structure") if isinstance(result, dict) else None
+        return value if isinstance(value, str) and value.strip() else None
+
+    def exchange_pair_code(self, code: str) -> dict:
+        """Trade a RomM pairing code for its token (RomM 4.8+, #532).
+
+        ``POST /api/client-tokens/exchange``, unauthenticated: the owner
+        presses Pair on a token in RomM and reads the code out. RomM answers
+        with a new secret for that token (``raw_token``) and its ``scopes``;
+        the token's previous secret stops working. Only the code is sent.
+        """
+        body = json.dumps({"code": code.strip()}).encode()
+        result = self._request(
+            "POST", "/api/client-tokens/exchange", data=body,
+            content_type="application/json", authenticated=False,
+        )
+        if not isinstance(result, dict) or not isinstance(result.get("raw_token"), str):
+            raise RommError("RomM's pairing answer carried no token")
+        return result
 
     def converter_config(self, heartbeat: dict | None = None) -> dict | None:
         """RomM's own converter: whether it is on, and its per-Platform targets.

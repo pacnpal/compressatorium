@@ -1395,10 +1395,9 @@ async def test_a_cancel_during_set_aside_still_releases_and_announces_the_job(
     vol, romm, monkeypatch,
 ):
     """CodeRabbit 4594326475: a cancel while the job's ``finally`` sets the
-    checked output aside must not skip the terminal notice, the lock
-    releases or the concurrency slot."""
+    checked output aside must not skip the terminal notice or the lock
+    releases."""
     from services import staging
-    from services.concurrency_manager import concurrency_manager
     from services.lock_manager import lock_manager
     from services.romm import settings as romm_settings
 
@@ -1435,7 +1434,6 @@ async def test_a_cancel_during_set_aside_still_releases_and_announces_the_job(
         await asyncio.sleep(0.05)
     assert not lock_manager.is_locked(str(platform / "Game.chd"))
     assert not lock_manager.is_locked(os.path.realpath(platform / "Game.iso"))
-    assert job.id not in concurrency_manager._lock_handles
     # The output is kept all the same, once its slot is set aside.
     for _ in range(40):
         if list((platform / STAGE_DIR_NAME).glob("park-*/Game.chd")):
