@@ -7,6 +7,9 @@
    * it back. The list shows a label and a harmless hint; "Edit" can change the
    * label, and typing a new URL replaces the stored one. Leaving the URL box
    * empty keeps it.
+   *
+   * Each destination picks the messages it gets (#523); a generic webhook can
+   * also carry a signing secret, which, like the URL, is never sent back.
    */
   import { onMount } from 'svelte';
   import { toast } from 'svelte-sonner';
@@ -14,6 +17,7 @@
   import Button from '$lib/components/ui/Button.svelte';
   import Badge from '$lib/components/ui/Badge.svelte';
   import Select from '$lib/components/ui/Select.svelte';
+  import Checkbox from '$lib/components/ui/Checkbox.svelte';
 
   let destinations = $state([]);
   let events = $state([]);
@@ -26,6 +30,11 @@
   let kind = $state('webhook');
   let url = $state('');
   let label = $state('');
+  // The event keys the form's destination gets, and its signing secret.
+  let chosen = $state([]);
+  let secret = $state('');
+  let stopSigning = $state(false);
+  let editingSigned = $state(false);
   let busy = $state(false);
   // id (or 'draft') -> { ok, error } from the last Test.
   let results = $state({});
@@ -38,6 +47,11 @@
   );
   const selectedKind = $derived(kinds.find((k) => k.value === kind));
   const kindLabel = (value) => kinds.find((k) => k.value === value)?.label ?? value;
+  const defaultEvents = () => events.filter((e) => e.default).map((e) => e.key);
+
+  function toggleEvent(key, on) {
+    chosen = on ? [...chosen, key] : chosen.filter((k) => k !== key);
+  }
 
   async function load() {
     try {
@@ -59,6 +73,10 @@
     kind = 'webhook';
     url = '';
     label = '';
+    chosen = defaultEvents();
+    secret = '';
+    stopSigning = false;
+    editingSigned = false;
     formOpen = true;
   }
 
@@ -67,23 +85,32 @@
     kind = d.kind;
     url = '';
     label = d.label === d.hint ? '' : d.label;
+    chosen = [...(d.events ?? defaultEvents())];
+    secret = '';
+    stopSigning = false;
+    editingSigned = d.signed === true;
     formOpen = true;
   }
 
   function closeForm() {
     formOpen = false;
     url = '';
+    secret = '';
   }
 
   async function save() {
     busy = true;
     try {
       if (editingId) {
-        const body = { label };
+        const body = { label, events: chosen };
         if (url.trim()) body.url = url.trim();
+        if (stopSigning) body.secret = '';
+        else if (secret.trim()) body.secret = secret.trim();
         await api.editNotificationDestination(editingId, body);
       } else {
-        await api.addNotificationDestination({ kind, url: url.trim(), label });
+        const body = { kind, url: url.trim(), label, events: chosen };
+        if (selectedKind?.signs && secret.trim()) body.secret = secret.trim();
+        await api.addNotificationDestination(body);
       }
       toast.success('Destination saved');
       closeForm();
@@ -118,7 +145,13 @@
 
   const testSaved = (d) => runTest(d.id, () => api.testNotificationDestination(d.id));
   const testDraft = () =>
-    runTest('draft', () => api.testNotificationDraft({ kind, url: url.trim() }));
+    runTest('draft', () =>
+      api.testNotificationDraft({
+        kind,
+        url: url.trim(),
+        ...(selectedKind?.signs && secret.trim() ? { secret: secret.trim() } : {}),
+      }),
+    );
 </script>
 
 {#snippet outcome(r)}
@@ -133,9 +166,9 @@
   <header>
     <h2 id="notif-title">Notifications</h2>
     <p>
-      Hear about finished sweeps and failed jobs on your phone or in your own tooling.
-      A sweep sends one message with its counts and space saved, with its failures
-      listed inside it. A job you start by hand sends one message only if it fails.
+      Hear about finished sweeps and jobs on your phone or in your own tooling. A
+      sweep sends one message with its counts and space saved, with its failures
+      listed inside it. Pick which messages each destination gets.
     </p>
   </header>
 
@@ -153,8 +186,12 @@
             <div class="dest-main">
               <span class="dest-label">{d.label}</span>
               <Badge tone="neutral" size="sm">{kindLabel(d.kind)}</Badge>
+              {#if d.signed}<Badge tone="neutral" size="sm">Signed</Badge>{/if}
               {#if d.hint && d.hint !== d.label}<span class="muted">{d.hint}</span>{/if}
             </div>
+            <span class="muted">
+              Gets {d.events?.length ?? 0} of {events.length} messages
+            </span>
             <div class="dest-actions">
               <Button size="sm" variant="secondary" disabled={busy} onclick={() => testSaved(d)}>Test</Button>
               <Button size="sm" variant="ghost" onclick={() => openEdit(d)}>Edit</Button>
@@ -197,8 +234,46 @@
           <span class="label">Label (optional)</span>
           <input type="text" bind:value={label} maxlength="60" placeholder="My phone" />
         </label>
+        {#if selectedKind?.signs}
+          <label class="field">
+            <span class="label">
+              {editingSigned
+                ? 'New signing secret (leave empty to keep the saved one)'
+                : 'Signing secret (optional)'}
+            </span>
+            <input
+              type="password"
+              bind:value={secret}
+              maxlength="256"
+              autocomplete="new-password"
+              disabled={stopSigning}
+            />
+            <span class="hint">
+              Each message then carries <code>X-Compressatorium-Signature: sha256=…</code>,
+              the HMAC-SHA256 of the body with this secret, so your endpoint can check it
+              came from here.
+            </span>
+          </label>
+          {#if editingSigned}
+            <Checkbox bind:checked={stopSigning} label="Stop signing messages" />
+          {/if}
+        {/if}
+        {#if events.length}
+          <fieldset class="field events">
+            <legend class="label">Messages to send</legend>
+            {#each events as ev (ev.key)}
+              <Checkbox
+                checked={chosen.includes(ev.key)}
+                label={ev.title}
+                onchange={(on) => toggleEvent(ev.key, on)}
+              />
+            {/each}
+          </fieldset>
+        {/if}
         <div class="actions">
-          <Button type="submit" disabled={busy || (!editingId && !url.trim())}>Save</Button>
+          <Button type="submit" disabled={busy || (!editingId && !url.trim()) || !chosen.length}>
+            Save
+          </Button>
           <Button variant="secondary" disabled={busy || !url.trim()} onclick={testDraft}>Test</Button>
           <Button variant="ghost" onclick={closeForm}>Cancel</Button>
           {@render outcome(results.draft)}
@@ -207,15 +282,6 @@
     {:else}
       <div class="actions">
         <Button variant="secondary" onclick={openNew}>Add destination</Button>
-      </div>
-    {/if}
-
-    {#if events.length}
-      <div class="events">
-        <span class="label">Messages sent</span>
-        <ul>
-          {#each events as ev (ev.key)}<li>{ev.title}</li>{/each}
-        </ul>
       </div>
     {/if}
   {/if}
@@ -261,5 +327,6 @@
   .outcome { color: var(--danger-text, var(--text-1)); font-size: var(--text-sm); overflow-wrap: anywhere; }
   .outcome.ok { color: var(--success-text, var(--text-1)); }
   .error { color: var(--danger-text, var(--text-1)); margin: 0; font-size: var(--text-sm); }
-  .events ul { margin: var(--space-1) 0 0; padding-left: var(--space-4); color: var(--text-2); font-size: var(--text-sm); }
+  .events { border: 0; margin: 0; padding: 0; gap: var(--space-2); }
+  .events legend { padding: 0; margin-bottom: var(--space-1); }
 </style>

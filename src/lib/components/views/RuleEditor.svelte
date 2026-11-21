@@ -31,6 +31,7 @@
   import { clampLevel, fitLevel } from '$lib/tools/levels.js';
   import { compat } from '$lib/stores/compat.svelte.js';
   import { compatEntry, compatWarning } from '$lib/tools/compat.js';
+  import { api } from '$lib/api/endpoints.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
   import Select from '$lib/components/ui/Select.svelte';
@@ -69,13 +70,77 @@
   const autoOn = $derived(source.scheduleEnabled);
   const esOn = $derived(source.esFrontend);
 
-  /** The Library's "used by an EmulationStation frontend" switch (#386). */
-  async function toggleEsFrontend(enabled) {
+  // The Library's frontend (#523), stored as the gamelist switch (#386) and the
+  // ES-DE gamelists folder (#387): ES-DE is the switch with a folder, Batocera
+  // and Knulli the switch without one (their gamelist sits in the Platform
+  // folder). ES-DE reads no gamelist in the ROM folders, so picking it turns
+  // nothing on until its folder is chosen; `pendingEsde` shows it meanwhile.
+  const FRONTENDS = [
+    { value: 'none', label: 'None' },
+    { value: 'esde', label: 'ES-DE' },
+    { value: 'batocera', label: 'Batocera or Knulli' },
+  ];
+  let pendingEsde = $state(false);
+  const frontend = $derived(
+    pendingEsde ? 'esde' : !esOn ? 'none' : source.gamelistsFolder ? 'esde' : 'batocera',
+  );
+  // Gamelists folders found in the Volumes, offered with one click.
+  let foundFolders = $state(null);
+  let searching = $state(false);
+
+  async function findGamelists() {
+    searching = true;
     try {
-      await source.setEsFrontend(enabled);
-      toast.success(enabled ? 'Conversions now update gamelist.xml' : 'gamelist.xml is left alone');
+      foundFolders = (await api.findGamelistsFolders()).folders ?? [];
+    } catch (e) {
+      foundFolders = [];
+      toast.error(e?.message ?? 'Failed to search the Volumes');
+    } finally {
+      searching = false;
+    }
+  }
+
+  // A Library set up for gamelists in the Platform folders (the only lookup
+  // before #523) may really be ES-DE's, whose gamelists live elsewhere: look
+  // once, and offer what is found.
+  $effect(() => {
+    if (esOn && !source.gamelistsFolder && foundFolders === null) untrack(findGamelists);
+  });
+
+  async function chooseFrontend(value) {
+    try {
+      if (value === 'esde') {
+        pendingEsde = !source.gamelistsFolder;
+        if (source.gamelistsFolder) await source.setEsFrontend(true);
+        else findGamelists();
+        return;
+      }
+      pendingEsde = false;
+      if (value === 'none') {
+        await source.setEsFrontend(false);
+        toast.success('gamelist.xml is left alone');
+        return;
+      }
+      if (source.gamelistsFolder) await source.setGamelistsFolder('');
+      await source.setEsFrontend(true);
+      toast.success('Conversions now update the gamelist.xml in each Platform folder');
     } catch (e) {
       toast.error(e?.message ?? 'Failed to save');
+    }
+  }
+
+  /** Save *path* as ES-DE's gamelists folder and turn the gamelist updates on. */
+  async function useGamelistsFolder(path) {
+    gamelistsSaving = true;
+    try {
+      await source.setGamelistsFolder(path);
+      await source.setEsFrontend(true);
+      pendingEsde = false;
+      toast.success('Conversions now update ES-DE’s gamelists');
+    } catch (e) {
+      toast.error(e?.message ?? 'Failed to save');
+    } finally {
+      gamelistsSaving = false;
     }
   }
 
@@ -95,16 +160,9 @@
     });
   });
 
-  async function saveGamelistsFolder() {
-    gamelistsSaving = true;
-    try {
-      await source.setGamelistsFolder(gamelistsDraft.trim());
-      toast.success(gamelistsDraft.trim() ? 'Gamelists folder saved' : 'Gamelists folder cleared');
-    } catch (e) {
-      toast.error(e?.message ?? 'Failed to save');
-    } finally {
-      gamelistsSaving = false;
-    }
+  function saveGamelistsFolder() {
+    const path = gamelistsDraft.trim();
+    if (path) useGamelistsFolder(path);
   }
 
   // SvelteSet: mutation must be reactive so an expanded row re-renders.
@@ -558,16 +616,60 @@
 
   <section class="master frontend">
     <div class="master-text">
-      <h2>EmulationStation frontend</h2>
+      <h2>Frontend</h2>
       <p>
-        For ES-DE, Batocera, Knulli or muOS. When a conversion replaces a file, the
-        matching entry in the Platform folder's <code>gamelist.xml</code> is pointed at
-        the new file before the old one is deleted, so its artwork, favourite and play
-        count stay. A one-time <code>gamelist.xml.bak</code> is kept. Close ES-DE first:
-        it rewrites its gamelist when it exits, which would undo the change.
+        When a conversion replaces a file, the matching entry in the frontend's
+        <code>gamelist.xml</code> is pointed at the new file before the old one is
+        deleted, so its artwork, favourite and play count stay. A one-time
+        <code>gamelist.xml.bak</code> is kept. Close ES-DE first: it rewrites its
+        gamelists when it exits, which would undo the change. muOS keeps its artwork in
+        its own catalogue by game name, so it needs nothing here.
       </p>
+      {#snippet foundList()}
+        {#each foundFolders as folder (folder)}
+          <span class="gamelists-row">
+            <code class="found-path">{folder}</code>
+            {#if folder === source.gamelistsFolder}
+              <Badge tone="success" size="sm">In use</Badge>
+            {:else}
+              <Button size="sm" onclick={() => useGamelistsFolder(folder)} loading={gamelistsSaving}>
+                Use this folder
+              </Button>
+            {/if}
+          </span>
+        {/each}
+      {/snippet}
+      {#if frontend === 'batocera' && foundFolders?.length}
+        <div class="found" role="status">
+          <span class="hint">
+            ES-DE’s gamelists were found in the Volumes. ES-DE reads only those, so if
+            this Library is ES-DE’s, use its folder:
+          </span>
+          {@render foundList()}
+        </div>
+      {/if}
+      {#if frontend === 'esde'}
+        <div class="found" role="status">
+          {#if searching}
+            <span class="hint">Looking for ES-DE’s gamelists in the Volumes…</span>
+          {:else if foundFolders?.length}
+            {@render foundList()}
+          {:else if foundFolders}
+            <span class="hint">
+              No <code>ES-DE/gamelists</code> folder was found in the Volumes. Mount the
+              folder that holds it as a Volume, or type its path below.
+            </span>
+          {:else if !source.gamelistsFolder}
+            <Button size="sm" variant="secondary" onclick={findGamelists}>
+              Find ES-DE’s gamelists
+            </Button>
+          {/if}
+          {#if pendingEsde && !searching}
+            <span class="hint">Choose ES-DE’s gamelists folder to turn this on.</span>
+          {/if}
+        </div>
       <label class="field gamelists">
-        <span>ES-DE gamelists folder (optional)</span>
+        <span>ES-DE gamelists folder</span>
         <span class="gamelists-row">
           <input
             type="text"
@@ -585,18 +687,19 @@
           </Button>
         </span>
         <span class="hint">
-          Where ES-DE keeps its own gamelists (<code>ES-DE/gamelists</code>, one folder per
-          system, such as <code>ps2</code>). It must be inside a Volume. When set,
-          <code>&lt;folder&gt;/&lt;system&gt;/gamelist.xml</code> is updated too. Leave it
-          empty for gamelists kept in the Platform folders.
+          ES-DE 2.0 and later read only their own gamelists (<code>ES-DE/gamelists</code>,
+          one folder per system, such as <code>ps2</code>), never one in the ROM folders.
+          It must be inside a Volume.
         </span>
       </label>
+      {/if}
     </div>
     <div class="master-actions">
-      <Checkbox
-        checked={esOn}
-        label="Used by an EmulationStation frontend"
-        onchange={(v) => toggleEsFrontend(v)}
+      <Select
+        label="Frontend"
+        value={frontend}
+        options={FRONTENDS}
+        onchange={(v) => chooseFrontend(v)}
       />
     </div>
   </section>
@@ -1421,6 +1524,9 @@
   .field.gamelists { margin-top: var(--space-3); max-width: 60ch; }
   .gamelists-row { display: flex; gap: var(--space-2); align-items: center; }
   .gamelists-row input { flex: 1; }
+  .found { display: grid; gap: var(--space-2); margin-top: var(--space-3); }
+  .found-path { overflow-wrap: anywhere; min-width: 0; font-size: var(--text-sm); }
+  .found .gamelists-row { flex-wrap: wrap; }
   .hint, .muted { color: var(--text-2); font-size: var(--text-sm); }
 
   /* Codec chips for the multi-codec style (chdman). Mirrors CompressionPicker's
