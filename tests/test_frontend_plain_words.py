@@ -26,6 +26,7 @@ CHECKED_FILES = [
     "views/SettingsView.svelte",
     "views/HelpView.svelte",
     "settings/Converters.svelte",
+    "settings/ChdMetadataScan.svelte",
     "ui/FolderPicker.svelte",
     "modals/FolderPickerModal.svelte",
     "modals/AddLibraryModal.svelte",

@@ -160,3 +160,24 @@ def test_one_url_shows_one_tab():
     assert "let tab = $state(" not in romm and "tab = routed" not in romm
     activity = _read("views/ActivityView.svelte")
     assert "ui.activityTab ??" in activity
+
+
+def test_the_chd_badge_scan_has_a_home_in_settings():
+    """Codex 4651580103: the Dashboard's CHD metadata card was the only caller
+    of the scan. The file list only reads the cache, so a CHD added outside the
+    UI got no CD/DVD badge until a scan; Settings → Converters runs it now."""
+    scan = _read("settings/ChdMetadataScan.svelte")
+    assert "chdMetadata.startScan({ force })" in scan
+    assert "chdMetadata.pollStatus()" in scan
+    assert "<ProgressBar" in scan and "processed} / {total}" in scan
+    assert "Scan CHDs" in scan
+    assert "Force rescan" in scan
+    settings = _read("views/SettingsView.svelte")
+    converters = settings.split('id="settings-converters"', 1)[1]
+    assert "<ChdMetadataScan />" in converters
+
+
+def test_converters_read_the_stores_not_ready_list():
+    """#519's Not ready here list moved from the Dashboard card to Converters."""
+    src = _read("settings/Converters.svelte")
+    assert "ui.unavailableTools" in src
