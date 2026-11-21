@@ -675,9 +675,8 @@ def test_the_editor_reads_policies_from_the_library():
 def test_the_rules_view_has_a_library_picker():
     src = _RULES_VIEW.read_text(encoding="utf-8")
     assert re.search(r'<Select\s+label="Library"', src), "the Library picker is gone"
-    assert "onchange={pick}" in src
-    # Inside the RomM view, another Library opens the full Rules view.
-    assert "if (embedded && id !== ROMM_LIBRARY_ID) libraries.open(id);" in src
+    assert "onchange={(id) => libraries.select(id)}" in src
+    # Inside the RomM view there is no picker: it shows RomM's Rules (#521).
 
 
 def test_folders_offer_register_as_a_library():
@@ -699,3 +698,22 @@ def test_a_folder_librarys_rules_open_from_its_page():
         encoding="utf-8",
     )
     assert "view: 'libraries'" in sidebar
+
+
+def test_a_catalogue_read_answering_after_a_newer_one_is_dropped(tmp_path):
+    """CodeRabbit PR #551: an older read finishing last must not put back
+    stale nesting over the newer catalogue."""
+    data = _run(tmp_path, f"""
+const first = libraries.load();
+await tick();
+const second = libraries.load();
+await tick();
+__calls[1].resolve([{{ ...{_FOLDER}, contains: [] }}]);
+await second;
+__calls[0].resolve([{{ ...{_FOLDER}, contains: [{{ id: 'folder:7', name: 'gone' }}] }}]);
+await first;
+process.stdout.write(JSON.stringify({{
+  contains: libraries.list.find((lib) => lib.id === 'folder:3').contains,
+}}));
+""")
+    assert data["contains"] == [], data

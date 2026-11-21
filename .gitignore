@@ -191,7 +191,7 @@ cython_debug/
 
 # ============ Node.js / JavaScript ============
 # Dependencies
-node_modules/
+node_modules
 jspm_packages/
 bower_components/
 

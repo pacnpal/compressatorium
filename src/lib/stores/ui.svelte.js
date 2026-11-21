@@ -36,6 +36,8 @@ class UIStore {
   hiddenTools = $state(new Set());
   // True once the first /api/tools answer (or its failure) has been applied.
   toolsKnown = $state(false);
+  // Tool id -> why it can't run, with the fix (#515). Shown, never hidden.
+  toolReasons = $state({});
 
   // Layout
   sidebarCollapsed = $state(readBool(STORAGE_KEYS.SIDEBAR_COLLAPSED, false));
@@ -79,6 +81,14 @@ class UIStore {
   get visibleTools() {
     if (!this.toolsKnown) return [];
     return registry.all().filter((t) => !this.hiddenTools.has(t.id));
+  }
+
+  /** The tools that can't run here, each with the backend's reason (#515). */
+  get unavailableTools() {
+    if (!this.toolsKnown) return [];
+    return registry.all()
+      .filter((t) => this.hiddenTools.has(t.id))
+      .map((t) => ({ ...t, reason: this.toolReasons[t.id] ?? `${t.label} isn't ready here.` }));
   }
 
   /**
@@ -155,14 +165,16 @@ class UIStore {
 
   /**
    * Apply the backend's tool-availability report (from GET /api/tools).
-   * Hides tools the backend can't run (e.g. Switch without prod.keys).
-   * Passing nothing (the fetch failed) shows every tool. Either way the list
-   * is now known.
+   * Keeps tools the backend can't run (e.g. Switch without prod.keys) out of
+   * the working list, with their reasons for `unavailableTools`. Passing
+   * nothing (the fetch failed) shows every tool. Either way the list is now
+   * known.
    */
-  applyToolAvailability(available) {
+  applyToolAvailability(available, reasons = {}) {
     const ids = registry.ids();
     const allow = new Set(available ?? [...ids]);
     this.hiddenTools = new Set([...ids].filter((id) => !allow.has(id)));
+    this.toolReasons = reasons ?? {};
     this.toolsKnown = true;
   }
 

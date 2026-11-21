@@ -81,7 +81,7 @@
   .how { color: var(--text-3); margin-left: var(--space-1); }
   .target { color: var(--text-2); overflow-wrap: anywhere; }
   .skip .name, .skip .platform { color: var(--text-3); }
-  .reason { color: var(--warning); }
+  .reason { color: var(--warning-text); }
   @media (max-width: 600px) {
     .row { grid-template-columns: 1fr; gap: 2px; }
   }

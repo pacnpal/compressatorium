@@ -33,6 +33,8 @@ class DATMatchingStore {
   matchingAvailable = $state(false);
   panelOpen = $state(false);
   importingDat = $state(false);
+  redump = $state(null);
+  redumpSyncing = $state(false);
   syncing = $state(false);
   syncStatus = $state(null);
   dats = $state([]);
@@ -732,10 +734,42 @@ class DATMatchingStore {
     return result;
   }
 
-  async importDAT(file) {
+  async loadRedump() {
+    try {
+      this.redump = await api.getRedump();
+    } catch (_e) {
+      this.redump = null;
+    }
+  }
+
+  // One request; waits for redump.org, one system at a time (#524).
+  async syncRedump(force = false) {
+    this.redumpSyncing = true;
+    try {
+      const result = await api.syncRedump(force);
+      // `changed`, not `imported`: a system that failed part-way may still
+      // have committed some of its DATs (CodeRabbit PR #527).
+      if (result?.changed) await this._afterDatChange();
+      await this.loadRedump();
+      return result;
+    } finally {
+      this.redumpSyncing = false;
+    }
+  }
+
+  async _afterDatChange() {
+    // Bump first: a hydrate already in flight answered under the old
+    // policy and must not repopulate what this clear is dropping.
+    this._generation += 1;
+    this.matches.clear();
+    this._resetAttempts();
+    await this.loadDATs();
+  }
+
+  async importDATs(files) {
     this.importingDat = true;
     try {
-      const result = await api.importDAT(file);
+      const result = await api.importDATs(files);
       // The backend's _import_dat_sync wipes the DATMatch cache because
       // newly-imported hashes may flip match results for files the
       // user already has. Mirror that on the client so stale badges
@@ -743,12 +777,7 @@ class DATMatchingStore {
       // it never removes absent ones. Reset attempted paths too so
       // files previously deemed "uncached" against the old DAT get
       // re-considered against the new one.
-      // Bump first: a hydrate already in flight answered under the old
-      // policy and must not repopulate what this clear is dropping.
-      this._generation += 1;
-      this.matches.clear();
-      this._resetAttempts();
-      await this.loadDATs();
+      if (result?.imported?.length) await this._afterDatChange();
       return result;
     } finally {
       this.importingDat = false;

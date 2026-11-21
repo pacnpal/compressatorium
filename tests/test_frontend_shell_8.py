@@ -115,3 +115,23 @@ def test_the_folder_picker_never_takes_a_typed_path():
     assert "No folders in here." in src and "Couldn't open this folder." in src
     modal = _read("modals/FolderPickerModal.svelte")
     assert "<FolderPicker" in modal and "<BaseModal" in modal
+
+
+def test_the_nearest_library_owns_a_folder(tmp_path):
+    """Files' Library chip and Set console share `folderLibraryFor`; with
+    nested Libraries (#514) the nearest root owns the folder."""
+    from tests.test_frontend_rules_view import _run
+
+    data = _run(tmp_path, """
+const loading = libraries.load();
+await tick();
+__calls[0].resolve([
+  { id: 'romm', kind: 'romm' },
+  { id: 'folder:1', kind: 'folder', name: 'all', root: '/v' },
+  { id: 'folder:2', kind: 'folder', name: 'roms', root: '/v/roms/' },
+]);
+await loading;
+const at = (p) => libraries.folderLibraryFor(p)?.id ?? null;
+process.stdout.write(JSON.stringify([at('/v/roms/psx'), at('/v/other'), at('/w')]));
+""")
+    assert data == ["folder:2", "folder:1", None], data

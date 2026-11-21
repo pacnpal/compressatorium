@@ -364,8 +364,8 @@ class AutoJobCreateRequest(BaseModel):
     """Queue the Auto plan the user confirmed.
 
     ``items`` are the plan's actionable rows only (an Image the preview
-    skipped is never sent). The route replans them and refuses with 409 when
-    any target changed, so what is queued is what was confirmed.
+    skipped is never sent). The route replans them and queues each one whose
+    target is unchanged; one that changed is reported, never queued (#520).
     """
 
     items: list[AutoJobItem]
@@ -413,8 +413,14 @@ class BatchJobsResponse(BaseModel):
 
 
 class AutoBatchResponse(BaseModel):
+    """What Auto queued, the plan as it ran, and each file it left out and why
+    (#520): a plan that changed since it was confirmed (``plan_changed``), a
+    ``plan_job`` skip, an output another job holds (``output_claimed``), or a
+    group the queue refused (``queue_failed``)."""
+
     plan: list[AutoPlanItem]
     jobs: list[ConversionJob]
+    skipped: list[BatchSkippedItem] = []
 
 
 class CheckDuplicatesRequest(BaseModel):

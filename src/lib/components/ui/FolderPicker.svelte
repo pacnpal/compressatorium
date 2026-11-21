@@ -36,8 +36,13 @@
   // Only the latest listing writes: a slow folder never replaces a newer one.
   let request = 0;
 
-  const trimmed = (p) => String(p ?? '').replace(/\/+$/, '');
-  const within = (p, root) => p === trimmed(root) || p.startsWith(`${trimmed(root)}/`);
+  function trimmed(p) {
+    return String(p ?? '').replace(/\/+$/, '');
+  }
+
+  function within(p, root) {
+    return p === trimmed(root) || p.startsWith(`${trimmed(root)}/`);
+  }
 
   // The breadcrumb from the Drive's top folder down to `path`.
   const crumbs = $derived.by(() => {

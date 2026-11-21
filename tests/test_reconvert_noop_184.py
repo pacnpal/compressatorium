@@ -9,8 +9,8 @@ guard: matching mode/compression/split, an unchanged complete source set
 
 The tool's ``convert`` is stubbed with a recorder that fails the test if it is
 ever invoked on the fast path. Isolation: a fresh ``JobManager`` plus fresh,
-tmp-dir-bound ``concurrency_manager`` / ``lock_manager`` are bound in place so a
-ticket leaked by another suite test can't wedge these (they run in-process).
+tmp-dir-bound ``lock_manager`` is bound in place so a
+lock leaked by another suite test can't wedge these (they run in-process).
 """
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ import pytest
 
 import app.services.job_manager as jm_mod
 from app.models import ConversionMode, JobStatus
-from app.services.concurrency_manager import ConcurrencyManager
 from app.services.job_manager import JobManager
 from app.services.lock_manager import LockManager
 from app.services.verification_store import VerificationStore
@@ -55,9 +54,6 @@ def _noop_env(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(jm_mod.settings, "chd_volumes", str(tmp_path))
     lock_dir = tmp_path / "locks"
     monkeypatch.setattr(jm_mod.settings, "concurrency_lock_dir", str(lock_dir))
-    monkeypatch.setattr(
-        jm_mod, "concurrency_manager", ConcurrencyManager(1, str(lock_dir / "conc")),
-    )
     monkeypatch.setattr(jm_mod, "lock_manager", LockManager())
 
     calls: list[dict] = []

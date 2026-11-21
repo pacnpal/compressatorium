@@ -64,7 +64,9 @@ const values = (opts) => convertTargets(opts).flatMap((g) => g.options.map((o) =
 process.stdout.write(JSON.stringify({
   cue: values({ entries: [{ type: 'file', path: '/v/Game.cue' }] }),
   chd: values({ entries: [{ type: 'file', path: '/v/Game.chd' }] }),
-  ps3: values({ entries: [{ type: 'directory', path: '/v/BLUS', convertible_by: ['makeps3iso'] }] }),
+  ps3: values({ entries: [
+    { type: 'directory', path: '/v/BLUS', convertible_by: ['makeps3iso'] },
+  ] }),
   folder: values({ entries: [{ type: 'directory', path: '/v/stuff', convertible_by: [] }] }),
   console: values({ modeIds: ['createcd', 'cso_compress'] }),
   ready: values({ ready: ['dolphin'] }),
@@ -82,7 +84,8 @@ process.stdout.write(JSON.stringify({
 
 def test_target_label(tmp_path):
     got = _targets(tmp_path, """
-process.stdout.write(JSON.stringify(['', '.chd', '.xiso.iso', 'extractcd', 'dolphin_rvz'].map(targetLabel)));
+const values = ['', '.chd', '.xiso.iso', 'extractcd', 'dolphin_rvz'];
+process.stdout.write(JSON.stringify(values.map(targetLabel)));
 """)
     assert got == ["Best format for each game", "CHD", "XISO", "BIN/CUE from CHD", "Dolphin RVZ"]
 
@@ -94,7 +97,9 @@ def _safety(tmp_path, body):
     script = tmp_path / "safety_eval.mjs"
     mod = (_SRC / "util" / "safetyOptions.js").as_uri()
     script.write_text(f"import * as s from {json.dumps(mod)};\n{body}", encoding="utf-8")
-    proc = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30, check=False)
+    proc = subprocess.run(
+        [node, str(script)], capture_output=True, text=True, timeout=30, check=False,
+    )
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
 
@@ -102,7 +107,9 @@ def _safety(tmp_path, body):
 def test_the_safety_controls_follow_the_modes(tmp_path):
     got = _safety(tmp_path, """
 const chd = { supportsDeleteOnVerify: true, supportsRoundTrip: true };
-const zar = { supportsDeleteOnVerify: false, sourceKeptReason: 'a ZAR holds files, not the disc', games: 2 };
+const zar = {
+  supportsDeleteOnVerify: false, sourceKeptReason: 'a ZAR holds files, not the disc', games: 2,
+};
 const required = { supportsDeleteOnVerify: true, supportsRoundTrip: true, roundTripRequired: true };
 const extract = { supportsDeleteOnVerify: false };
 process.stdout.write(JSON.stringify({
@@ -111,12 +118,17 @@ process.stdout.write(JSON.stringify({
   mixed: s.safetyControls([chd, zar], { deleteOriginal: true }),
   required: s.safetyControls([required], { deleteOriginal: true }),
   extract: s.safetyControls([extract]),
-  on: s.applySafety({ checkAfter: false, deleteOriginal: false, quickCheck: false }, { deleteOriginal: true }),
-  off: s.applySafety({ checkAfter: true, deleteOriginal: true, quickCheck: true }, { deleteOriginal: false }),
+  on: s.applySafety(
+    { checkAfter: false, deleteOriginal: false, quickCheck: false }, { deleteOriginal: true },
+  ),
+  off: s.applySafety(
+    { checkAfter: true, deleteOriginal: true, quickCheck: true }, { deleteOriginal: false },
+  ),
 }));
 """)
     assert got["chd_off"] == {
-        "showCheck": True, "showDelete": True, "kept": None, "showQuick": False, "checkLocked": False,
+        "showCheck": True, "showDelete": True, "kept": None, "showQuick": False,
+        "checkLocked": False,
     }
     assert got["chd_on"]["showQuick"] is True and got["chd_on"]["checkLocked"] is True
     assert got["mixed"]["kept"] == {"games": 2, "reason": "a ZAR holds files, not the disc"}

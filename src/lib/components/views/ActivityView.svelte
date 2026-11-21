@@ -7,6 +7,7 @@
    */
   import { ui } from '$lib/stores/ui.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { terminalJobIds } from '$lib/stores/jobConstants.js';
   import { ledger } from '$lib/stores/ledger.svelte.js';
   import { findings } from '$lib/stores/findings.svelte.js';
   import FindingsView from './FindingsView.svelte';
@@ -29,12 +30,7 @@
   // Refresh the savings card whenever the set of finished jobs changes.
   // Keyed on identity, not count: once history hits its cap a new finished
   // job replaces an evicted one and the count stays flat.
-  const finished = $derived(
-    jobs.jobs
-      .filter((j) => j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled')
-      .map((j) => j.id)
-      .join(','),
-  );
+  const finished = $derived(terminalJobIds(jobs.jobs).join(','));
   $effect(() => {
     void finished;
     ledger.refresh();
