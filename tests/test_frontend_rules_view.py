@@ -78,7 +78,10 @@ const api = {
   registerLibrary: __defer('registerLibrary'),
 };
 const romm = { isRomm: true };
-const ui = { navigated: null, navigate(v) { this.navigated = v; } };
+const ui = {
+  navigated: null, navigatedOpts: null,
+  navigate(v, opts = {}) { this.navigated = v; this.navigatedOpts = opts; },
+};
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 """
 
@@ -642,9 +645,11 @@ def test_both_libraries_share_one_rules_source():
 def test_opening_rules_on_a_library_navigates_there(tmp_path):
     data = _run(tmp_path, """
 libraries.open('folder:3');
-process.stdout.write(JSON.stringify({ selected: libraries.selectedId, view: ui.navigated }));
+process.stdout.write(JSON.stringify({
+  selected: libraries.selectedId, view: ui.navigated, id: ui.navigatedOpts.id,
+}));
 """)
-    assert data == {"selected": "folder:3", "view": "libraries"}, data
+    assert data == {"selected": "folder:3", "view": "libraries", "id": "folder:3"}, data
 
 
 # ----------------------------------------------------------------------

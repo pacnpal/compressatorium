@@ -17,19 +17,26 @@
   let { open, onClose, start = null } = $props();
 
   let error = $state('');
+  // Bumped when the dialog closes: an answer for an earlier opening keeps its
+  // Library (registered all the same) but no longer closes or navigates.
+  let session = 0;
 
   async function pick(path) {
     error = '';
+    const mine = ++session;
     try {
       const library = await libraries.register(path);
+      if (mine !== session) return;
       onClose();
       if (library?.id) ui.navigate('libraries', { id: library.id, tab: 'automation' });
     } catch (e) {
+      if (mine !== session) return;
       error = e?.status === 409 ? 'This folder is already a Library.' : (e?.message ?? "Couldn't add it.");
     }
   }
 
   function close() {
+    session++;
     error = '';
     onClose();
   }

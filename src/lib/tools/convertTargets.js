@@ -64,7 +64,14 @@ function readsAny(spec, tool, entries) {
       return entry?.type === 'directory' && (entry.convertible_by ?? []).includes(tool.id);
     }
     if (!entry || entry.type === 'directory') return false;
-    const name = String(entry.path ?? entry.name ?? '').split('::').pop().toLowerCase();
+    const path = String(entry.path ?? entry.name ?? '');
+    // A file inside an archive, for a mode that can't take one (Copy).
+    if (path.includes('::') && !spec.allowsArchiveInput) return false;
+    // A content-refined tool (Xbox) only where the backend's probe claimed
+    // the file; with no claims at all, the extension decides.
+    if (tool.contentRefined && Array.isArray(entry.convertible_by)
+      && !entry.convertible_by.includes(tool.id)) return false;
+    const name = path.split('::').pop().toLowerCase();
     return exts.some((ext) => name.endsWith(ext));
   });
 }

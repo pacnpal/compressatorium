@@ -70,7 +70,8 @@ process.stdout.write(JSON.stringify({
   folder: values({ entries: [{ type: 'directory', path: '/v/stuff', convertible_by: [] }] }),
   console: values({ modeIds: ['createcd', 'cso_compress'] }),
   ready: values({ ready: ['dolphin'] }),
-  member: values({ entries: [{ type: 'file', path: '/v/a.zip::Game.gba' }] }),
+  member: values({ entries: [{ type: 'file', path: '/v/a.zip::Game.cue' }] }),
+  romInZip: values({ entries: [{ type: 'file', path: '/v/a.zip::Game.gba' }] }),
 }));
 """)
     assert ".chd" in got["cue"] and "extractcd" not in got["cue"]
@@ -79,7 +80,30 @@ process.stdout.write(JSON.stringify({
     assert got["folder"] == [""]
     assert set(got["console"]) == {"", ".chd", ".cso"}
     assert set(got["ready"]) == {"", ".rvz", ".wia", ".gcz", "dolphin_iso"}
-    assert ".7z" in got["member"]
+    # A disc inside a zip converts straight from it; a ROM inside one doesn't.
+    assert ".chd" in got["member"]
+    assert got["romInZip"] == [""]
+
+
+def test_entries_a_mode_cannot_read_are_not_offered(tmp_path):
+    """CodeRabbit 4651507824 and 4651507825: a CHD inside a zip is not offered
+    to Copy (no archive input), and a content-refined tool (Xbox) is offered
+    only where the backend's probe claimed the file."""
+    got = _targets(tmp_path, """
+const values = (opts) => convertTargets({ perMode: true, ...opts })
+  .flatMap((g) => g.options.map((o) => o.value));
+process.stdout.write(JSON.stringify({
+  zipped: values({ entries: [{ type: 'file', path: '/v/a.zip::Game.chd' }] }),
+  plain: values({ entries: [{ type: 'file', path: '/v/Game.chd' }] }),
+  ps2: values({ entries: [{ type: 'file', path: '/v/PS2.iso', convertible_by: ['chdman'] }] }),
+  xbox: values({ entries: [{ type: 'file', path: '/v/Halo.iso', convertible_by: ['xiso'] }] }),
+  unknown: values({ entries: [{ type: 'file', path: '/v/Game.iso' }] }),
+}));
+""")
+    assert "copy" not in got["zipped"] and "copy" in got["plain"]
+    assert "xiso_rewrite" not in got["ps2"] and "createdvd" in got["ps2"]
+    assert "xiso_rewrite" in got["xbox"]
+    assert "xiso_rewrite" in got["unknown"], "no claims: the extension decides"
 
 
 def test_target_label(tmp_path):

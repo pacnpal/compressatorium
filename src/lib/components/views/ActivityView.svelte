@@ -19,9 +19,17 @@
 
   const attention = $derived(findings.openCount);
   const running = $derived(jobs.activeCount);
-  const tab = $derived(
-    ui.activityTab ?? (attention > 0 ? 'attention' : running > 0 ? 'running' : 'history'),
-  );
+  // The bare route opens on what matters now: Needs attention when anything
+  // does, else Running when anything runs, else History. Decided once per
+  // visit, after this visit's findings read, so a job ending doesn't swap the
+  // tab (and its list) out from under you. A tab in the URL always wins.
+  const live = $derived(attention > 0 ? 'attention' : running > 0 ? 'running' : 'history');
+  let read = $state(false);
+  let opening = $state(null);
+  $effect(() => {
+    if (opening === null && read) opening = live;
+  });
+  const tab = $derived(ui.activityTab ?? opening ?? live);
   const TABS = $derived([
     { id: 'attention', label: `Needs attention (${attention})` },
     { id: 'running', label: `Running (${running})` },
@@ -40,7 +48,9 @@
   // Entering Activity reads what needs you now, so the opening tab is right
   // even when nothing has finished since the last read.
   onMount(() => {
-    findings.load();
+    findings.load().finally(() => {
+      read = true;
+    });
   });
 </script>
 

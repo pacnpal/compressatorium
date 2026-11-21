@@ -53,7 +53,9 @@ async def put_conversion_preferences(prefs: ConversionPreferences) -> dict:
 @router.get("/preferences/defaults")
 async def get_defaults_preferences() -> dict:
     """Return the stored defaults, filled from the model where unset."""
-    stored = await preferences_store.get(DEFAULTS_KEY) or {}
+    stored = await preferences_store.get(DEFAULTS_KEY)
+    if not isinstance(stored, dict):
+        stored = {}
     known = {k: v for k, v in stored.items() if k in DefaultsPreferences.model_fields}
     try:
         return DefaultsPreferences.model_validate(known).model_dump()

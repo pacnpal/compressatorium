@@ -26,7 +26,17 @@ class DefaultsStore {
     }
   }
 
-  async save(patch) {
+  // Saves run one at a time, in call order, so a failed save puts back only
+  // what it changed: a later save never starts from values it would undo.
+  #queue = Promise.resolve();
+
+  save(patch) {
+    const run = this.#queue.then(() => this.#saveNow(patch));
+    this.#queue = run.catch(() => {});
+    return run;
+  }
+
+  async #saveNow(patch) {
     const before = this.values;
     this.values = { ...before, ...pick(patch) };
     try {

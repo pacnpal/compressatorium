@@ -149,7 +149,7 @@ def test_findings_refresh_without_the_needs_attention_tab():
     )
     assert effect, "App does not reload findings when runs finish"
     activity = _read("views/ActivityView.svelte")
-    assert "onMount(() => {\n    findings.load();" in activity
+    assert "onMount(() => {\n    findings.load()" in activity
 
 
 def test_one_url_shows_one_tab():
