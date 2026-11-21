@@ -29,6 +29,7 @@ import tempfile
 import threading
 import urllib.parse
 import zipfile
+import zlib
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 
@@ -135,8 +136,10 @@ def _expand(files: list[tuple[str, str]], work: str) -> tuple[list[tuple[str, st
         if lower.endswith(".zip"):
             try:
                 members = extract_dats(path, tempfile.mkdtemp(dir=work))
-            except (ValueError, zipfile.BadZipFile, OSError) as exc:
-                errors.append({"file": label, "error": str(exc)})
+            except (ValueError, zipfile.BadZipFile, OSError, zlib.error, EOFError) as exc:
+                # A corrupt member (bad deflate data) is this zip's refusal,
+                # never the batch's failure (Codex PR #527).
+                errors.append({"file": label, "error": f"can't read the zip: {exc}"})
                 continue
             if not members:
                 errors.append({"file": label, "error": "no .dat or .xml inside"})

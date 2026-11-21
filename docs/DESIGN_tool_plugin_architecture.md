@@ -10229,10 +10229,15 @@ Redump sync (`POST /dat/redump/sync`) and the CLI (`dat import`, `dat sync`):
   (`member_segments`), counts the bytes it reads with `_UnpackBudget`, skips
   `is_junk_path` members, and copies each DAT to `<n>.dat` in a private temp
   folder, so a member name never reaches the disk. Any bad member refuses the
-  whole zip.
+  whole zip, and so does data that can't be read (corrupt deflate data,
+  `zlib.error`), never the rest of the batch (PR #527).
 - Each DAT is imported with `dat_store.import_dat(..., replace=True)`: an
   earlier DAT with the same name and family is deleted in the same
-  transaction (its rank carries over). One rematch runs after the batch.
+  transaction (its rank carries over). One rematch runs after the batch
+  (local-only, `routes.dat.rematch_after_dat_change`). The CLI has no server
+  to finish it later, so it waits for it (`routes.dat.wait_for_match_jobs`),
+  and `dat sync` reads RomM's saved settings (`romm_settings.load`) before it
+  asks which consoles are present (PR #527).
 - `sync_redump` maps Platform slugs (`REDUMP_SYSTEMS`) to Redump's systems,
   asks `http://redump.org/datfile/<system>/` through `http.client` on the fixed
   host (no redirect followed, generic `USER_AGENT`), one system at a time with

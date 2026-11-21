@@ -990,6 +990,14 @@ async def _schedule_rematch(paths: list[str], *, source: str) -> tuple[str, str 
     return "deferred", None
 
 
+async def wait_for_match_jobs() -> None:
+    """Wait for every match job this process started, those it started in
+    turn (a deferred rematch) included. For a process with no server to
+    finish them later: the CLI (Codex PR #527)."""
+    while live := [t for t in _background_match_tasks if not t.done()]:
+        await asyncio.gather(*live, return_exceptions=True)
+
+
 async def schedule_match_job(
     paths: list[str],
     *,

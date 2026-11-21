@@ -357,3 +357,88 @@ def test_present_platforms_reads_every_library_and_skips_one_that_is_down(monkey
         Lib("1", ["gc", "gba"]),
     ])
     assert dat_import.present_platforms() == {"ngc", "gba"}
+
+
+@pytest.mark.asyncio
+async def test_a_zip_whose_data_is_corrupt_is_refused_alone(store, tmp_path):
+    """Codex PR #527: corrupt deflate data is one zip's refusal, not the
+    batch's failure."""
+    bad = tmp_path / "bad.zip"
+    data = bytearray(_zip_bytes({"x.dat": _dat_xml("Broken", "B", "d" * 40) * 50}))
+    start = data.index(b"x.dat") + len(b"x.dat")
+    for i in range(start + 8, start + 40):
+        data[i] ^= 0xFF
+    bad.write_bytes(bytes(data))
+    good = tmp_path / "gb.dat"
+    good.write_text(_dat_xml("Nintendo - Game Boy", "G", "a" * 40))
+
+    result = await dat_import.import_files([("bad.zip", str(bad)), ("gb.dat", str(good))])
+
+    assert [d["name"] for d in result["imported"]] == ["Nintendo - Game Boy"]
+    assert [e["file"] for e in result["errors"]] == ["bad.zip"]
+
+
+def test_cli_dat_sync_reads_romms_saved_settings_first(store, prefs, fetches, monkeypatch):
+    """Codex PR #527: RomM set up in the Web UI is in the database; the sync
+    must read it before it asks which consoles are present."""
+    import cli
+    from services.romm import settings as romm_settings
+
+    order: list[str] = []
+
+    async def load(*_args, **_kwargs):
+        order.append("load")
+        return {}
+
+    def present():
+        order.append("present")
+        return set()
+
+    monkeypatch.setattr(cli, "_open_db", lambda dry_run: True)
+    monkeypatch.setattr(romm_settings, "load", load)
+    monkeypatch.setattr(dat_import, "present_platforms", present)
+
+    assert cli.main(["dat", "sync"]) == cli.EXIT_OK
+    assert order[:2] == ["load", "present"]
+
+
+def test_cli_dat_import_rematches_and_waits_for_it(store, prefs, monkeypatch, tmp_path):
+    """Codex PR #527: a DAT imported from the CLI refreshes the files it now
+    knows (a remote hit upgrades to the DAT's name), and the CLI waits for
+    that local-only rematch before it exits."""
+    import cli
+
+    waited = AsyncMock()
+    monkeypatch.setattr(cli, "_open_db", lambda dry_run: True)
+    monkeypatch.setattr("routes.dat.wait_for_match_jobs", waited, raising=False)
+    loose = tmp_path / "gb.dat"
+    loose.write_text(_dat_xml("Nintendo - Game Boy", "G", "a" * 40))
+
+    assert cli.main(["dat", "import", str(loose)]) == cli.EXIT_OK
+    store.rematch.assert_awaited_once()
+    waited.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_waiting_for_match_jobs_waits_for_one_started_in_turn(monkeypatch):
+    """A finishing job may start a deferred rematch; the wait covers it."""
+    import asyncio
+
+    import routes.dat as live_routes
+
+    done: list[str] = []
+
+    async def second():
+        await asyncio.sleep(0.01)
+        done.append("second")
+
+    async def first():
+        await asyncio.sleep(0.01)
+        live_routes._background_match_tasks.add(asyncio.create_task(second()))
+        done.append("first")
+
+    live_routes._background_match_tasks.add(asyncio.create_task(first()))
+    await live_routes.wait_for_match_jobs()
+
+    assert done == ["first", "second"]
+    live_routes._background_match_tasks.clear()

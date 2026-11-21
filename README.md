@@ -2874,7 +2874,8 @@ import of itself. **`dat sync [--platform SLUG]... [--force]`** downloads
 Redump's DATs for the disc Platforms in your Libraries (or just the ones
 named), skipping a system synced in the last day unless `--force`. Both print
 one line per DAT or system (`--json` for the whole result) and exit `1` when
-any was refused or failed.
+any was refused or failed. Both re-match the files a changed DAT may name
+(locally, as the server does) before they exit.
 
 Before it sweeps RomM, `run-rules` does the RomM upkeep the server does in the
 background: it finishes an identity cleanup a crash left owed (otherwise RomM
