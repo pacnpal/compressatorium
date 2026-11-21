@@ -163,6 +163,10 @@
           <Badge tone={configured ? 'warning' : 'neutral'} title="RomM's own converter also converts this console">
             RomM → {note.target.toUpperCase()}
           </Badge>
+        {:else if note?.kind === 'cannot'}
+          <Badge tone="info" title="RomM's own converter has no format for this console">
+            RomM can't convert
+          </Badge>
         {/if}
       </span>
       <span role="cell" class="target">

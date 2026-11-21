@@ -28,6 +28,7 @@
   });
 
   const needConsole = $derived((source.counts?.unsorted ?? 0) + (source.counts?.conflicted ?? 0));
+  const unreadable = $derived(source.counts?.unreadable ?? 0);
   const folderOf = (platform) => platform.folder ?? '';
   const openHref = (platform) => hashFor('files', {
     path: folderOf(platform) ? `${library.root.replace(/\/+$/, '')}/${folderOf(platform)}` : library.root,
@@ -54,6 +55,11 @@
     {/snippet}
   </EmptyState>
 {:else}
+  {#if unreadable > 0}
+    <p class="warn" role="status">
+      {unreadable} {unreadable === 1 ? "file couldn't" : "files couldn't"} be read, so they're left alone.
+    </p>
+  {/if}
   {#if needConsole > 0}
     <p class="warn" role="status">
       <strong>{needConsole} {needConsole === 1 ? 'game needs' : 'games need'} a console.</strong>

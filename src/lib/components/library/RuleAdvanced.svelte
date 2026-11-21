@@ -95,6 +95,19 @@
     }
   }
 
+  /**
+   * "Last run 3 Jun, 01:00 · queued 4", from a Rule's run state: the latest
+   * of its scheduled and manual runs (a re-check keeps both).
+   */
+  function lastRun(state, verb, countKey) {
+    const stamps = [state?.last_run_at, state?.last_manual_run_at]
+      .map((s) => (s ? new Date(s) : null))
+      .filter((d) => d && !Number.isNaN(d.getTime()));
+    if (!stamps.length) return 'Never run yet';
+    const when = new Date(Math.max(...stamps.map((d) => d.getTime())));
+    return `Last run ${when.toLocaleString()} · ${verb} ${state?.[countKey] ?? 0}`;
+  }
+
   async function retryFailed() {
     try {
       await source.forgetConverted([String(platform.id)]);
@@ -251,6 +264,11 @@
       onchange={(v) => oncheck(v ? { enabled: true } : (check ? { enabled: false } : null))}
     />
     {#if check}
+      {#if check.invalid_window}
+        <p class="bad-line" role="alert">
+          Only one end of the time window is set, so the re-check is paused.
+        </p>
+      {/if}
       <label class="field">
         <span>Up to (GB a night)</span>
         <input type="number" min="1" value={check.check_budget_gb}
@@ -261,6 +279,10 @@
   </fieldset>
 
   <footer class="foot">
+    <span class="muted last">{lastRun(source.lastRunFor(platform.id), 'queued', 'last_queued')}</span>
+    {#if check}
+      <span class="muted last">Re-check: {lastRun(source.lastCheckFor(platform.id), 'checked', 'last_checks')}</span>
+    {/if}
     {#if source.heldCountFor(platform.id) > 0}
       {@const held = source.heldCountFor(platform.id)}
       <span class="muted">
@@ -389,6 +411,8 @@
   }
   .day.on { background: var(--accent-muted); color: var(--accent); border-color: var(--accent); }
   .muted { color: var(--text-2); font-size: var(--text-sm); }
+  .bad-line { margin: 0; color: var(--error); font-size: var(--text-sm); }
+  .last { margin-right: auto; }
   .foot {
     grid-column: 1 / -1;
     display: flex;

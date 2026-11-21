@@ -282,3 +282,19 @@ def test_the_console_table_says_when_the_consoles_cannot_be_listed():
     assert busy < empty and error < empty
     assert src.count("source.loadPlatforms()") >= 2
     assert "setTimeout(() => source.loadPlatforms(), RETRY_MS)" in src
+
+
+def test_the_library_page_keeps_what_the_rules_and_romm_views_showed():
+    """Codex round 1 on #547: what the deleted RulesView, RuleEditor and
+    RommView told the person is still told somewhere on the Library page."""
+    advanced = (_COMPONENTS / "RuleAdvanced.svelte").read_text(encoding="utf-8")
+    # Each console's last run and its re-check's, and a paused re-check window.
+    assert "source.lastRunFor(platform.id)" in advanced
+    assert "source.lastCheckFor(platform.id)" in advanced
+    assert "check.invalid_window" in advanced
+    table = (_COMPONENTS / "RuleTable.svelte").read_text(encoding="utf-8")
+    assert "note?.kind === 'cannot'" in table
+    browse = (_COMPONENTS / "LibraryBrowse.svelte").read_text(encoding="utf-8")
+    assert "source.counts?.unreadable" in browse
+    view = (_COMPONENTS.parent / "views" / "LibraryView.svelte").read_text(encoding="utf-8")
+    assert "{#if libraries.error && !libraries.loading}" in view

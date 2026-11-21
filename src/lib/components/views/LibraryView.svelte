@@ -187,7 +187,12 @@
 
 <section class="view" aria-labelledby="library-title">
   {#if !isRomm && !library}
-    {#if libraries.loading || !libraries.list.length}
+    {#if libraries.error && !libraries.loading}
+      <div class="state" role="alert">
+        <span>Couldn't load your Libraries. {libraries.error}</span>
+        <Button size="sm" variant="secondary" onclick={() => libraries.load()}>Try again</Button>
+      </div>
+    {:else if libraries.loading || !libraries.list.length}
       <p class="muted"><Spinner size="sm" label="Loading" /> Loading…</p>
     {:else}
       <EmptyState title="This Library isn't here any more" description="It may have been removed.">
@@ -336,6 +341,7 @@
   .mono { font-family: var(--font-mono); font-size: var(--text-sm); }
   .note { margin: var(--space-1) 0 0; color: var(--text-2); font-size: var(--text-sm); }
   .muted { color: var(--text-2); }
+  .state { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); color: var(--text-2); }
   .tabs {
     display: flex;
     gap: var(--space-1);
