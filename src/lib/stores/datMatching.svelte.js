@@ -35,6 +35,8 @@ class DATMatchingStore {
   importingDat = $state(false);
   redump = $state(null);
   redumpSyncing = $state(false);
+  // Why the last check of which consoles Redump covers failed, or null.
+  redumpError = $state(null);
   #redumpLoads = 0;
   syncing = $state(false);
   syncStatus = $state(null);
@@ -58,6 +60,7 @@ class DATMatchingStore {
    */
   hasheousTest = $state(null);
   #hasheousProbe = 0;
+  #hasheousToggles = 0;
 
   // Paths we've already kicked a match-job for, mapped to WHEN. The backend
   // may complete a job without caching a result, which would otherwise make
@@ -241,7 +244,12 @@ class DATMatchingStore {
    * (see cached_result_usable), but only if the client asks again.
    */
   async setHasheousEnabled(enabled) {
+    // Every toggle takes a number; one that a later toggle overtook stops at
+    // its next await, so it never applies its state or starts a probe after
+    // the newer choice (CodeRabbit 4652269835).
+    const toggle = ++this.#hasheousToggles;
     const state = await api.setHasheousEnabled(enabled);
+    if (toggle !== this.#hasheousToggles) return state;
     // Apply the authoritative response NOW, before the counters refresh.
     // That refresh swallows its own errors, so if /dat/stats happened to fail
     // right after a successful PUT we would report success while the panel
@@ -259,6 +267,7 @@ class DATMatchingStore {
     // discarded as stale.
     const before = this.stats;
     await this.refreshMatchingAvailability();
+    if (toggle !== this.#hasheousToggles) return state;
     // ...and re-apply it only then. The re-apply exists because that refresh
     // swallows a failed /dat/stats and falls back to
     // `matchingAvailable = false`, which would bury the state the PUT just
@@ -764,15 +773,19 @@ class DATMatchingStore {
 
   async loadRedump() {
     // Only the newest load may answer: an older one landing last (a remount,
-    // or the reload after a sync) must not put stale systems back.
+    // or the reload after a sync) must not put stale systems back. A failed
+    // check keeps its reason, so it isn't read as "no console Redump covers".
     const ticket = ++this.#redumpLoads;
-    let redump;
+    let redump = null;
+    let error = null;
     try {
       redump = await api.getRedump();
-    } catch (_e) {
-      redump = null;
+    } catch (e) {
+      error = e?.message ?? 'Request failed';
     }
-    if (ticket === this.#redumpLoads) this.redump = redump;
+    if (ticket !== this.#redumpLoads) return;
+    this.redump = redump;
+    this.redumpError = error;
   }
 
   // One request; waits for redump.org, one system at a time (#524). A second

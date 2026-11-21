@@ -221,6 +221,16 @@
 
 ### Fixed
 
+- **Settings → Game identification** says when it couldn't check which
+  consoles Redump covers, with **Try again**, instead of claiming none of
+  your Libraries has one (#545 follow-up).
+- **Turning Hasheous on, then off quickly** no longer lets the first click
+  finish after the second: it can't switch the screen back to on or test
+  Hasheous once you've turned it off (#545 follow-up).
+- **Saving a format's compression in Settings** changes only that format on
+  the server, so a change saved meanwhile from another tab is kept
+  (#545 follow-up).
+
 - **Quick wins, contrast and plain details** (#521).
   - The RomM page's hints point to its own Settings tab, with a **Connect
     RomM** button, instead of a "Settings → Metadata" page that doesn't exist.
