@@ -120,7 +120,7 @@ def test_delete_takes_the_playlist_and_every_file_of_each_game():
     assert "ui.bulkDeleteEntries = fileBrowser.filesToDelete();" in file_list
     store = (_LIB / "stores" / "fileBrowser.svelte.js").read_text(encoding="utf-8")
     body = store.split("  filesToDelete() {", 1)[1].split("\n  }\n", 1)[0]
-    assert "this.selectedPlaylists.values()" in body
+    assert "this.selectedPlaylists.keys()" in body
 
 
 def test_the_folder_search_filters_games_by_name(tmp_path):
@@ -210,3 +210,20 @@ process.stdout.write(JSON.stringify(fileBrowser.filesToDelete().map((e) => e.pat
 """)
 
     assert data == ["/v/B.bin", "/v/B.cue", "/v/Game.m3u"], data
+
+
+def test_delete_reads_each_ticked_game_as_the_listing_has_it_now(tmp_path):
+    """CodeRabbit 4654883878: a refresh after ticking changes a game's files;
+    Delete takes the files the row has now, and drops a row that's gone."""
+    data = _run(tmp_path, """
+const cue = { name: 'A.cue', path: '/v/A.cue', type: 'file', size: 1 };
+const oldBin = { name: 'Old.bin', path: '/v/Old.bin', type: 'file', size: 1, companion_of: '/v/A.cue' };
+const gone = { name: 'Gone.iso', path: '/v/Gone.iso', type: 'file', size: 1 };
+fileBrowser.entries = [cue, oldBin, gone];
+for (const row of fileBrowser.rows) fileBrowser.toggleSelect(row);
+const newBin = { name: 'New.bin', path: '/v/New.bin', type: 'file', size: 1, companion_of: '/v/A.cue' };
+fileBrowser.entries = [cue, oldBin && { ...oldBin, companion_of: null }, newBin];
+process.stdout.write(JSON.stringify(fileBrowser.filesToDelete().map((e) => e.path).sort()));
+""")
+
+    assert data == ["/v/A.cue", "/v/New.bin"], data

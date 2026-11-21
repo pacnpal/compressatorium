@@ -376,3 +376,44 @@ def test_a_path_that_cannot_be_stated_is_unknown_ownership(tmp_path):
     own.write_bytes(b"x")
     with pytest.raises(image_sets.SheetOwnerUnknown):
         image_sets._is_track(own.stat(), str(own), str(tmp_path / "bad\x00name"))
+
+
+# --- CodeRabbit round 3 ---------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_split_part_that_cannot_be_probed_still_keeps_the_set(vol, monkeypatch):
+    """CodeRabbit 4654883856: the tool's probe reads a part it can't stat as
+    absent; the set is still told by name, so .0 alone is kept."""
+    from services.tools import registry
+
+    first = _write(vol / "ps3" / "Game.iso.0")
+    second = _write(vol / "ps3" / "Game.iso.1")
+    monkeypatch.setattr(registry, "split_members", lambda _path: [])
+
+    response = await files_routes.delete_files_batch(
+        _confirmed(), files_routes.BulkDeleteRequest(paths=[str(first)]),
+    )
+
+    [result] = response["results"]
+    assert result["success"] is False
+    assert "Game.iso.1" in result["error"]
+    assert first.exists() and second.exists()
+
+
+@pytest.mark.asyncio
+async def test_removing_a_link_to_a_sheet_never_frees_its_tracks(vol):
+    """CodeRabbit 4654883868: deleting a link to A.cue removes the link, not
+    the sheet, so the sheet's track stays."""
+    folder = vol / "psx"
+    track = _write(folder / "Track.bin")
+    cue = _write(folder / "A.cue", b'FILE "Track.bin" BINARY\n  TRACK 01 MODE2/2352\n')
+    link = folder / "Alias.link"
+    link.symlink_to(cue)
+
+    response = await files_routes.delete_files_batch(
+        _confirmed(), files_routes.BulkDeleteRequest(paths=[str(link), str(track)]),
+    )
+
+    by_path = {r["path"]: r for r in response["results"]}
+    assert by_path[str(track)]["success"] is False
+    assert track.exists() and cue.exists()

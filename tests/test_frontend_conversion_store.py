@@ -952,3 +952,29 @@ store.chooseTarget('dolphin_rvz');
 process.stdout.write(JSON.stringify({ best, format, mode: store.targetExt }));
 """)
     assert data == {"best": None, "format": ".chd", "mode": ".rvz"}, data
+
+
+def test_an_abort_while_the_queue_request_is_out_keeps_the_romm_rows(tmp_path):
+    """CodeRabbit 4654883872: once the queue request has gone out, the server
+    may have made the jobs, so their RomM rows are kept (they age out on
+    their own if not); an abort before it went out still retires them."""
+    data = _run(tmp_path, """
+planAnswer = (paths) => ({
+  recorded: 1, pending: 1,
+  recorded_paths: { [paths[0]]: '/out/a.chd' }, recorded_ids: { [paths[0]]: 42 },
+});
+const controller = new AbortController();
+api.createAutoJobs = (_i, _o, _d, opts) => new Promise((_resolve, reject) => {
+  opts.signal.addEventListener('abort', () => reject(new Error('aborted')));
+  controller.abort();
+});
+const store = new ConversionStore();
+const result = await store.submitAuto(['/v/a.iso'], {
+  plan: [{ file_path: '/v/a.iso', mode: 'createcd' }],
+  rommRepin: true, rommPlatformId: 3, signal: controller.signal,
+}).catch((e) => ({ aborted: Boolean(e?.aborted) }));
+process.stdout.write(JSON.stringify({
+  result, retired: calls.cancel, errors: toasts.filter(([k]) => k === 'error'),
+}));
+""")
+    assert data == {"result": {"aborted": True}, "retired": [], "errors": []}, data

@@ -577,9 +577,21 @@ class ConversionStore {
         if (this.compressionSaveError) {
           throw new Error(`Couldn't save the compression: ${this.compressionSaveError}`);
         }
-        const result = await api.createAutoJobs(
-          items, outputDir, 'skip', signal ? { ...sent, signal } : sent,
-        );
+        let result;
+        try {
+          result = await api.createAutoJobs(
+            items, outputDir, 'skip', signal ? { ...sent, signal } : sent,
+          );
+        } catch (e) {
+          if (!signal?.aborted) throw e;
+          // Aborted with the request already out: the server may have made
+          // the jobs, so their RomM rows are kept (one with no job behind it
+          // ages out on its own) rather than retired under a running job.
+          const stopped = new Error('Auto run aborted');
+          stopped.aborted = true;
+          stopped.keepRecorded = true;
+          throw stopped;
+        }
         const createdJobs = Array.isArray(result?.jobs) ? result.jobs : [];
         jobs.adopt(createdJobs);
         // Each game left out and why (a plan that changed, an output another
@@ -723,6 +735,10 @@ class ConversionStore {
       try {
         queued = await queue();
       } catch (e) {
+        if (e?.keepRecorded) {
+          recorded = {};
+          recordedIds = {};
+        }
         if (!Array.isArray(e?.createdJobs)) throw e;
         queued = { result: null, createdJobs: e.createdJobs, error: e };
       }

@@ -73,6 +73,13 @@ function gameRow(e, folds) {
   return { ...e, size, own_size: e.size ?? 0, parts, part_kind: discs ? 'discs' : 'files' };
 }
 
+/** Index *row* and every row folded under it by path. */
+function indexRow(row, into) {
+  if (!row?.path) return;
+  into[row.path] = row;
+  for (const part of row.parts ?? []) indexRow(part, into);
+}
+
 /** Add *entry* and its folded parts to *found*, skipping any part of a set. */
 function addDeletable(entry, found) {
   if (!entry?.path || entry.path.includes('::') || entry.split_parts != null) return;
@@ -1063,9 +1070,14 @@ class FileBrowserStore {
    * left out, with everything under them.
    */
   filesToDelete() {
+    // Each ticked game as the listing has it now: a refresh can change its
+    // files, and a game no longer listed is left alone.
+    const current = {};
+    for (const row of this.rows) indexRow(row, current);
     const found = { out: [], seen: {} };
-    for (const entry of this.selectedFiles.values()) addDeletable(entry, found);
-    for (const entry of this.selectedPlaylists.values()) addDeletable(entry, found);
+    for (const path of [...this.selectedFiles.keys(), ...this.selectedPlaylists.keys()]) {
+      if (current[path]) addDeletable(current[path], found);
+    }
     return found.out;
   }
 

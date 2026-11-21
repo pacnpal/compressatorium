@@ -1146,9 +1146,33 @@ async def delete_file(
         raise HTTPException(status_code=500, detail=f"Failed to delete: {e!s}") from None
 
 
+def removed_path(path: str) -> str:
+    """The file a delete of *path* removes, normcased: a link itself (its
+    target stays), anything else by its real path. Blocking."""
+    if os.path.islink(path):
+        return os.path.normcase(os.path.abspath(path))
+    return os.path.normcase(os.path.realpath(path))
+
+
 def real_path_set(paths: list[str]) -> set[str]:
-    """*paths* as normcased real paths. Blocking."""
-    return {os.path.normcase(os.path.realpath(p)) for p in paths}
+    """*paths* as the files their deletes remove (:func:`removed_path`). Blocking."""
+    return {removed_path(p) for p in paths}
+
+
+def _split_set_by_name(path: str) -> list[str]:
+    """The other numbered parts beside *path* of the split output it belongs
+    to (``Game.iso.0`` / ``.1`` / …), by name alone, so a part the tool's
+    probe can't stat still counts (CodeRabbit 4654883856). Blocking."""
+    owner = registry.split_owner_name(path)
+    if owner is None:
+        return []
+    folder = os.path.dirname(path)
+    parts = []
+    for name in os.listdir(folder):  # an OSError: the set can't be told
+        sibling = os.path.join(folder, name)
+        if sibling != path and registry.split_owner_name(sibling) == owner:
+            parts.append(sibling)
+    return parts
 
 
 def owners_of(
@@ -1180,7 +1204,8 @@ def set_members(path: str) -> tuple[list[str] | None, str | None]:
 
     try:
         members = [
-            *registry.split_members(path), *registry.source_companions(path, strict=True),
+            *registry.split_members(path), *_split_set_by_name(path),
+            *registry.source_companions(path, strict=True),
         ]
     except (CompanionsUnknown, OSError, ValueError) as exc:
         name = os.path.basename(path)
@@ -1210,7 +1235,7 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
     # kept.
     requested = await off_loop_bounded(real_path_set, payload.paths)
     real_of = dict(zip(payload.paths, await off_loop_bounded(
-        lambda paths: [os.path.normcase(os.path.realpath(p)) for p in paths], payload.paths,
+        lambda paths: [removed_path(p) for p in paths], payload.paths,
     ), strict=True))
     companions_of: dict[str, list[str]] = {}
     owners_cache: dict[str, tuple[dict[str, str] | None, str | None]] = {}
