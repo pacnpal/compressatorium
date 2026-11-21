@@ -59,9 +59,10 @@
   fails for it. What the server can run decides what is converted, so NSZ
   Images convert on a server that has the Switch keys even when the
   command's container doesn't. Ctrl-C cancels the run's own jobs on the
-  server. With no server running, the command runs the jobs itself, and a
-  server started meanwhile waits until it is done, so a command and the
-  server never work on the same file. A server in another container is found
+  server, asking again for any the server didn't take the first time. With
+  no server running, the command runs the jobs itself, and a server started
+  meanwhile waits until it is done, so a command and the server never work
+  on the same file. A server in another container is found
   with nothing to set: by its host name on a Compose network, and by its own
   address on Docker's default bridge (`docker run`, Unraid), checked to be
   that server, on whatever port it was started with (`PORT=9090` too).

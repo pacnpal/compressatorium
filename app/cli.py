@@ -1076,12 +1076,16 @@ async def _run_remote(server, prepared: list[tuple], printer: Printer, state: Ru
         for skip in skipped:
             if (item := planned.get(skip.get("path"))) is not None:
                 end(item, "skipped", skip.get("reason"))
-    cancelled = False
+    # A stop cancels every job still followed. A cancel the server did not
+    # take (no answer, a 503) is asked again each turn until it is settled or
+    # the job ends; a job lost with the server is failed by `follow`.
+    to_cancel: set[str] | None = None
     while watching:
-        if state.stopping and not cancelled:
-            cancelled = True
-            for job_id in list(watching):
-                await server.cancel(job_id)
+        if state.stopping and to_cancel is None:
+            to_cancel = set(watching)
+        for job_id in sorted(to_cancel or ()):
+            if job_id not in watching or await server.cancel(job_id):
+                to_cancel.discard(job_id)
         await a_turn()
 
 

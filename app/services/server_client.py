@@ -181,6 +181,15 @@ class Server:
                 return None
             raise
 
-    async def cancel(self, job_id: str) -> None:
-        with contextlib.suppress(ServerRefused):  # already ended, or gone
+    async def cancel(self, job_id: str) -> bool:
+        """Ask the server to cancel a job. True once that is settled: cancelled,
+        or already ended or gone (404, or the 400 for a job that can no longer
+        be cancelled). False when it should be asked again: no answer, or a
+        refusal for now (429, 5xx)."""
+        try:
             await self.call("DELETE", f"/api/jobs/{urlparse.quote(job_id)}")
+        except ServerUnreachable:
+            return False
+        except ServerRefused as exc:
+            return exc.status < 500 and exc.status != 429
+        return True

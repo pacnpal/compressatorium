@@ -5779,7 +5779,9 @@ this process's) decide which Images are converted:
   `UVICORN_PORT`; uvicorn binds only after the lifespan starts and tells the
   app nothing), so a server on `PORT=9090` (`run_dev.sh`) is found before any
   request. Each `/health` request also names the port it arrived on
-  (`SchedulerLock.note_port`), for a launch that named none. It also writes a random `id` and its own non-loopback IPv4
+  (`SchedulerLock.note_port`), for a launch that named none, and writes the
+  note again when its last write failed (`_write_record` answers False), in
+  place: the lock file is never replaced, since the flock is on it. It also writes a random `id` and its own non-loopback IPv4
   addresses (`scheduler_lock.own_addresses`, stdlib only: the hostname's
   entry and the address a UDP socket would send from; none readable, none
   written), because a container's hostname resolves for its siblings on a
@@ -5807,7 +5809,11 @@ server turns away with 429 (its queue full: its own `MAX_QUEUE_DEPTH`, which
 may be below the CLI's window, or other clients' jobs) is never failed: it is
 split in half until it fits, and a single job waits a poll, following this
 run's jobs, and is offered again. A stop cancels
-this run's jobs there (`DELETE /api/jobs/{id}`) and waits for them to end. A
+this run's jobs there (`DELETE /api/jobs/{id}`) and waits for them to end.
+`Server.cancel` answers whether that is settled: cancelled, or already ended
+or gone (404, the 400 for a job past cancelling). No answer, a 429 or a 5xx
+leaves it pending, and `_run_remote` asks again each turn, for every job, so
+one lost connection never abandons the others. A
 server that stops answering fails the jobs still followed. The auth token,
 when the server has one, comes from the same place the server reads it
 (`COMPRESSATORIUM_AUTH_TOKEN` or `<data dir>/auth_token`).

@@ -54,10 +54,14 @@ async def test_the_maintenance_tick_removes_stale_lock_files(tmp_path, monkeypat
     stale = _left_by_a_dead_process(locks, str(tmp_path / "Old.rvz"))
     held = str(tmp_path / "Live.rvz")
     assert locks.acquire_lock(held)
+    live = locks._lock_file_path(locks._resolve(held))
 
     await JobManager()._handle_background_maintenance()
 
     assert not os.path.exists(stale)
+    # The file itself, not only this manager's map: a removed live file would
+    # let another process take the same lock on a new inode.
+    assert os.path.exists(live)
     assert locks.is_locked(held)
     locks.release_lock(held)
 

@@ -13,6 +13,7 @@ a small stub of the three routes the CLI calls.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 from datetime import datetime, timezone
@@ -39,6 +40,7 @@ class _Stub:
     def __init__(
         self, *, finish: bool = True, max_depth: int = 0, busy: int = 0,
         available: list[str] | None = None, worker: str | None = None,
+        cancel_faults: list | None = None, finish_after: int = 0,
     ) -> None:
         from services.tools import registry
 
@@ -52,6 +54,12 @@ class _Stub:
         self.available = [t.id for t in registry.all()] if available is None else available
         # What /health says this server is: the id in the lock unless told.
         self.worker = worker
+        # What the next DELETEs meet: "drop" (the connection closes with no
+        # answer) or an HTTP status; then they cancel.
+        self.cancel_faults = list(cancel_faults or [])
+        # A job nobody cancels finishes after this many reads (0: never).
+        self.finish_after = finish_after
+        self.reads: dict[str, int] = {}
         stub = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -74,6 +82,11 @@ class _Stub:
                 job = stub.jobs.get(self.path.rsplit("/", 1)[-1])
                 if job is None:
                     return self._send(404, {"detail": "Job not found"})
+                stub.reads[job.id] = stub.reads.get(job.id, 0) + 1
+                if stub.finish_after and stub.reads[job.id] >= stub.finish_after and (
+                    job.status == JobStatus.PROCESSING
+                ):
+                    job.status = JobStatus.COMPLETED
                 return self._send(200, job.model_dump(mode="json"))
 
             def do_POST(self):
@@ -103,6 +116,12 @@ class _Stub:
 
             def do_DELETE(self):
                 job_id = self.path.rsplit("/", 1)[-1]
+                if stub.cancel_faults:
+                    fault = stub.cancel_faults.pop(0)
+                    if fault == "drop":
+                        self.close_connection = True
+                        return None
+                    return self._send(fault, {"detail": "Try again"})
                 stub.cancelled.append(job_id)
                 stub.jobs[job_id].status = JobStatus.CANCELLED
                 return self._send(200, {"status": "cancelled"})
@@ -512,3 +531,90 @@ def test_a_server_names_its_port_when_it_starts(monkeypatch, tmp_path):
     asyncio.run(start())
 
     assert seen["port"] == 9090
+
+
+def _stop_with(stub, monkeypatch, jobs: int):
+    """Stop the run once the server holds ``jobs`` of its jobs."""
+    import asyncio
+
+    import cli
+
+    real = cli._run_remote
+
+    async def stop_once_queued(server, prepared, printer, state):
+        async def stop_later():
+            while len(stub.jobs) < jobs:
+                await asyncio.sleep(0.01)
+            state.stopping = True
+
+        stopper = asyncio.ensure_future(stop_later())
+        try:
+            await real(server, prepared, printer, state)
+        finally:
+            stopper.cancel()
+
+    monkeypatch.setattr(cli, "_run_remote", stop_once_queued)
+    monkeypatch.setattr(cli, "_REMOTE_POLL_S", 0.01)
+
+
+@pytest.mark.parametrize("fault", ["drop", 503])
+def test_a_cancel_the_server_did_not_take_is_tried_again(
+    volume, dolphin, capsys, server_lock, monkeypatch, fault,
+):
+    """A cancel that lost its connection, or met a 503, is not the end of it
+    (CodeRabbit 4650577581, 4650577590): every job is cancelled, the first
+    one too, and every line says so."""
+    import cli
+
+    # Left alone, the jobs would finish: a cancel given up on shows up here.
+    stub = _Stub(finish=False, cancel_faults=[fault], finish_after=50)
+    server_lock.note_port(stub.port)
+    _isos(volume, 2)
+    _stop_with(stub, monkeypatch, jobs=2)
+    try:
+        code, lines = _cli(capsys, "convert", str(volume), "--to", "rvz", "--json")
+    finally:
+        stub.close()
+
+    assert sorted(stub.cancelled) == sorted(stub.jobs)
+    assert [line["status"] for line in lines] == ["cancelled", "cancelled"]
+    assert code == cli.EXIT_FAILED
+
+
+def test_a_job_that_ended_before_its_cancel_is_not_cancelled_again():
+    """A 404 (the job is gone) settles a cancel; a 503 leaves it pending."""
+    import asyncio
+
+    from services.server_client import Server
+
+    stub = _Stub(cancel_faults=[404, 503])
+    try:
+        server = Server(f"http://127.0.0.1:{stub.port}")
+        settled = [asyncio.run(server.cancel("j")) for _ in range(2)]
+    finally:
+        stub.close()
+
+    assert settled == [True, False]
+
+
+def test_a_failed_publish_of_the_holder_note_is_retried(server_lock, monkeypatch):
+    """A write of the note that fails leaves it to the next one
+    (CodeRabbit 4650577590), on the same file."""
+    from services import scheduler_lock
+
+    inode = os.stat(scheduler_lock.lock_path()).st_ino
+    real = os.pwrite
+
+    def fail_once(*args):
+        monkeypatch.setattr(os, "pwrite", real)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "pwrite", fail_once)
+    server_lock.note_port(8123)  # fails
+    server_lock.note_port(8123)  # the /health after it
+    with pytest.raises(scheduler_lock.SchedulerLockHeld) as held:
+        scheduler_lock.check()
+
+    assert held.value.holder["port"] == 8123
+    assert held.value.holder["id"] == server_lock.worker_id
+    assert os.stat(scheduler_lock.lock_path()).st_ino == inode

@@ -115,16 +115,22 @@ class SchedulerLockHeld(Exception):
 class SchedulerLock:
     """A held scheduler lock. :meth:`release` lets it go."""
 
-    def __init__(self, fd: int, record: dict | None = None) -> None:
+    def __init__(self, fd: int, record: dict | None = None, *, published: bool = True) -> None:
         self._fd: int | None = fd
         self._record = record or {}
+        # Whether the file holds ``_record``: a write that failed is made
+        # again by the next ``note_port`` (each /health asks), in place.
+        self._published = published
 
     def note_port(self, port: int | None) -> None:
         """Name the port this server answers on, once, for a CLI to find it."""
-        if self._fd is None or not port or self._record.get("port") == port:
+        if self._fd is None:
             return
-        self._record = {**self._record, "port": port}
-        _write_record(self._fd, self._record)
+        if port and self._record.get("port") != port:
+            self._record = {**self._record, "port": port}
+        elif self._published:
+            return
+        self._published = _write_record(self._fd, self._record)
 
     @property
     def worker_id(self) -> str | None:
@@ -163,12 +169,15 @@ def _try(fd: int) -> bool:
     return True
 
 
-def _write_record(fd: int, record: dict) -> None:
+def _write_record(fd: int, record: dict) -> bool:
+    """Write the holder note in place (the file is never replaced: the flock is
+    on it). False when the write failed; the flock is the lock either way."""
     try:
         os.ftruncate(fd, 0)
         os.pwrite(fd, json.dumps(record).encode("utf-8"), 0)
     except OSError:
-        pass  # the holder note is for messages only; the flock is the lock
+        return False
+    return True
 
 
 def own_addresses() -> list[str]:
@@ -214,8 +223,7 @@ def _held_by(fd: int, by: str) -> SchedulerLock:
     }
     if by == "server" and (addresses := own_addresses()):
         record["addresses"] = addresses
-    _write_record(fd, record)
-    return SchedulerLock(fd, record)
+    return SchedulerLock(fd, record, published=_write_record(fd, record))
 
 
 def acquire(by: str, *, wait: float = _ACQUIRE_WAIT) -> SchedulerLock:
