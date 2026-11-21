@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import functools
 import os
 import threading
 import time
@@ -106,34 +107,44 @@ def fs_platforms(heartbeat: dict) -> list[str]:
     return [n for n in names if isinstance(n, str)] if isinstance(names, list) else []
 
 
-async def suggest_library_root(heartbeat: dict) -> str | None:
+async def suggest_library_root(
+    heartbeat: dict, *, before: tuple[str, ...] | None = None,
+) -> str | None:
     """:func:`find_library_root` for a heartbeat, bounded; None past the bound."""
     names = fs_platforms(heartbeat)
     if not names:
         return None
     try:
         return await asyncio.wait_for(
-            run_detached(find_library_root, names), _LIBRARY_SECONDS,
+            run_detached(functools.partial(find_library_root, names, before=before)),
+            _LIBRARY_SECONDS,
         )
     except (asyncio.TimeoutError, OSError):
         logger.warning("romm: looking for RomM's library in the Volumes took too long")
         return None
 
 
-def find_library_root(names: list[str]) -> str | None:
+def find_library_root(
+    names: list[str], *, before: tuple[str, ...] | None = None,
+) -> str | None:
     """The folder in the Volumes that holds RomM's platform folders *names*,
     as RomM's library root, or None. Blocking.
 
     A folder scores by how many of *names* it holds the way RomM's library
-    does (``roms/<name>``, or ``<name>/roms``), then by how many it holds
-    directly (a library path set to RomM's ``roms`` folder itself). Highest
-    wins, the shallowest on a tie."""
+    does, then by how many it holds directly (a library path set to RomM's
+    ``roms`` folder itself). The way is RomM's declared structure when given
+    (*before*, the folders above the platform folder: ``games`` for
+    ``games/{platform}/{game}``), else either of RomM's defaults
+    (``roms/<name>``, or ``<name>/roms``). Highest wins, the shallowest on a
+    tie."""
     wanted = {n for n in names if n and "/" not in n and n not in (".", "..")}
     if not wanted:
         return None
     best, best_score = None, (0, 0)
     for folder in _folders(settings.volumes):
-        score = _score(folder, wanted)
+        score = _score(folder, wanted) if before is None else _declared_score(
+            folder, wanted, before,
+        )
         if score > best_score:
             best, best_score = folder, score
     return best if best and is_within_configured_volumes(best) else None
@@ -160,6 +171,16 @@ def _subdirs(folder: str) -> set[str]:
             return {e.name for e in entries if e.is_dir(follow_symlinks=False)}
     except OSError:
         return set()
+
+
+def _declared_score(folder: str, wanted: set[str], before: tuple[str, ...]) -> tuple[int, int]:
+    """:func:`_score` for RomM's declared *before*: the names under
+    ``<folder>/<before>``. Under ``roms/...`` only, a folder holding them
+    directly is RomM's ``roms`` folder itself, as ``RommLibrary`` maps it."""
+    held = len(_subdirs(os.path.join(folder, *before)) & wanted)
+    if before[:1] == ("roms",) and not held:
+        return 0, len(_subdirs(folder) & wanted)
+    return held, 0
 
 
 def _score(folder: str, wanted: set[str]) -> tuple[int, int]:
@@ -284,10 +305,11 @@ async def refresh_layout(client: RommClient | None = None, *, force: bool = Fals
         logger.info("romm: reading RomM's layout took too long")
 
 
-def layout() -> dict[str, Any]:
-    """The configured RomM's layout as last read, {} before then. In memory."""
+def layout(base: str | None = None) -> dict[str, Any]:
+    """The layout of the RomM at *base* (the configured one by default) as
+    last read, {} before then. In memory."""
     with _lock:
-        return _layouts.get(romm_client.base_url, {})
+        return _layouts.get(base or romm_client.base_url, {})
 
 
 def exclusions_known() -> bool:
@@ -296,17 +318,17 @@ def exclusions_known() -> bool:
     return bool(layout().get("exclusions_read"))
 
 
-def structure_known() -> bool:
+def structure_known(base: str | None = None) -> bool:
     """Whether RomM's folder structure was ever read (or RomM said it has
-    none) for the configured RomM: until it is, "none declared" is not
-    known. In memory."""
-    return bool(layout().get("structure_read"))
+    none) for the RomM at *base*, the configured one by default: until it
+    is, "none declared" is not known. In memory."""
+    return bool(layout(base).get("structure_read"))
 
 
-def structure() -> tuple[tuple[str, ...], tuple[str | None, ...]] | None:
-    """RomM's declared folder structure (:func:`parse_structure`), or None
-    when it isn't known. In memory."""
-    return layout().get("structure")
+def structure(base: str | None = None) -> tuple[tuple[str, ...], tuple[str | None, ...]] | None:
+    """RomM's declared folder structure (:func:`parse_structure`) at *base*,
+    the configured RomM by default, or None when it isn't known. In memory."""
+    return layout(base).get("structure")
 
 
 def excluded_extension(ext: str) -> bool:

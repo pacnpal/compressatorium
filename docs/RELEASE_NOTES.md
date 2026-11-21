@@ -12,7 +12,8 @@
     token is saved with the URL and Library path by the Save, once they test,
     so a wrong path leaves the current connection as it was.
   - The **Library path** fills itself in from RomM's platform folders, matched
-    against your volumes.
+    against your volumes, following RomM's own folder structure (a custom
+    `games/{platform}/{game}` suggests the folder holding `games`).
   - New games go where RomM's own folder structure says (RomM 5.3+), not a
     guess from what's on disk. Rules skip files RomM is set to ignore, and
     refuse a target format RomM ignores; a single file name RomM ignores skips

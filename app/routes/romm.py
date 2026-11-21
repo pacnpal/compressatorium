@@ -2198,7 +2198,7 @@ async def test_romm_connection(patch: RommSettingsPatch | None = None) -> dict:
         except (asyncio.TimeoutError, OSError):
             result["library_root_mounted"] = False
     if result["library_root_mounted"] is not True and heartbeat:
-        found = await romm_connect.suggest_library_root(heartbeat)
+        found = await _suggested_root(probe, heartbeat, bool(result["authorized"]))
         if found and found != library_root:
             result["library_root_suggestion"] = found
     found = result["library_root_suggestion"]
@@ -2220,6 +2220,21 @@ async def test_romm_connection(patch: RommSettingsPatch | None = None) -> dict:
             "mounted in this container, not the path RomM sees."
         ) + (f" RomM's library looks to be at {found}." if found else ""))
     return result
+
+
+async def _suggested_root(probe: RommClient, heartbeat: dict, authorized: bool) -> str | None:
+    """Where RomM's library looks to be, by the folder structure RomM declares
+    (#532): withheld when this token could read the structure and didn't,
+    since a guess there maps every path wrong (``games/games/...``). Without
+    a token there is no structure to ask for, so RomM's defaults decide."""
+    if not authorized:
+        return await romm_connect.suggest_library_root(heartbeat)
+    if not romm_connect.structure_known(probe.base_url):
+        return None
+    declared = romm_connect.structure(probe.base_url)
+    return await romm_connect.suggest_library_root(
+        heartbeat, before=declared[0] if declared else None,
+    )
 
 
 class PairRequest(BaseModel):

@@ -3098,8 +3098,12 @@ RomM's connection helpers live in `services/romm/connect.py` (#532). Discovery a
 of ours through `RommClient(base_url, anonymous=True)`, which sends no token
 and never falls back to the saved one:
 `discover()` (the heartbeat at RomM's usual addresses, bounded, no token
-sent), `find_library_root(FS_PLATFORMS)` (a bounded breadth-first look through
-the Volumes), and the layout cache (`refresh_layout()`; `structure()` and
+sent), `find_library_root(FS_PLATFORMS, before=...)` (a bounded breadth-first
+look through the Volumes for the folder holding RomM's platform folders under
+the declared prefix *before*, `games` for `games/{platform}/{game}`, or RomM's
+default layouts when no structure is known; the connection test withholds its
+suggestion when the token could read the structure and the read failed), and
+the layout cache (`refresh_layout()`; `structure()` and
 `excluded()` / `excluded_extension()` only read it). The layout is re-read at
 most every five minutes, by `/api/romm/status`, every sweep and Inbox poll
 (the Library's `refresh()` hook, below), and forced by a connection test and a
@@ -3111,8 +3115,10 @@ TTL (a 404 for the structure is an answer: RomM before 5.3 has none). Until
 a part has ever been read for the configured RomM, its emptiness means "not
 known": `RommLibrary.sweep_blocked()` defers the sweep with
 `romm_layout_unread` until `exclusions_known()`, and placement with no
-declared structure raises `PlacementUnknown` until `structure_known()`, so
-an Inbox holds the file for a later pass.
+declared structure raises `LibraryUnreadable` until `structure_known()`:
+retryable, so an Inbox leaves the file for a later poll rather than holding
+it as it would on `PlacementUnknown`. `structure()`, `structure_known()` and
+`layout()` take an optional base URL, for the RomM a connection test probes.
 RomM placement uses the declared structure when there is one, and refuses a
 structure with a wildcard level (`{category}`); `platform_folder()` looks
 under the same declared prefix (`games/{platform}/{game}` gives

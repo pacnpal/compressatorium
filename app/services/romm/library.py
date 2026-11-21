@@ -122,7 +122,9 @@ def _structure(root: str, name: str) -> tuple[str, str | None]:
         return _declared(root, name, *declared), None
     if not romm_connect.structure_known():
         # Not "no structure declared": RomM hasn't been asked successfully.
-        raise PlacementUnknown(
+        # Retryable, not a refusal: an Inbox tries the file again on a later
+        # poll instead of holding it for good (Codex PRRT_kwDOQ9nULM66SC3A).
+        raise LibraryUnreadable(
             "RomM's folder structure couldn't be read yet; the next pass tries again",
         )
     own = os.path.join(root, name)

@@ -15,7 +15,7 @@ from routes import romm as romm_routes
 from services import db as _db
 from services.romm import RommClient, RommError
 from services.romm import connect as romm_connect
-from services.rules.library import PlacementUnknown
+from services.rules.library import LibraryUnreadable, PlacementUnknown
 
 from config import settings as app_settings
 
@@ -435,7 +435,9 @@ async def test_a_layout_never_read_defers_the_sweep_and_placement(romm_db, romm_
 
     assert result["queued"] == 0
     assert {"platform_id": None, "error": "romm_layout_unread"} in result["errors"], result
-    with pytest.raises(PlacementUnknown):
+    # Retryable, not a hold: an Inbox tries the file again once it is read
+    # (Codex PRRT_kwDOQ9nULM66SC3A).
+    with pytest.raises(LibraryUnreadable):
         romm_library.placement("ps2")
 
 
@@ -502,7 +504,7 @@ async def test_exclusions_and_structure_are_known_separately(romm_db, romm_root,
     assert romm_connect.exclusions_known()
     assert not romm_connect.structure_known()
     assert romm_library.sweep_blocked() is None
-    with pytest.raises(PlacementUnknown):
+    with pytest.raises(LibraryUnreadable):
         romm_library.placement("ps2")
     romm_connect.refresh_layout_now(client)
     assert (client.config.call_count, client.library_structure.call_count) == (1, 2)
@@ -512,3 +514,41 @@ async def test_exclusions_and_structure_are_known_separately(romm_db, romm_root,
     romm_connect.refresh_layout_now(_half_client(config_ok=True, structure_error=404))
     assert romm_connect.structure_known()
     assert romm_library.placement("ps2").folder == str(romm_root / "roms" / "ps2")
+
+
+def test_the_library_path_follows_romms_declared_prefix(tmp_path, monkeypatch):
+    """``games/{platform}/{game}``: RomM's library is the folder holding
+    ``games``, not ``games`` itself (Codex PRRT_kwDOQ9nULM66SC3B)."""
+    monkeypatch.setattr(app_settings, "chd_volumes", str(tmp_path))
+    root = tmp_path / "romm"
+    (root / "games" / "ps2").mkdir(parents=True)
+    (root / "games" / "gc").mkdir()
+
+    assert romm_connect.find_library_root(["ps2", "gc"], before=("games",)) == str(root)
+    # RomM's standard prefix keeps its answers, the roms folder itself included.
+    (tmp_path / "std" / "roms" / "ps2").mkdir(parents=True)
+    assert romm_connect.find_library_root(["ps2"], before=("roms",)) == str(tmp_path / "std")
+
+
+@pytest.mark.asyncio
+async def test_the_suggested_library_path_follows_the_declared_structure(romm_db):
+    """The connection test's suggestion uses the structure RomM declares, and
+    withholds one when that structure couldn't be read (fail closed)."""
+    root = romm_db / "romm"
+    (root / "games" / "ps2").mkdir(parents=True)
+    fake = FakeRomm(
+        version="5.4.1", fs_platforms=["ps2"], structure="games/{platform}/{game}",
+    ).start()
+    try:
+        result = await romm_routes.test_romm_connection(
+            romm_routes.RommSettingsPatch(url=fake.url, token="rmm_x"),
+        )
+        assert result["library_root_suggestion"] == str(root), result
+
+        with patch.object(romm_connect, "structure_known", return_value=False):
+            withheld = await romm_routes.test_romm_connection(
+                romm_routes.RommSettingsPatch(url=fake.url, token="rmm_x"),
+            )
+        assert withheld["library_root_suggestion"] is None, withheld
+    finally:
+        fake.stop()

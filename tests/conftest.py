@@ -59,7 +59,7 @@ def _no_romm_layout_reads(request):
     real = RommLibrary.refresh, romm_connect.exclusions_known, romm_connect.structure_known
     RommLibrary.refresh = no_read
     # ...and read as declaring nothing, so a sweep or placement isn't deferred.
-    romm_connect.exclusions_known = romm_connect.structure_known = lambda: True
+    romm_connect.exclusions_known = romm_connect.structure_known = lambda *_: True
     try:
         yield
     finally:
