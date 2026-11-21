@@ -35,6 +35,16 @@
   });
 </script>
 
+{#snippet unsortedNotice()}
+{#if needConsole > 0}
+  <p class="warn" role="status">
+    <strong>{needConsole} {needConsole === 1 ? 'game needs' : 'games need'} a console.</strong>
+    Compressatorium leaves them alone until you pick one.
+    <a href={hashFor('activity', { tab: 'attention', id: library.id })}>Fix in Activity</a>
+  </p>
+{/if}
+{/snippet}
+
 {#if (source.platformsLoading && source.platforms.length === 0) || source.platformsBusy}
   <p class="muted"><Spinner size="sm" label="Reading" /> Reading the folder…</p>
 {:else if source.platformsError}
@@ -44,6 +54,8 @@
     <Button size="sm" variant="secondary" onclick={() => source.loadPlatforms()}>Try again</Button>
   </div>
 {:else if source.platforms.length === 0}
+  <!-- Games with no console are still the person's to fix (CodeRabbit 4652729331). -->
+  {@render unsortedNotice()}
   <EmptyState
     title="No games found here yet"
     description="Put games in folders named after their console, like psx or ps2. New ones show up on the next look."
@@ -60,13 +72,7 @@
       {unreadable} {unreadable === 1 ? "file couldn't" : "files couldn't"} be read, so they're left alone.
     </p>
   {/if}
-  {#if needConsole > 0}
-    <p class="warn" role="status">
-      <strong>{needConsole} {needConsole === 1 ? 'game needs' : 'games need'} a console.</strong>
-      Compressatorium leaves them alone until you pick one.
-      <a href={hashFor('activity', { tab: 'attention', id: library.id })}>Fix in Activity</a>
-    </p>
-  {/if}
+  {@render unsortedNotice()}
   <table class="consoles">
     <thead>
       <tr><th>Console</th><th>Games</th><th>Folder</th><th><span class="sr-only">Open</span></th></tr>

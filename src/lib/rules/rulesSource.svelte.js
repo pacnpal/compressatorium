@@ -59,6 +59,9 @@ export class RulesSource {
   rulesLoading = $state(false);
   rulesSaving = $state(false);
   rulesError = $state(null);
+  // True once the Rules have been read: until then the table holds none of
+  // them, and saving it would replace the Library's with that.
+  rulesLoaded = $state(false);
   // Unsaved edits live here, next to the rules they describe, not in the
   // editor component: the editor unmounts every time the operator looks
   // elsewhere, and a component-local flag came back false while `rules` still
@@ -148,6 +151,7 @@ export class RulesSource {
         this.rules = data?.rules ?? {};
         this.checkRules = data?.check_rules ?? {};
       }
+      this.rulesLoaded = true;
       this.ruleDefaults = data?.defaults ?? null;
       this.ruleOptions = data?.options ?? this.ruleOptions;
       this.ruleState = data?.state ?? {};
@@ -325,6 +329,11 @@ export class RulesSource {
    * returns `{ added: [platform ids], skipped: [{platform_id, name, reason}] }`.
    */
   async applyRecommended(fieldsFor = () => ({})) {
+    // Merged into Rules never read, a save would replace the Library's own
+    // with these few (CodeRabbit 4652729322).
+    if (!this.rulesLoaded || this.rulesError) {
+      throw new Error("This Library's settings haven't loaded yet");
+    }
     const plan = await this.#endpoints.recommended();
     const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
     const added = [];
@@ -342,7 +351,11 @@ export class RulesSource {
       });
       added.push(String(platformId));
     }
-    if (added.length) await this.flush();
+    // A save that fails is no set-up (CodeRabbit 4652729388): the draft
+    // stays, dirty, for the table's Try again.
+    if (added.length && !(await this.flush())) {
+      throw new Error(this.saveError ?? "Couldn't save");
+    }
     return { added, skipped: plan?.skipped ?? [] };
   }
 

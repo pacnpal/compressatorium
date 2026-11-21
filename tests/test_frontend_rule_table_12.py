@@ -127,6 +127,7 @@ const drain = async () => {
 def test_apply_recommended_never_overwrites_a_choice(tmp_path):
     data = _node(_SOURCE_STUBS + _plain(_SOURCE) + """
 const source = new RulesSource(endpoints);
+await source.loadRules();
 source.ruleDefaults = { interval_minutes: 60, enabled: false };
 source.rules = { ps2: { mode: 'cso_compress', enabled: false } };
 const applying = source.applyRecommended(() => ({ verify_after: true, delete_on_verify: false }));
@@ -295,3 +296,98 @@ def test_the_library_page_keeps_what_the_rules_and_romm_views_showed():
     assert "source.counts?.unreadable" in browse
     view = (_COMPONENTS.parent / "views" / "LibraryView.svelte").read_text(encoding="utf-8")
     assert "{#if libraries.error && !libraries.loading}" in view
+
+
+def test_apply_recommended_waits_for_the_rules_and_reports_a_failed_save(tmp_path):
+    """CodeRabbit 4652729322 / 4652729388: before the Library's Rules have
+    loaded, Apply would save its few consoles over Rules it never read; and a
+    save that fails must not be reported as done."""
+    data = _node(_SOURCE_STUBS + _plain(_SOURCE) + """
+const out = {};
+const early = new RulesSource(endpoints);
+try { await early.applyRecommended(); out.early = 'ran'; } catch (e) { out.early = e.message; }
+const failing = new RulesSource({
+  ...endpoints,
+  saveRules: async () => { throw new Error('disk full'); },
+});
+await failing.loadRules();
+try { await failing.applyRecommended(); out.failed = 'ran'; } catch (e) { out.failed = e.message; }
+out.dirty = failing.rulesDirty;
+out.kept = Object.keys(failing.rules).sort();
+process.stdout.write(JSON.stringify(out));
+""", tmp_path)
+    assert data["early"] != "ran"
+    assert "disk full" in data["failed"]
+    # The draft stays for the Try again control.
+    assert data["dirty"] is True and data["kept"] == ["ps2", "psx"]
+    automation = (_COMPONENTS / "LibraryAutomation.svelte").read_text(encoding="utf-8")
+    assert "source.rulesLoaded && !source.rulesError && unset.length > 0" in automation
+
+
+def test_apply_recommended_keeps_its_promise(tmp_path):
+    """CodeRabbit 4652729316: "checks every new file, and keeps originals",
+    whatever the saved defaults say."""
+    automation = (_COMPONENTS / "LibraryAutomation.svelte").read_text(encoding="utf-8")
+    body = automation[automation.index("async function applyRecommended()"):]
+    body = body[: body.index("\n  }\n")]
+    assert "() => ({ verify_after: true, delete_on_verify: false })" in body
+
+
+def test_a_re_check_can_be_reached_without_a_format(tmp_path):
+    """CodeRabbit 4652729352: "Don't convert" leaves the console's re-check;
+    its settings and the nightly switch still reach it."""
+    data = _node(_plain(_TABLE) + """
+const ids = ['ps2', 'gc'];
+process.stdout.write(JSON.stringify({
+  onlyChecks: nightlyCheckState(ids, {}, { ps2: { enabled: true } }),
+  none: nightlyCheckState(ids, {}, {}),
+}));
+""", tmp_path)
+    assert data == {"onlyChecks": True, "none": False}
+    table = (_COMPONENTS / "RuleTable.svelte").read_text(encoding="utf-8")
+    assert "{#if configured || check}" in table
+    assert "{#if (configured || check) && open.has(platform.id)}" in table
+    advanced = (_COMPONENTS / "RuleAdvanced.svelte").read_text(encoding="utf-8")
+    assert "{#if rule.mode}" in advanced
+    automation = (_COMPONENTS / "LibraryAutomation.svelte").read_text(encoding="utf-8")
+    assert "disabled={converting.length === 0 && Object.keys(source.checkRules).length === 0}" in automation
+
+
+def test_a_late_folder_save_never_undoes_a_later_choice():
+    """CodeRabbit 4652729306: picking None while ES-DE's folder is saving
+    must stay None."""
+    src = (_COMPONENTS / "FrontendSelect.svelte").read_text(encoding="utf-8")
+    body = src[src.index("async function useFolder("):]
+    body = body[: body.index("\n  }\n")]
+    assert "const mine = ++choice;" in body
+    assert body.index("if (mine !== choice) return;") < body.index("setEsFrontend(true)")
+    assert "choice += 1;" in src[src.index("async function choose("):]
+
+
+def test_browse_names_games_without_a_console_even_with_no_consoles():
+    """CodeRabbit 4652729331: a Library of unsorted games still shows the
+    notice and its Fix in Activity link."""
+    src = (_COMPONENTS / "LibraryBrowse.svelte").read_text(encoding="utf-8")
+    empty = src.index("No games found here yet")
+    assert src.index("{#snippet unsortedNotice()}") < empty
+    assert src.count("{@render unsortedNotice()}") == 2
+
+
+def test_the_library_page_leaves_romm_mode_however_it_was_entered():
+    """CodeRabbit 4652729369: a Connection save can enter RomM mode; leaving
+    the page always cancels and exits it, and a save that lands after the
+    page is gone puts the browser back too."""
+    view = (_COMPONENTS.parent / "views" / "LibraryView.svelte").read_text(encoding="utf-8")
+    assert "if (!enteredRomm) return;" not in view
+    body = view[view.index("function afterSave()"):]
+    body = body[: body.index("\n  }\n")]
+    assert "leaveRomm()" in body
+
+
+def test_an_unknown_library_id_stops_loading_once_the_list_is_in():
+    """CodeRabbit 4652729380: with no Libraries at all, the page says the
+    Library isn't here instead of loading for ever."""
+    view = (_COMPONENTS.parent / "views" / "LibraryView.svelte").read_text(encoding="utf-8")
+    assert "{:else if libraries.loading || !libraries.loaded}" in view
+    store = (_COMPONENTS.parent.parent / "stores" / "libraries.svelte.js").read_text(encoding="utf-8")
+    assert "this.loaded = true;" in store

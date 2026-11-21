@@ -229,7 +229,7 @@
         {/if}
       </span>
       <span role="cell" class="more">
-        {#if configured}
+        {#if configured || check}
           <IconButton
             label={`More settings for ${platform.name}`}
             active={open.has(platform.id)}
@@ -243,7 +243,7 @@
       {#each warnings as w (w)}
         <p class="warn" role="status">{w}</p>
       {/each}
-      {#if configured && open.has(platform.id)}
+      {#if (configured || check) && open.has(platform.id)}
         <div class="expanded">
           <RuleAdvanced
             {source}

@@ -141,6 +141,9 @@ export class FolderRulesSource extends RulesSource {
 class LibrariesStore {
   list = $state([]);
   loading = $state(false);
+  // True once a list load has answered (or failed): an id not in the list
+  // then means the Library is gone, not "still loading" (CodeRabbit 4652729380).
+  loaded = $state(false);
   error = $state(null);
   selectedId = $state(ROMM_LIBRARY_ID);
   registering = $state(false);
@@ -247,6 +250,7 @@ class LibrariesStore {
       this.error = e?.message ?? 'Failed to list Libraries';
     } finally {
       this.loading = false;
+      this.loaded = true;
     }
     return this.list;
   }

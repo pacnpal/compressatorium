@@ -43,6 +43,9 @@
   let pickError = $state('');
   // Bumped when a choice doesn't stick, so the select shows the saved one again.
   let reset = $state(0);
+  // Bumped by every choice: a folder save still out when another app is
+  // picked never turns the updates back on (CodeRabbit 4652729306).
+  let choice = 0;
   // False once the tab is gone: a search answering later writes nothing.
   let alive = true;
   onMount(() => () => {
@@ -70,6 +73,7 @@
   });
 
   async function choose(value) {
+    choice += 1;
     try {
       if (value === 'esde') {
         if (source.gamelistsFolder) {
@@ -98,10 +102,12 @@
 
   /** Save *path* as ES-DE's gamelists folder and turn the updates on. */
   async function useFolder(path) {
+    const mine = ++choice;
     saving = true;
     pickError = '';
     try {
       await source.setGamelistsFolder(path);
+      if (mine !== choice) return;
       await source.setEsFrontend(true);
       pendingEsde = false;
       picking = false;

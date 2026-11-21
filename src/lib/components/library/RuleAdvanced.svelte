@@ -144,6 +144,9 @@
 </script>
 
 <div class="advanced">
+  <!-- A console set to "Don't convert" keeps its re-check (CodeRabbit
+       4652729352): only that is shown for it. -->
+  {#if rule.mode}
   {#if compresses}
     <fieldset>
       <legend>Compression</legend>
@@ -280,6 +283,8 @@
     {/if}
   </fieldset>
 
+  {/if}
+
   <fieldset>
     <legend>Re-check this console</legend>
     <Checkbox
@@ -304,11 +309,13 @@
   </fieldset>
 
   <footer class="foot">
-    <span class="muted last">{lastRun(source.lastRunFor(platform.id), 'queued', 'last_queued')}</span>
+    {#if rule.mode}
+      <span class="muted last">{lastRun(source.lastRunFor(platform.id), 'queued', 'last_queued')}</span>
+    {/if}
     {#if check}
       <span class="muted last">Re-check: {lastRun(source.lastCheckFor(platform.id), 'checked', 'last_checks')}</span>
     {/if}
-    {#if source.heldCountFor(platform.id) > 0}
+    {#if rule.mode && source.heldCountFor(platform.id) > 0}
       {@const held = source.heldCountFor(platform.id)}
       <span class="muted">
         {held} {held === 1 ? 'game' : 'games'} held after a failed conversion. Each is
@@ -316,9 +323,11 @@
       </span>
       <Button size="sm" variant="ghost" onclick={retryFailed}>Try them again</Button>
     {/if}
-    <Button size="sm" variant="ghost" onclick={() => (confirmForget = true)}>
-      Forget what's been converted
-    </Button>
+    {#if rule.mode}
+      <Button size="sm" variant="ghost" onclick={() => (confirmForget = true)}>
+        Forget what's been converted
+      </Button>
+    {/if}
   </footer>
 </div>
 

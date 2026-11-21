@@ -76,9 +76,11 @@
 - **An *arr that imports straight into a Library converts it** (#541). When the
   imported file lands in a Library's console folder rather than an Inbox, that
   console's conversion Rule runs for it at once, as Run now would. Only when
-  the Library converts on its own (Convert automatically), the console is set
-  to convert and on, and its hours allow; otherwise the hook says why and the
-  next scheduled run takes it. **Test a path** names the Library.
+  the Library converts on its own (Convert automatically) and the console is
+  set to convert and on; otherwise the hook skips it and says why. A console
+  outside its hours is skipped too, and its next scheduled run takes the file.
+  A console paused meanwhile stays paused. **Test a path** gives the answer an
+  import of that path would get.
 
 ### Changed
 
@@ -101,13 +103,16 @@
   night** turns the check on for every converting console at once. A name
   filter is saved only once the server says it is a valid pattern (new
   `POST /api/rules/check-pattern`); until then it stays in its box with why.
+  A console's **Try them again** releases only the games held after a failed
+  conversion (`failed_only` on `.../rules/forget-converted`), so a game already
+  converted under a rename or overwrite console is never converted again.
 - **Watch folders** (Inboxes) are picked from your Drives, never typed, and
   each row says when it was last checked, what's still downloading, what
   needs you and what was taken in, refreshed every 15 seconds. **Where new
   games go** and the **Game list app** (None, ES-DE or Batocera/Knulli; ES-DE's
   gamelists folder is picked from your Drives) sit below the table.
-- **RomM's Connection tab** has one **Save** that tests the connection after
-  saving. RomM's details, keeping the same entry and online IDs fold under
+- **RomM's Connection tab** has one **Save** that tests the connection before
+  saving, and saves only when it works. RomM's details, keeping the same entry and online IDs fold under
   **More**. RomM's own converter shows as a banner on the Automation tab with
   **Use RomM's choices**.
 - **Four places instead of eleven** (#534). The sidebar is now **Files**,

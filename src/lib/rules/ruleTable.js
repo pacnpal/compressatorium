@@ -71,7 +71,10 @@ export function newRuleSafety(spec, defaults) {
  * 'mixed' otherwise (the box shows indeterminate).
  */
 export function nightlyCheckState(platformIds, rules, checkRules) {
-  const converting = platformIds.filter((id) => rules?.[String(id)]?.mode);
+  let converting = platformIds.filter((id) => rules?.[String(id)]?.mode);
+  // No console converts: the re-checks left behind ("Don't convert" keeps
+  // them) still show, so they can be turned off (CodeRabbit 4652729352).
+  if (converting.length === 0) converting = platformIds.filter((id) => checkRules?.[String(id)]);
   const on = converting.filter((id) => checkRules?.[String(id)]?.enabled);
   if (on.length === 0) return false;
   return on.length === converting.length ? true : 'mixed';

@@ -10,10 +10,8 @@
    * @property {object|null} library the Library row
    */
   import { toast } from 'svelte-sonner';
-  import { registry } from '$lib/tools/registry.js';
-  import { defaults } from '$lib/stores/defaults.svelte.js';
   import { newCheckRule } from '$lib/rules/checkRule.js';
-  import { newRuleSafety, nightlyCheckState } from '$lib/rules/ruleTable.js';
+  import { nightlyCheckState } from '$lib/rules/ruleTable.js';
   import { nothingReason } from '$lib/rules/sweepSummary.js';
   import RuleTable from './RuleTable.svelte';
   import WatchFolders from './WatchFolders.svelte';
@@ -128,8 +126,10 @@
   async function applyRecommended() {
     applying = true;
     try {
+      // What its title promises, whatever the saved defaults say
+      // (CodeRabbit 4652729316): check every new file, keep originals.
       const { added, skipped } = await source.applyRecommended(
-        (mode) => newRuleSafety(registry.specFor(mode), defaults.values),
+        () => ({ verify_after: true, delete_on_verify: false }),
       );
       const n = added.length;
       const left = skipped.length
@@ -200,7 +200,7 @@
         type="checkbox"
         checked={nightly === true}
         indeterminate={nightly === 'mixed'}
-        disabled={converting.length === 0}
+        disabled={converting.length === 0 && Object.keys(source.checkRules).length === 0}
         onchange={(e) => setNightly(e.currentTarget.checked)}
       />
       <span>
@@ -232,7 +232,7 @@
             <Button size="sm" variant="ghost" onclick={() => source.scheduleSave(0)}>Try again</Button>
           </span>
         {/if}
-        {#if unset.length > 0}
+        {#if source.rulesLoaded && !source.rulesError && unset.length > 0}
           <span title="Sets each console to its best format, checks every new file, and keeps originals.">
             <Button variant="secondary" loading={applying} onclick={applyRecommended}>
               Apply recommended

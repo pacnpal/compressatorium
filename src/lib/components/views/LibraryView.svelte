@@ -72,7 +72,6 @@
   // False once the view is gone: a RomM load that outlives it must not put
   // the file browser into RomM mode after the person has left.
   let alive = true;
-  let enteredRomm = false;
   // Bumped on every Library change (Codex 4652664864): a RomM load started
   // for an earlier one stops at its next await, so it never puts the shared
   // file browser back into RomM mode under a folder Library.
@@ -82,7 +81,6 @@
   async function loadRomm(gen) {
     await Promise.all([romm.loadStatus(), romm.loadSettings()]);
     if (!current(gen) || !romm.usable) return;
-    enteredRomm = true;
     await Promise.allSettled([romm.loadPlatforms(), romm.loadRules()]);
     if (!current(gen)) return;
     if (romm.pendingRepins > 0 && romm.settings?.repin_on_load !== false) {
@@ -91,16 +89,24 @@
     }
   }
 
+  /**
+   * Put the shared file browser back to the Drives. Whatever entered RomM
+   * mode (this view's load, or a Connection save's reload, CodeRabbit
+   * 4652729369), so the view needs no flag for it. Both calls are no-ops
+   * when nothing is in RomM mode. The platform load is cancelled first: one
+   * still in flight ends by selecting a console, which would re-enter it.
+   */
+  function leaveRomm() {
+    romm.cancelPlatformLoad();
+    fileBrowser.exitRomm();
+  }
+
   onMount(() => {
     libraries.load();
     if (!fileBrowser.volumes.length) fileBrowser.fetchVolumes();
     return () => {
       alive = false;
-      if (!enteredRomm) return;
-      // Before exitRomm: a platform load still in flight ends by selecting a
-      // console, which would put RomM straight back into the browser.
-      romm.cancelPlatformLoad();
-      fileBrowser.exitRomm();
+      leaveRomm();
     };
   });
 
@@ -117,11 +123,7 @@
         loadRomm(gen);
         return;
       }
-      if (enteredRomm) {
-        enteredRomm = false;
-        romm.cancelPlatformLoad();
-        fileBrowser.exitRomm();
-      }
+      leaveRomm();
       src.loadPlatforms();
       src.loadRules().catch(() => {});
     });
@@ -129,6 +131,12 @@
 
   // After a Connection save: the store reloads the consoles itself.
   function afterSave() {
+    // A save that lands after the person left RomM (or the page) reloaded
+    // RomM's consoles into the browser: put it back.
+    if (!alive || !isRomm) {
+      leaveRomm();
+      return;
+    }
     if (romm.usable) romm.loadRules().catch(() => {});
     else romm.loadStatus();
   }
@@ -192,7 +200,7 @@
         <span>Couldn't load your Libraries. {libraries.error}</span>
         <Button size="sm" variant="secondary" onclick={() => libraries.load()}>Try again</Button>
       </div>
-    {:else if libraries.loading || !libraries.list.length}
+    {:else if libraries.loading || !libraries.loaded}
       <p class="muted"><Spinner size="sm" label="Loading" /> Loading…</p>
     {:else}
       <EmptyState title="This Library isn't here any more" description="It may have been removed.">

@@ -8894,14 +8894,24 @@ only a game detection can't name at all falls back to the folder it sits in
 ones), and one whose header and folder disagree runs nothing. `_due_in_library` then fails closed: the path is converted only when
 the Library converts on its own (`schedule_enabled()`), the console's
 conversion Rule has a mode and is on, and now is inside its window
-(`schedule._in_window`); otherwise it is skipped with why, and the next
-scheduled run takes it. The on check matters: a sweep that names its
-Platforms runs a Rule the person paused (Run now's contract), so it is read
-first. Then `rules_sweep.sweep(library, platform_ids=..., ignore_schedule=True,
-kinds=(CONVERT,))` runs, the same pass as Run now for those consoles: its
-containment, filters, duplicate policy and in-flight checks decide. `kinds`
-(default every kind) keeps a console's check Rule from spending a budget on an
-import.
+(`schedule._in_window`); otherwise it is skipped with why (only a console
+outside its hours waits for its next scheduled run). Then
+`rules_sweep.sweep(library, platform_ids=..., ignore_schedule=True,
+kinds=(CONVERT,), honour_pauses=True)` runs, the same pass as Run now for those
+consoles: its containment, filters, duplicate policy and in-flight checks
+decide. `kinds` (default every kind) keeps a console's check Rule from spending
+a budget on an import. `honour_pauses` drops Run now's named-Platform override
+(a sweep that names its Platforms runs a Rule the person paused): the pause is
+read again under `_sweep_lock`, so a console paused after the import was
+accepted stays paused. `trigger.check_one`, the UI's **Test a path**, returns
+`_due_in_library`'s answer for a Library path, so it never says "works" for an
+import that would be skipped.
+
+`rules_sweep.release_failed` drops a console's failed holds and nothing else:
+the console table's **Try them again** sends `failed_only` to
+`.../rules/forget-converted`, which keeps the converted history a rename or
+overwrite Rule needs to never convert a game twice. Forget history still
+clears both.
 
 ### 3.3.26 Event streams end cleanly on shutdown (`services/event_stream.py`, #465)
 

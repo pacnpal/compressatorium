@@ -539,7 +539,7 @@ process.stdout.write(JSON.stringify({{
 def test_the_editor_shows_held_images_whatever_the_policy():
     src = _ADVANCED.read_text(encoding="utf-8")
     block = re.search(
-        r"\{#if source\.heldCountFor\(platform\.id\) > 0\}(.*?)\{/if\}", src, re.DOTALL,
+        r"\{#if rule\.mode && source\.heldCountFor\(platform\.id\) > 0\}(.*?)\{/if\}", src, re.DOTALL,
     )
     assert block, "no held-games control in the console's settings"
     assert "retryFailed" in block.group(1)
@@ -599,7 +599,7 @@ def test_the_deferred_romm_load_stops_once_the_view_is_gone():
     load = body.group(1)
     first_await = load.index("await ")
     guard = load.find("if (!current(gen) || !romm.usable) return;", first_await)
-    enters = load.index("enteredRomm = true;")
+    enters = load.index("Promise.allSettled(")
     platforms = load.index("romm.loadPlatforms()")
     # Checked after the first await and before anything enters RomM mode.
     assert first_await < guard < enters < platforms, load
