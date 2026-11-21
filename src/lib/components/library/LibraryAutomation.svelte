@@ -11,7 +11,7 @@
    */
   import { toast } from 'svelte-sonner';
   import { newCheckRule } from '$lib/rules/checkRule.js';
-  import { nightlyCheckState } from '$lib/rules/ruleTable.js';
+  import { nightlyCheckState, nightlyConsoles } from '$lib/rules/ruleTable.js';
   import { nothingReason } from '$lib/rules/sweepSummary.js';
   import RuleTable from './RuleTable.svelte';
   import WatchFolders from './WatchFolders.svelte';
@@ -36,9 +36,10 @@
     return () => clearTimeout(timer);
   });
   const platforms = $derived(source.platforms ?? []);
-  const ids = $derived(platforms.map((p) => String(p.id)));
-  const nightly = $derived(nightlyCheckState(ids, source.rules, source.checkRules));
-  const converting = $derived(ids.filter((id) => source.rules[id]?.mode));
+  const nightlyIds = $derived(
+    nightlyConsoles(platforms, source.rules, source.checkRules, (p) => source.imageCount(p)),
+  );
+  const nightly = $derived(nightlyCheckState(nightlyIds, source.checkRules));
   const unset = $derived(
     platforms.filter((p) => source.imageCount(p) > 0 && !source.rules[String(p.id)]?.mode),
   );
@@ -119,9 +120,9 @@
     }
   }
 
-  /** Every converting console's nightly re-check on, or all of them off. */
+  /** Every covered console's nightly re-check on, or all of them off. */
   function setNightly(on) {
-    for (const id of on ? converting : Object.keys(source.checkRules)) {
+    for (const id of on ? nightlyIds : Object.keys(source.checkRules)) {
       const current = source.checkRuleFor(id)
         ?? { ...newCheckRule(source.ruleDefaults), timezone: zone };
       source.setCheckRule(id, { ...current, enabled: on });
@@ -206,8 +207,7 @@
         type="checkbox"
         checked={nightly === true}
         indeterminate={nightly === 'mixed'}
-        disabled={!source.rulesLoaded || !!source.rulesError
-          || (converting.length === 0 && Object.keys(source.checkRules).length === 0)}
+        disabled={!source.rulesLoaded || !!source.rulesError || nightlyIds.length === 0}
         onchange={(e) => setNightly(e.currentTarget.checked)}
       />
       <span>

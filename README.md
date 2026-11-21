@@ -1115,8 +1115,9 @@ has two tabs:
   saves on its own ("Saving…", "Saved"). The sliders button on a row opens
   the rest: compression, where new files go, which games, when it runs, and a
   nightly re-check. **Convert automatically** turns the scheduler on, and
-  **Re-check games every night** turns the re-check on for every console that
-  converts. Below the table sit the Library's [watch folders](#watch-folders),
+  **Re-check games every night** turns the re-check on for every console that has
+  games or converts, already-compressed ones included; a console with no
+  format can still set up its own re-check from the sliders button. Below the table sit the Library's [watch folders](#watch-folders),
   **Where new games go**, and the **Game list app** it feeds.
 
 Any folder can be a Library, even one inside RomM's library folder or inside

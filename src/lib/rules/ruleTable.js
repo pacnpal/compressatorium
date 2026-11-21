@@ -66,16 +66,25 @@ export function newRuleSafety(spec, defaults) {
 }
 
 /**
- * "Re-check games every night" over the consoles that have a conversion
- * Rule: true when every one has a check Rule on, false when none does,
- * 'mixed' otherwise (the box shows indeterminate).
+ * The consoles "Re-check games every night" covers: every one with games or
+ * a conversion Rule, since games already compressed need no format to be
+ * re-checked (Codex 4653752396). With none, the re-checks left behind
+ * ("Don't convert" keeps them), so they can be turned off (CodeRabbit
+ * 4652729352).
  */
-export function nightlyCheckState(platformIds, rules, checkRules) {
-  let converting = platformIds.filter((id) => rules?.[String(id)]?.mode);
-  // No console converts: the re-checks left behind ("Don't convert" keeps
-  // them) still show, so they can be turned off (CodeRabbit 4652729352).
-  if (converting.length === 0) converting = platformIds.filter((id) => checkRules?.[String(id)]);
-  const on = converting.filter((id) => checkRules?.[String(id)]?.enabled);
+export function nightlyConsoles(platforms, rules, checkRules, imageCount) {
+  const ids = platforms.map((p) => String(p.id));
+  const covered = ids.filter((id, i) => rules?.[id]?.mode || imageCount(platforms[i]) > 0);
+  return covered.length ? covered : ids.filter((id) => checkRules?.[id]);
+}
+
+/**
+ * "Re-check games every night" over *covered* (`nightlyConsoles`): true when
+ * every one has a check Rule on, false when none does, 'mixed' otherwise (the
+ * box shows indeterminate).
+ */
+export function nightlyCheckState(covered, checkRules) {
+  const on = covered.filter((id) => checkRules?.[id]?.enabled);
   if (on.length === 0) return false;
-  return on.length === converting.length ? true : 'mixed';
+  return on.length === covered.length ? true : 'mixed';
 }

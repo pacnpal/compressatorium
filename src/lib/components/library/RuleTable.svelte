@@ -229,21 +229,20 @@
         {/if}
       </span>
       <span role="cell" class="more">
-        {#if configured || check}
-          <IconButton
-            label={`More settings for ${platform.name}`}
-            active={open.has(platform.id)}
-            toggle
-            onclick={() => toggle(platform.id)}
-          >
-            <SlidersHorizontal size={16} />
-          </IconButton>
-        {/if}
+        <!-- Every console, Rule or not: its own re-check is set up here (Codex 4653752396). -->
+        <IconButton
+          label={`More settings for ${platform.name}`}
+          active={open.has(platform.id)}
+          toggle
+          onclick={() => toggle(platform.id)}
+        >
+          <SlidersHorizontal size={16} />
+        </IconButton>
       </span>
       {#each warnings as w (w)}
         <p class="warn" role="status">{w}</p>
       {/each}
-      {#if (configured || check) && open.has(platform.id)}
+      {#if open.has(platform.id)}
         <div class="expanded">
           <RuleAdvanced
             {source}

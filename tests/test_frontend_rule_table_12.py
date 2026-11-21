@@ -86,15 +86,33 @@ process.stdout.write(JSON.stringify({
 
 def test_the_nightly_switch_reads_mixed_when_consoles_differ(tmp_path):
     data = _node(_plain(_TABLE) + """
-const ids = ['ps2', 'gc', 'gba'];
-const rules = { ps2: { mode: 'createdvd' }, gc: { mode: 'dolphin_rvz' } };
+const ids = ['ps2', 'gc'];
 process.stdout.write(JSON.stringify({
-  none: nightlyCheckState(ids, rules, {}),
-  some: nightlyCheckState(ids, rules, { ps2: { enabled: true } }),
-  all: nightlyCheckState(ids, rules, { ps2: { enabled: true }, gc: { enabled: true } }),
+  none: nightlyCheckState(ids, {}),
+  some: nightlyCheckState(ids, { ps2: { enabled: true } }),
+  all: nightlyCheckState(ids, { ps2: { enabled: true }, gc: { enabled: true } }),
 }));
 """, tmp_path)
     assert data == {"none": False, "some": "mixed", "all": True}
+
+
+def test_the_nightly_switch_covers_consoles_with_games_and_no_format(tmp_path):
+    """Codex 4653752396: games already compressed need no conversion Rule
+    to be re-checked every night."""
+    data = _node(_plain(_TABLE) + """
+const platforms = [{ id: 'ps2' }, { id: 'gc' }, { id: 'gba' }];
+const games = { ps2: 0, gc: 12, gba: 0 };
+const count = (p) => games[p.id];
+process.stdout.write(JSON.stringify({
+  covered: nightlyConsoles(platforms, { ps2: { mode: 'createdvd' } }, {}, count),
+  leftover: nightlyConsoles(platforms, {}, { gba: { enabled: true } }, () => 0),
+}));
+""", tmp_path)
+    assert data == {"covered": ["ps2", "gc"], "leftover": ["gba"]}
+    automation = (_COMPONENTS / "LibraryAutomation.svelte").read_text(encoding="utf-8")
+    body = automation[automation.index("function setNightly("):]
+    body = body[: body.index("\n  }\n")]
+    assert "on ? nightlyIds : Object.keys(source.checkRules)" in body
 
 
 _SOURCE_STUBS = """
@@ -350,20 +368,23 @@ def test_a_re_check_can_be_reached_without_a_format(tmp_path):
     """CodeRabbit 4652729352: "Don't convert" leaves the console's re-check;
     its settings and the nightly switch still reach it."""
     data = _node(_plain(_TABLE) + """
-const ids = ['ps2', 'gc'];
 process.stdout.write(JSON.stringify({
-  onlyChecks: nightlyCheckState(ids, {}, { ps2: { enabled: true } }),
-  none: nightlyCheckState(ids, {}, {}),
+  onlyChecks: nightlyCheckState(['ps2'], { ps2: { enabled: true } }),
+  none: nightlyCheckState([], {}),
 }));
 """, tmp_path)
     assert data == {"onlyChecks": True, "none": False}
+    # Every console row reaches More settings, with or without a Rule, so a
+    # console's own re-check can be set up (Codex 4653752396).
     table = (_COMPONENTS / "RuleTable.svelte").read_text(encoding="utf-8")
-    assert "{#if configured || check}" in table
-    assert "{#if (configured || check) && open.has(platform.id)}" in table
+    assert "configured || check" not in table
+    assert "{#if open.has(platform.id)}" in table
     advanced = (_COMPONENTS / "RuleAdvanced.svelte").read_text(encoding="utf-8")
     assert "{#if rule.mode}" in advanced
+    recheck = advanced.index("<legend>Re-check this console</legend>")
+    assert advanced.rindex("{#if rule.mode}", 0, recheck) < advanced.rindex("{/if}", 0, recheck)
     automation = (_COMPONENTS / "LibraryAutomation.svelte").read_text(encoding="utf-8")
-    assert "(converting.length === 0 && Object.keys(source.checkRules).length === 0)}" in automation
+    assert "|| nightlyIds.length === 0}" in automation
 
 
 def test_a_late_folder_save_never_undoes_a_later_choice():
