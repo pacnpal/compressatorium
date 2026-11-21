@@ -33,6 +33,23 @@ CHECKED_FILES = [
     "panels/SafetyOptions.svelte",
     "panels/CompressionPicker.svelte",
     "panels/ModeSelect.svelte",
+    # PR 3: Libraries.
+    "views/LibraryView.svelte",
+    "views/LibraryPlacement.svelte",
+    "views/RommSettings.svelte",
+    "library/LibraryBrowse.svelte",
+    "library/RommBrowse.svelte",
+    "library/LibraryAutomation.svelte",
+    "library/RuleTable.svelte",
+    "library/RuleAdvanced.svelte",
+    "library/WatchFolders.svelte",
+    "library/FrontendSelect.svelte",
+    # PR 5: Settings.
+    "settings/Connections.svelte",
+    "settings/HasheousQuestion.svelte",
+    "settings/Identification.svelte",
+    "settings/Defaults.svelte",
+    "views/NotificationSettings.svelte",
     # PR 4: Activity.
     "activity/ActivitySummary.svelte",
     "activity/NeedsAttention.svelte",

@@ -1,3 +1,9 @@
+<script module>
+  // The filters and page, kept across tab switches (Activity unmounts the
+  // list); a `?status=` in the URL still wins.
+  const kept = $state({ q: '', status: '', tool: '', platform: '', page: 1 });
+</script>
+
 <script>
   /**
    * Activity › History: every job that ran, kept across restarts. Check runs,
@@ -12,6 +18,7 @@
   import { registry } from '$lib/tools/registry.js';
   import { targetLabel } from '$lib/tools/convertTargets.js';
   import { findings } from '$lib/stores/findings.svelte.js';
+  import { ledger } from '$lib/stores/ledger.svelte.js';
   import Button from '$lib/components/ui/Button.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import Pager from '$lib/components/ui/Pager.svelte';
@@ -41,11 +48,15 @@
     return STATUSES.has(wanted) ? wanted : '';
   }
 
-  let q = $state('');
-  let status = $state(statusFromUrl());
-  let tool = $state('');
-  let platform = $state('');
-  let page = $state(1);
+  const fromUrl = statusFromUrl();
+  let q = $state(kept.q);
+  let status = $state(fromUrl || kept.status);
+  let tool = $state(kept.tool);
+  let platform = $state(kept.platform);
+  let page = $state(fromUrl && fromUrl !== kept.status ? 1 : kept.page);
+  $effect(() => {
+    Object.assign(kept, { q, status, tool, platform, page });
+  });
   let items = $state([]);
   let total = $state(0);
   let facets = $state({ status: [], tool: [], platform: [] });
@@ -286,7 +297,14 @@
         </table>
       </div>
       <footer class="foot">
-        <span class="count">{total} {total === 1 ? 'job' : 'jobs'}</span>
+        <span class="count">
+          {total} {total === 1 ? 'job' : 'jobs'}
+          {#if ledger.totals}
+            <!-- All time (#533): a retention prune never lowers these. -->
+            · all time: {ledger.totals.completed ?? 0} done, {ledger.totals.failed ?? 0} failed,
+            {ledger.totals.cancelled ?? 0} cancelled
+          {/if}
+        </span>
         <Pager {page} {pageCount} onpage={goto} />
       </footer>
     {/if}

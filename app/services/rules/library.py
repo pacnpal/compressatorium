@@ -70,17 +70,28 @@ def folder_holding(parent: str, path: str) -> str | None:
     so it raises :class:`AmbiguousFolder` instead (Codex PRRT_kwDOQ9nULM64Ki7x).
     Blocking; raises OSError when *parent* can't be listed.
     """
-    real = os.path.realpath(path)
-    holding = []
+    return folder_holder(parent)(path)
+
+
+def folder_holder(parent: str) -> Callable[[str], str | None]:
+    """:func:`folder_holding` for many paths: *parent* is listed and its
+    folders resolved once, here, so a listing of thousands of Images doesn't
+    list it again for each (Codex 4653575625). Raises OSError when *parent*
+    can't be listed."""
     with os.scandir(parent) as listing:
-        for entry in listing:
-            if entry.is_dir() and real.startswith(
-                os.path.realpath(entry.path).rstrip(os.sep) + os.sep,
-            ):
-                holding.append(entry.path)
-    if len(holding) > 1:
-        raise AmbiguousFolder(path, holding)
-    return holding[0] if holding else None
+        folders = [
+            (entry.path, os.path.realpath(entry.path).rstrip(os.sep) + os.sep)
+            for entry in listing if entry.is_dir()
+        ]
+
+    def holding_of(path: str) -> str | None:
+        real = os.path.realpath(path)
+        holding = [folder for folder, prefix in folders if real.startswith(prefix)]
+        if len(holding) > 1:
+            raise AmbiguousFolder(path, holding)
+        return holding[0] if holding else None
+
+    return holding_of
 
 
 def log_prefix(library: Any) -> str:

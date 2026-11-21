@@ -21,7 +21,7 @@
   import { libraries } from '$lib/stores/libraries.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
-  import { TERMINAL_STATUSES } from '$lib/stores/jobConstants.js';
+  import { TERMINAL_STATUSES, terminalJobIds } from '$lib/stores/jobConstants.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Badge from '$lib/components/ui/Badge.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
@@ -158,11 +158,18 @@
 
   // The Library filter, from the URL (`#/activity/attention/<library id>`).
   const libraryFilter = $derived(ui.activityLibrary ?? '');
-  const libraryOptions = $derived([
-    { value: '', label: 'All Libraries' },
-    ...[...new Map(findings.list.map((r) => [r.library_id, r.library_name])).entries()]
-      .map(([value, label]) => ({ value, label: label ?? value })),
-  ]);
+  const libraryOptions = $derived.by(() => {
+    const named = Object.fromEntries(findings.list.map((r) => [r.library_id, r.library_name]));
+    const seen = { has: (id) => Object.hasOwn(named, id) };
+    // A Library from the URL that has nothing listed is still the one shown.
+    if (libraryFilter && !seen.has(libraryFilter)) {
+      named[libraryFilter] = libraries.list.find((l) => l.id === libraryFilter)?.name;
+    }
+    return [
+      { value: '', label: 'All Libraries' },
+      ...Object.entries(named).map(([value, label]) => ({ value, label: label ?? value })),
+    ];
+  });
   const rows = $derived(
     libraryFilter ? findings.list.filter((r) => r.library_id === libraryFilter) : findings.list,
   );
@@ -177,13 +184,20 @@
   });
 
   // How many conversions failed in the last day: a line that links to them.
+  // Read again whenever a job ends; only the newest read may write.
   let failedToday = $state(0);
+  let failedRead = 0;
+  const ended = $derived(terminalJobIds(jobs.jobs).join(','));
+  $effect(() => {
+    void ended;
+    const mine = ++failedRead;
+    api.getLedgerPage({ status: 'failed', since: '24h', limit: 1 })
+      .then((page) => { if (mine === failedRead) failedToday = page?.total ?? 0; })
+      .catch(() => {});
+  });
   onMount(() => {
     fileBrowser.volumes.length || fileBrowser.fetchVolumes();
     findings.loadPlatforms().catch(() => {});
-    api.getLedgerPage({ status: 'failed', since: '24h', limit: 1 })
-      .then((page) => { failedToday = page?.total ?? 0; })
-      .catch(() => {});
   });
 
   // Lists again when a find-duplicates run (#388) ends while the view is open,
@@ -273,29 +287,43 @@
     }
   }
 
+  // The rows with an action in flight, by id: a second click waits for it.
+  let busy = $state({});
+  const settle = (id) => {
+    const { [id]: _done, ...rest } = busy;
+    busy = rest;
+  };
+
   async function undismiss(row) {
+    if (busy[row.id]) return;
+    busy = { ...busy, [row.id]: true };
     try {
       await findings.undismiss(row.id);
     } catch (e) {
       toast.error(e?.message ?? "Couldn't show it again");
       // A 409 means the row changed since it was listed: show what it is now.
       findings.load();
+    } finally {
+      settle(row.id);
     }
   }
 
   async function dismiss(row) {
+    if (busy[row.id]) return;
+    busy = { ...busy, [row.id]: true };
     try {
       await findings.dismiss(row.id);
       toast.success(`Ignored until it changes: ${gameName(row)}`);
     } catch (e) {
       toast.error(e?.message ?? "Couldn't ignore it");
       findings.load();
+    } finally {
+      settle(row.id);
     }
   }
 
-  // Place it: the console picked for each row (by id), and the rows placing.
-  let picked = $state({});
-  let placing = $state({});
+  // Place it: the console picked for each row is kept in the store
+  // (`findings.placeChoices`), so switching tabs doesn't lose it.
 
   // The consoles to offer: the ones the file or its folder name first, then
   // the rest by name.
@@ -310,21 +338,23 @@
         .map((p) => ({ value: p.slug, label: p.name })),
     ];
   }
-  const choiceOf = (row) => picked[row.id] ?? row.cause?.header ?? '';
+  const choiceOf = (row) => findings.placeChoices[row.id] ?? row.cause?.header ?? '';
 
   async function place(row) {
     const platform = choiceOf(row);
     if (!platform) return;
-    placing = { ...placing, [row.id]: true };
+    if (busy[row.id]) return;
+    busy = { ...busy, [row.id]: true };
     try {
       await findings.place(row.id, platform);
+      const { [row.id]: _placed, ...left } = findings.placeChoices;
+      findings.placeChoices = left;
       toast.success(`Placing ${gameName(row)} as ${consoleName(platform)}…`);
     } catch (e) {
       toast.error(e?.message ?? "Couldn't place it");
       findings.load();
     } finally {
-      const { [row.id]: _done, ...rest } = placing;
-      placing = rest;
+      settle(row.id);
     }
   }
 
@@ -467,14 +497,6 @@
               >
                 Pick console
               </Button>
-            {:else if about.fix === 'folder'}
-              <Button
-                variant="ghost" size="sm" icon={openIcon}
-                ariaLabel={`Open the folder of ${findingName(row)}`}
-                onclick={() => fileBrowser.openFolder(row.folder)}
-              >
-                Open folder
-              </Button>
             {:else if about.fix === 'duplicates'}
               {#if row.kind === 'duplicate' && row.deletable && row.keeper}
                 <Button
@@ -499,12 +521,12 @@
                   ariaLabel={`The console of ${gameName(row)}`}
                   value={choiceOf(row)}
                   options={consoleOptions(row)}
-                  onchange={(v) => (picked = { ...picked, [row.id]: v })}
+                  onchange={(v) => (findings.placeChoices = { ...findings.placeChoices, [row.id]: v })}
                 />
                 <Button
                   size="sm" icon={placeIcon}
                   disabled={!choiceOf(row)}
-                  loading={!!placing[row.id]}
+                  loading={!!busy[row.id]}
                   onclick={() => place(row)}
                 >
                   Place it
@@ -520,10 +542,20 @@
                 Delete
               </Button>
             {/if}
+            {#if row.folder}
+              <Button
+                variant="ghost" size="sm" icon={openIcon}
+                ariaLabel={`Open the folder of ${findingName(row)}`}
+                onclick={() => fileBrowser.openFolder(row.folder)}
+              >
+                Open folder
+              </Button>
+            {/if}
             {#if row.dismissed}
               <Button
                 variant="ghost" size="sm" icon={showIcon}
                 ariaLabel={`Show ${findingName(row)} again`}
+                disabled={!!busy[row.id]}
                 onclick={() => undismiss(row)}
               >
                 Show again
@@ -532,6 +564,7 @@
               <Button
                 variant="ghost" size="sm" icon={dismissIcon}
                 ariaLabel={`Ignore ${findingName(row)}`}
+                disabled={!!busy[row.id]}
                 onclick={() => dismiss(row)}
               >
                 Ignore

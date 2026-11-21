@@ -85,9 +85,9 @@ Compressatorium can sync [MAME Redump](https://github.com/MetalSlug/MAMERedump) 
 - **Dolphin RVZ/WIA/GCZ**: Matched via the game image's content SHA1 reconstructed by `dolphin-tool verify` — the same hash MAME Redump records for GameCube/Wii discs — so compressed Dolphin outputs match without the container bytes having to be identical
 - **Everything else** (3DS/Switch/CSO·ZSO·DAX/`.iso`/`.bin`): Matched via file-level SHA1
 - **Library scan**: The background scan discovers and DAT-matches tool outputs by extension (CHD, Dolphin RVZ/WIA/GCZ, 3DS, Switch, CSO/ZSO, `.iso`, and the `.bin` data track from CHDMAN extract), not just CHDs, so non-CHD libraries get cached match results too. A single PS3-packed `.iso` is matched like any other `.iso`; a 4 GB split set is not, since its `.iso.0`/`.iso.1` parts aren't scanned extensions. Heavy Dolphin disc-hashing during the scan honors `MATCH_MAX_FILE_SIZE` and stops promptly if you cancel the scan.
-- **Sync Redump in one click**: **Sync Redump** in the DAT Library downloads Redump's DAT for each disc Platform in your Libraries (PlayStation, PS2, GameCube, Saturn, Dreamcast, Xbox and more), one request at a time. A system synced in the last day isn't asked again. DATs only: never keys, BIOS or games
-- **Import packs**: **Import DATs** takes several `.dat`/`.xml` files at once, and zips of them, such as No-Intro's daily pack (No-Intro's site can't be scripted, so download the pack there and drop the zip in). Re-importing a DAT replaces the older copy
-- **DAT management**: Import, list, reorder and delete DATs in the DAT Library
+- **Sync Redump in one click**: **Get Redump lists for my consoles** in Settings → Game identification downloads Redump's DAT for each disc Platform in your Libraries (PlayStation, PS2, GameCube, Saturn, Dreamcast, Xbox and more), one request at a time. A system synced in the last day isn't asked again. DATs only: never keys, BIOS or games
+- **Import packs**: **Import game lists…** takes several `.dat`/`.xml` files at once, and zips of them, such as No-Intro's daily pack (No-Intro's site can't be scripted, so download the pack there and drop the zip in). Re-importing a DAT replaces the older copy
+- **DAT management**: Import, list, reorder and delete DATs in Settings → Game identification
 - **From a shell**: `compressatorium dat import PATH...` and `compressatorium dat sync` (see [Command line](#command-line-compressatorium))
 - **Match badges**: Files matching a DAT entry show a blue "DAT" badge in the file list
 - **Wider coverage without curating DATs**: see [Hasheous Integration](#hasheous-integration-optional) to fall back on 14 preservation databases for anything your imported DATs don't recognise
@@ -101,11 +101,11 @@ at once. Turn it on and every hash your imported DATs *don't* recognise is
 looked up there, so your library gets identified without you curating DATs for
 every system you own.
 
-**Setup is one click.** Open **DAT Library** in the web UI and press **Turn on**
-in the Hasheous panel. It takes effect immediately — no restart, no editing
-`docker-compose.yml` — and the choice is saved, so it survives restarts. A
-**Test** button next to it confirms the server is reachable and reports the
-round-trip time.
+**Setup is one click.** Open **Settings → Connections** in the web UI and tick
+**Identify games online (Hasheous)** (the first visit asks once). It takes effect
+immediately — no restart, no editing `docker-compose.yml` — and the choice is
+saved, so it survives restarts. Turning it on checks that the server answers and
+says so under the switch.
 
 **No account, no API key, no signup** — the hash-lookup endpoint is public.
 
@@ -216,7 +216,7 @@ until you open it, or until you run a rescan.
 Enabling this sends **the SHA1 of your files** (and nothing else — no filenames,
 no paths, no account identifier) to whatever server `COMPRESSATORIUM_HASHEOUS_URL`
 points at. That is why it ships **off**, and why nothing is transmitted at all
-until you enable it — either with the toggle in the DAT Library or by setting
+until you enable it — either with the switch in Settings → Connections or by setting
 the variable. Requests are HTTPS-only, and a redirect that would
 downgrade to plain HTTP is refused rather than followed.
 
@@ -244,16 +244,15 @@ Those files are retried the next time you browse or rescan them.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `COMPRESSATORIUM_HASHEOUS_ENABLED` | `false` | Starting state of the master switch. The **DAT Library** toggle overrides it and persists. |
+| `COMPRESSATORIUM_HASHEOUS_ENABLED` | `false` | Starting state of the master switch. The switch in **Settings → Connections** overrides it and persists. |
 | `COMPRESSATORIUM_HASHEOUS_URL` | `https://hasheous.org` | Point at your own instance. Must be `https`. |
 | `COMPRESSATORIUM_HASHEOUS_TIMEOUT` | `15` | Whole-request timeout in seconds, from the TCP connect to the last byte: every address the host resolves to (one budget between them, not one each), a proxy `CONNECT` tunnel, headers and body. Not per socket read, so a server or proxy dripping the *response* a byte at a time can't stall a scan. Two things sit outside the budget: **name resolution** — `getaddrinfo` runs before any socket exists, so a stalled resolver is bounded by `/etc/resolv.conf` instead — and **a dripping TLS handshake**, which gets the remaining budget as its socket timeout (a peer that stalls or dies mid-handshake is bounded) but not a per-record deadline, so a peer trickling handshake records can outlast it. Both raise eventually, and the 60s cooldown then opens. This call sits in the file-browse path, so keep it short. |
 
 Legacy short names (`HASHEOUS_ENABLED`, `HASHEOUS_URL`, `HASHEOUS_TIMEOUT`) are
 accepted as aliases.
 
-The DAT Library page shows the live state — on or off, which server it is
-pointed at, whether the setting came from the toggle or the environment, and a
-**Test** button that reports reachability and latency.
+Settings → Connections shows the live state: on or off, and whether Hasheous
+answered when it was turned on.
 
 Changing `COMPRESSATORIUM_HASHEOUS_URL` re-checks previously-unmatched files
 against the new server automatically — cached "no match" verdicts record *which*
@@ -486,7 +485,7 @@ Failed tabs link to the Ledger for the rest.
 
 ### Notifications
 
-Open **Settings** and add a webhook URL or an [Apprise](https://github.com/caronc/apprise)
+Open **Settings → Notifications** and add a webhook URL or an [Apprise](https://github.com/caronc/apprise)
 URL (Discord, Telegram, ntfy, email and many more) to hear about finished work.
 Nothing leaves the server until you add a destination. You get:
 
@@ -681,8 +680,10 @@ on every folder open.
 
 ### DAT matching
 
-Sync the MAMERedump DATs from the DAT Library (or import your own `.dat`/`.xml`
-from No-Intro/Redump) and converted files are checked against known-good hashes —
+Open **Settings → Game identification** and press **Get Redump lists for my
+consoles** or **Update MAME Redump**, or **Import game lists…** to add your own
+`.dat`/`.xml` files or zips from No-Intro or Redump, and converted files are
+checked against known-good hashes —
 a blue DAT badge means the file matches. CHDs match on the codec-independent header
 SHA1, and Dolphin RVZ/WIA/GCZ match on the game image's content SHA1 reconstructed by
 `dolphin-tool verify --algorithm sha1` (the same hash Redump records), so **any
@@ -691,11 +692,21 @@ aren't synced, the title isn't in the DAT, or the file is larger than
 `MATCH_MAX_FILE_SIZE` (which skips the expensive full-disc reconstruction) — not that
 the file is bad.
 
+When two game lists know the same game, the higher one names it: open **Name
+order** under the lists to move them. To look up games no list knows, turn on
+**Identify games online (Hasheous)** in **Settings → Connections**. Turning it on
+checks that Hasheous answers, and the first visit asks once whether you want it.
+
+**Settings → Defaults** sets what new conversions start with: check each new file,
+delete the original once it checks out, the compression for each format (the same
+one the Convert panel remembers), and how long History keeps its rows (forever,
+30 days, 90 days or a year).
+
 ### Rename to DAT name
 
 Tick Images in the file browser and press **Rename to DAT name**. Each
 Recognized Image takes the name the top-ranked DAT gives it (see the DAT
-order under [DAT Library](#dat-library)), keeping its own extension: a
+order under [Game identification](#game-identification)), keeping its own extension: a
 `game.iso` matched by Redump's `Ico (USA)` becomes `Ico (USA).iso`.
 Characters some filesystems can't hold (`< > : " / \ | ? *`) become `_`.
 
@@ -775,21 +786,21 @@ extension-matching, so a new console never leaves you with an unconvertible row.
 
 #### Setting it up
 
-1. Open **RomM → Settings**. On first run Compressatorium looks for RomM at
-   `http://romm:8080` (RomM's own container name and port) and a couple of
-   other usual addresses, and offers **Found RomM at …: Use it**. Otherwise
-   type the address you open RomM at.
+1. Open **Libraries → RomM → Connection**. On first run Compressatorium looks
+   for RomM at `http://romm:8080` (RomM's own container name and port) and a
+   couple of other usual addresses, and offers **Found RomM at …: Use it**.
+   Otherwise type the address you open RomM at.
 2. In RomM, open **Client API Tokens**, create a token, and press **Pair**.
    Type the short code into **Pairing code or API token** (RomM 4.8 and newer).
    On an older RomM, paste the `rmm_…` token instead. Grant `platforms.read`
-   and `roms.read`, plus `roms.write` (metadata restore after converting) and
-   `tasks.run` (keeping the ROM id, Inbox scans). RomM hands out `roms.write`
-   and `tasks.run` only to an admin user (or a user in a group that has them),
-   so create the token as one. Pairing gives the token a new secret, so
-   anything else that used it needs the new one.
-3. Mount RomM's library folder into the Compressatorium container, inside a
-   configured Compressatorium volume. Leave **Library path** empty: Save finds
-   it by matching RomM's platform folders against the volumes.
+   and `roms.read`, plus `roms.write` (keeping RomM's details after converting)
+   and `tasks.run` (keeping the same RomM entry, watch-folder scans). RomM hands
+   out `roms.write` and `tasks.run` only to an admin user (or a user in a group
+   that has them), so create the token as one. Pairing gives the token a new
+   secret, so anything else that used it needs the new one.
+3. Mount RomM's library folder into the Compressatorium container, on one of
+   your Drives. Leave **Where RomM's games are** empty: Save finds it by
+   matching RomM's console folders against your Drives.
 4. Press **Save**. It tests the connection first and saves only when it works.
 
 The test reports three things separately, because they fail independently and
@@ -901,7 +912,7 @@ never disturbs the other.
 
 RomM won't convert a ROM it couldn't identify, and it identifies through
 network services that miss a lot. Many of those ROMs are clean dumps your own
-DATs or Hasheous know. Tick **Unidentified in RomM** on the Library tab to list
+DATs or Hasheous know. Tick **Unidentified in RomM** on RomM's **Browse** tab to list
 only the ROMs RomM couldn't identify, with a count of how many of them the app
 Recognizes and, beside each one it does, the name its DAT or Hasheous gives it.
 The list reads the matches the app already has and never starts hashing by
@@ -915,14 +926,14 @@ Hasheous match for its file is a hit, so a Rule set to **Only Recognized**
 converts these too. A Rule set to **only ROMs RomM could not identify** keeps
 reading RomM's verdict alone.
 
-Turn on **Write Hasheous ids onto converted ROMs** (RomM **Settings →
-Metadata**, off by default) and, after converting a ROM the app found through
+Turn on **Add online IDs to converted games** (RomM's **Connection** tab,
+under **More**, off by default) and, after converting a ROM the app found through
 Hasheous, the provider ids Hasheous returned (IGDB, TheGamesDB and the rest
 RomM stores) are written onto the ROM in RomM, so it shows the cover and
 description. Only ids the ROM doesn't already have are written: a match RomM
 made is never replaced. They travel with the metadata snapshot, so they land
 once RomM knows the converted file (its next scan, or the rehash after keeping
-the ROM id), and it needs **Save metadata before converting** on. They are
+the ROM id), and it needs **Keep RomM's details (cover, notes, play history) when converting** on. They are
 written for every output format, CHD and 7z included, since RomM never matched
 these ROMs in the first place.
 
@@ -931,15 +942,15 @@ zip and 7z archives, so an archived library isn't stuck.
 
 | Light | Dark |
 |-------|------|
-| ![Unidentified in RomM filter, light](docs/screenshots/romm-unidentified-light.png) | ![Unidentified in RomM filter, dark](docs/screenshots/romm-unidentified-dark.png) |
-| ![Write Hasheous ids switch, light](docs/screenshots/romm-hasheous-ids-light.png) | ![Write Hasheous ids switch, dark](docs/screenshots/romm-hasheous-ids-dark.png) |
+| ![RomM's Browse tab with the Unidentified in RomM filter, light](docs/screenshots/romm-browse-light.png) | ![RomM's Browse tab with the Unidentified in RomM filter, dark](docs/screenshots/romm-browse-dark.png) |
+| ![More on RomM's Connection tab, light](docs/screenshots/romm-more-light.png) | ![More on RomM's Connection tab, dark](docs/screenshots/romm-more-dark.png) |
 
 #### Keeping the ROM id
 
 Converting a game and deleting its source normally leaves RomM a new file and a
 missing one: RomM adds a new game, and the old one keeps your saves, states,
-notes, collections and play history. Turn on **Keep the ROM id when converting**
-on the RomM **Settings** tab (the token needs `roms.read`, `roms.write` and
+notes, collections and play history. Turn on **Keep the same RomM entry when the file changes**
+(RomM's **Connection** tab, under **More**) (the token needs `roms.read`, `roms.write` and
 `tasks.run`; turning it on checks) and a conversion renames RomM's record to the new
 file instead, so the game keeps its id and everything on it. It works for a
 single-file game (an `.iso`, say) converted to one file beside it, when the
@@ -1042,7 +1053,7 @@ games (`.cue`/`.bin`) and anything else keep the usual behaviour.
 
 #### Formats RomM re-identifies by itself
 
-With **Keep the ROM id when converting** off, some conversions shouldn't
+With **Keep the same RomM entry when the file changes** off, some conversions shouldn't
 need the metadata re-pin: RomM finds the game again on its own. RomM 5.4.1,
 with title-id extraction on (its default), moves a missing ROM onto its
 converted file by the game's title id at its next library scan, keeping the
@@ -1092,7 +1103,7 @@ RomM's target and the Rule's side by side. Platforms RomM can't convert at all
 are marked too, since only Compressatorium converts those. A RomM without the
 converter, or with it off, shows none of this.
 
-The banner's **Import RomM's targets as Rules** button turns RomM's targets into
+With RomM's own converter on, RomM's **Automation** tab says so, and its **Use RomM's choices** button turns RomM's targets into
 Rules, for Platforms that have no Rule yet. Each RomM target is mapped onto a
 mode here that writes the same format (`chd` on PlayStation becomes CHDMAN's CD
 mode, `rvz` on GameCube becomes Dolphin RVZ, `zar` on Xbox 360 becomes
@@ -1104,25 +1115,41 @@ them on in Automation once you've switched RomM's converter off.
 
 | Light | Dark |
 |-------|------|
-| ![RomM's converter banner, light](docs/screenshots/romm-converter-light.png) | ![RomM's converter banner, dark](docs/screenshots/romm-converter-dark.png) |
-| ![RomM converter flags on Rules, light](docs/screenshots/romm-converter-rules-light.png) | ![RomM converter flags on Rules, dark](docs/screenshots/romm-converter-rules-dark.png) |
-| ![Keep the ROM id switch, light](docs/screenshots/romm-swap-light.png) | ![Keep the ROM id switch, dark](docs/screenshots/romm-swap-dark.png) |
+| ![RomM's converter on the Automation tab, light](docs/screenshots/romm-converter-light.png) | ![RomM's converter on the Automation tab, dark](docs/screenshots/romm-converter-dark.png) |
+| ![Keep the same RomM entry, under More, light](docs/screenshots/romm-more-light.png) | ![Keep the same RomM entry, under More, dark](docs/screenshots/romm-more-dark.png) |
 
-### Folder Libraries and the Rules view
+### Folder Libraries
 
-You don't need RomM to automate conversions. Open any folder inside a Volume in
-the Workspace, and pick **Register as a Library** from its row menu. The folder
-becomes a Library, and the **Rules** view (in the sidebar) shows it.
+You don't need RomM to automate conversions. In **Libraries**, press **Add a
+Library** and pick a folder on a Drive (a Drive's own top folder works too), or
+open the folder in **Files** and pick **Make this folder a Library**. Its page
+has two tabs:
 
-Any folder can be registered, even one inside RomM's library folder or inside
+- **Browse** lists its consoles, how many games each has and the folder they're
+  in, each with **Open** into Files. Games no console can be told for are
+  counted at the top, with a link to fix them in Activity.
+- **Automation** is one table, a row per console, with three choices: what to
+  **Convert to**, **Check after**, and **Delete original** (only once the new
+  file checks out; on, it turns the check on too). **Apply recommended** sets
+  every console with games and no format yet to its best one, checks every new
+  file and keeps originals; a console you set is never changed. Every change
+  saves on its own ("Saving…", "Saved"). The sliders button on a row opens
+  the rest: compression, where new files go, which games, when it runs, and a
+  nightly re-check. **Convert automatically** turns the scheduler on, and
+  **Re-check games every night** turns the re-check on for every console that has
+  games or converts, already-compressed ones included; a console with no
+  format can still set up its own re-check from the sliders button. Below the table sit the Library's [watch folders](#watch-folders),
+  **Where new games go**, and the **Game list app** it feeds.
+
+Any folder can be a Library, even one inside RomM's library folder or inside
 or around another Library. Where Libraries overlap, each file belongs to the
-Library with the nearest folder: that Library's Rules and settings (its
-gamelist, for one) apply to it, and the Library around it leaves it alone, so
-no file is ever converted twice. The Rules view says which Library sits inside
-which. Only the same folder twice, and a Library overlapping an Inbox, are
-refused.
+Library with the nearest folder: that Library's settings (its game list app,
+for one) apply to it, and the Library around it leaves it alone, so no file is
+ever converted twice. The Library's page says which Library it sits inside and
+which sit inside it. Only the same folder twice, and a Library overlapping a
+watch folder, are refused.
 
-What a folder Library shows and does:
+How it works underneath:
 
 - **Images** are what gets converted, not files: a `.cue` or `.gdi` and the
   tracks it lists are one Image (the sheet), and a split Wii U dump is one Image
@@ -1152,12 +1179,13 @@ What a folder Library shows and does:
   nobody has matched yet is neither: both filters skip it, so run a DAT match
   over the folder first.
 - **Preview** shows what a sweep would queue and moves no schedule clock. **Run
-  now** queues it. **Run automatically** turns the scheduler on for that Library.
+  now** queues it. **Convert automatically** turns the scheduler on for that
+  Library. Both save any change still waiting first.
 - If the folder cannot be reached during a run (a NAS rebooting, a mount
   dropping), that run says so and queues nothing; the next run checks again.
-- **Layout** says where a Platform's Images go: ES-DE / Batocera style
-  (`<root>/ps2`, the default), RomM style (`<root>/roms/ps2`) or flat (every
-  Image in the root, sorted by its header). **Where new Images go** lists the
+- **Folder style** says where a console's games go: one folder per console
+  (ES-DE, Batocera: `<root>/ps2`, the default), RomM style (`<root>/roms/ps2`)
+  or all in one folder (sorted by each game's header). **Where new games go** lists the
   folder for each Platform, named the way Platform detection reads it (an
   existing `GameCube` folder, or a new `gc` one), and marks a folder that will
   be created. Two folders for one Platform are shown as "can't tell" instead
@@ -1170,16 +1198,21 @@ What a folder Library shows and does:
   list on that row and the choice is kept. Before RomM has a `roms` folder,
   RomM's default `roms/<platform>` is used, marked as a best guess too. Junk
   folders RomM scanned as platforms (Synology's `@eaDir`) are left out.
-- **Remove Library** forgets the Library and its Rules. It never touches a file.
+- **Remove Library** (the `⋯` menu, beside **Find duplicates**, **Open folder in
+  Files** and **Rename…**) forgets the Library and its Rules. It never touches a
+  file.
 
-The RomM view's **Automation** tab is the same Rules view, opened on RomM.
+RomM's **Automation** tab is the same table, on RomM's consoles.
 
-### Inboxes
+### Watch folders
 
-An Inbox is a folder whose new files are taken into one Library: point it at
-your downloads folder and new games are sorted into the Library for you. In the
-Rules view, pick the Library and type the folder under **Inboxes**, with how
-long a file must stay unchanged before it's taken (60 seconds by default).
+A watch folder (an Inbox, in the API) is a folder whose new files are taken
+into one Library: point it at your downloads folder and new games are sorted
+into the Library for you. On the Library's **Automation** tab, press **Add a
+watch folder** and pick the folder; a file is taken once it has stayed the same
+for a minute. Each row says when it was last checked, how many are still
+downloading, how many need you (a link to Activity) and how many were taken in,
+and re-reads every 15 seconds.
 
 - The folder must be inside a Volume, and can't be inside a Library or hold
   one (intake would read its own output, or take another Library's Images). A
@@ -1262,14 +1295,15 @@ Unpacking archives and naming from a DAT are on the way (#432).
 ### Sonarr / Radarr / ROMarr
 
 Sonarr, Radarr and [ROMarr](https://github.com/BlizzHacker/romarr) can tell
-the app the moment they import a file, so an Inbox takes it in at once, with
-no polling and no settle wait. Point the *arr's root (or completed downloads)
-folder at an [Inbox](#inboxes), then in the *arr open **Settings →
+the app the moment they import a file, so a watch folder takes it in at once,
+with no polling and no settle wait. Point the *arr's root (or completed
+downloads) folder at a [watch folder](#watch-folders), then in the *arr open **Settings →
 Connect → + → Webhook** and set:
 
 - **On Import** (and **On Upgrade**) ticked; the other triggers are ignored.
-- **URL**: the one shown in the Rules view under **Sonarr, Radarr and ROMarr**
-  (with a Copy button), `http://<this app>:8080/api/hooks/arr`.
+- **URL**: the one shown on a Library's **Automation** tab, under its watch
+  folders, in **Send games here from Sonarr, Radarr or ROMarr** (with a Copy
+  button), `http://<this app>:8080/api/hooks/arr`.
 - **Method** POST, and one **Header**: `X-Chd-Action-Confirm` = `scan`.
 - When the app's login is on: **Username** as set (`admin` by default) and
   **Password** your API token.
@@ -1280,10 +1314,19 @@ Press **Test** in the *arr: it passes once the URL, header and login are right.
 (it sees `/downloads`, this app sees `/data/downloads`), add a **path
 rewrite** in the same card: the longest matching folder wins, as in Autoscan.
 Type a path as the *arr sees it into **Test a path**: the card says where it
-lands and whether an Inbox takes it, and when it can find the file under one
-of your Volumes it suggests the rewrite, one click to add. Paths the *arrs
-sent lately are listed with the same answer. A rewritten path must still be
-inside a Volume and inside an Inbox; anything else is refused and left alone.
+lands and whether a watch folder or a Library takes it, and when it can find
+the file under one of your Drives it suggests the rewrite, one click to add.
+Paths the *arrs sent lately are listed with the same answer. A rewritten path
+must still be on a Drive, and inside a watch folder or a Library; anything else
+is refused and left alone.
+
+**Imported straight into a Library.** When the *arr's root folder is a
+Library's console folder rather than a watch folder, the import runs that
+console's settings for it at once, as **Run now** would: only when the Library
+converts on its own (**Convert automatically**), the console is set to convert
+and on, and its hours allow. Otherwise the answer says why, and the next
+scheduled run takes it. The console's nightly re-check never runs for an
+import.
 
 **Scripts, and ROMarr's custom script.** `POST /api/scan` with
 `{"path": "/data/downloads/ps2/Game.iso"}` (a file or a folder) or
@@ -1302,9 +1345,9 @@ was skipped, with why.
 
 A check Rule checks Images instead of converting them: it has no target format.
 A Platform can have one beside its conversion Rule, so "convert PS2 to CHD" and
-"check PS2 nightly" work together. Expand a Platform in the Rules view, on a
-folder Library or on RomM, tick **Check these Images are Intact**, and set how
-much to read a night ("check 50 GB a night"), a time window and weekdays:
+"check PS2 nightly" work together. Open a console's **More settings** on a
+Library's **Automation** tab, on a folder Library or on RomM, tick **Re-check
+games every night**, and set how much to read a night ("check 50 GB a night"), a time window and weekdays:
 
 - A check Rule runs once per window, on each weekday you allow, on its own
   clock: the conversion Rule on the same Platform keeps its own. A run that
@@ -1357,7 +1400,7 @@ ends, History has the run.
 
 ### Finding duplicates
 
-**Find duplicates** (in the Rules view, beside a folder Library's name) looks
+**Find duplicates** (in a folder Library's `⋯` menu) looks
 for the same disc stored more than once in that Library, even in different
 containers: `Game.iso`, the `Game.rvz` made from it and a DVD `Game.chd` are
 one disc.
@@ -1771,94 +1814,62 @@ What needs you, what's running and everything that ran, with the summary strip o
 |-------|------|
 | ![Activity, light](docs/screenshots/activity-light.png) | ![Activity, dark](docs/screenshots/activity-dark.png) |
 
-#### RomM library
+#### Libraries
 
-Connect a [RomM](https://romm.app) instance and browse your library by platform — real game names instead of filenames, and the platform tells Compressatorium what a bare `.iso` actually is. Everything is configured in the app; this is the first-run setup. See [RomM integration](#romm-integration).
-
-| Light | Dark |
-|-------|------|
-| ![RomM setup, light](docs/screenshots/romm-light.png) | ![RomM setup, dark](docs/screenshots/romm-dark.png) |
-
-RomM found on first run, then a Save whose connection test names the field to fix, with **Retry**:
+Every Library on one page, RomM first, each with its consoles, games, whether
+it converts on its own, and anything that needs you. With none yet, the page
+says how to start. See [Folder Libraries](#folder-libraries).
 
 | Light | Dark |
 |-------|------|
-| ![Connecting RomM, light](docs/screenshots/romm-connect-light.png) | ![Connecting RomM, dark](docs/screenshots/romm-connect-dark.png) |
+| ![Libraries, light](docs/screenshots/libraries-light.png) | ![Libraries, dark](docs/screenshots/libraries-dark.png) |
+| ![No Libraries yet, light](docs/screenshots/libraries-empty-light.png) | ![No Libraries yet, dark](docs/screenshots/libraries-empty-dark.png) |
 
-Per-platform automation — target format, schedule, queueing limits and selection filters for each platform independently:
-
-| Light | Dark |
-|-------|------|
-| ![RomM automation, light](docs/screenshots/romm-automation-light.png) | ![RomM automation, dark](docs/screenshots/romm-automation-dark.png) |
-
-A Rule open in the editor. A Rule that deletes its source Round-trips the new file first unless *Container check only* is ticked:
+**Add a Library** picks a folder by walking the Drives, never by typing a path.
 
 | Light | Dark |
 |-------|------|
-| ![RomM rule editor, light](docs/screenshots/romm-rule-editor-light.png) | ![RomM rule editor, dark](docs/screenshots/romm-rule-editor-dark.png) |
-#### Rules on a folder Library
+| ![Add a Library, light](docs/screenshots/library-add-light.png) | ![Add a Library, dark](docs/screenshots/library-add-dark.png) |
 
-A folder registered as a Library, with the Platforms found in it, its Unsorted and Conflicted counts, and a PS2 Rule. See [Folder Libraries and the Rules view](#folder-libraries-and-the-rules-view).
+#### One Library
 
-| Light | Dark |
-|-------|------|
-| ![Rules view on a folder Library, light](docs/screenshots/rules-folder-light.png) | ![Rules view on a folder Library, dark](docs/screenshots/rules-folder-dark.png) |
-
-#### Sonarr / Radarr / ROMarr webhook
-
-The webhook URL and header to copy, and a path tested as the *arr sees it, with the rewrite suggested from the Volumes. See [Sonarr / Radarr / ROMarr](#sonarr--radarr--romarr).
+**Browse** lists its consoles and their folders. **Automation** is a row per
+console: Convert to, Check after, Delete original, and **Apply recommended**
+to set them all at once. The sliders button opens the rest, the nightly
+re-check included (see [Check Rules](#check-rules)).
 
 | Light | Dark |
 |-------|------|
-| ![Webhook card, light](docs/screenshots/arr-hook-light.png) | ![Webhook card, dark](docs/screenshots/arr-hook-dark.png) |
+| ![A Library's consoles, light](docs/screenshots/library-browse-light.png) | ![A Library's consoles, dark](docs/screenshots/library-browse-dark.png) |
+| ![The console table after Apply recommended, light](docs/screenshots/library-automation-light.png) | ![The console table after Apply recommended, dark](docs/screenshots/library-automation-dark.png) |
+| ![A console's More settings with its nightly re-check, light](docs/screenshots/library-automation-advanced-light.png) | ![A console's More settings with its nightly re-check, dark](docs/screenshots/library-automation-advanced-dark.png) |
 
-#### EmulationStation frontend switch
-
-The same folder Library with its **Frontend** set to Batocera or Knulli, so conversions update the `gamelist.xml` in each Platform folder. The note says to close ES-DE first.
-
-| Light | Dark |
-|-------|------|
-| ![EmulationStation frontend switch, light](docs/screenshots/rules-es-frontend-light.png) | ![EmulationStation frontend switch, dark](docs/screenshots/rules-es-frontend-dark.png) |
-
-#### ES-DE gamelists folder
-
-ES-DE picked in the Frontend select: the Volumes are searched for ES-DE's gamelists folder (none in this demo), and a folder is typed in and ready to save.
+Its [watch folders](#watch-folders), where new games go, and the game list app
+it feeds sit under the table.
 
 | Light | Dark |
 |-------|------|
-| ![ES-DE gamelists folder, light](docs/screenshots/rules-esde-gamelists-light.png) | ![ES-DE gamelists folder, dark](docs/screenshots/rules-esde-gamelists-dark.png) |
+| ![Watch folders, light](docs/screenshots/library-watch-folders-light.png) | ![Watch folders, dark](docs/screenshots/library-watch-folders-dark.png) |
+| ![Where new games go, light](docs/screenshots/library-placement-light.png) | ![Where new games go, dark](docs/screenshots/library-placement-dark.png) |
+| ![Game list app, light](docs/screenshots/library-frontend-light.png) | ![Game list app, dark](docs/screenshots/library-frontend-dark.png) |
+| ![Send games here from Sonarr, Radarr or ROMarr, light](docs/screenshots/library-arr-light.png) | ![Send games here from Sonarr, Radarr or ROMarr, dark](docs/screenshots/library-arr-dark.png) |
 
-#### Library layout
-
-The folder Library's layout picker and where new Images of each of its Platforms would land. See [Folder Libraries and the Rules view](#folder-libraries-and-the-rules-view).
-
-| Light | Dark |
-|-------|------|
-| ![Library layout, light](docs/screenshots/rules-folder-layout-light.png) | ![Library layout, dark](docs/screenshots/rules-folder-layout-dark.png) |
-
-#### A Library inside a Library
-
-A folder Library registered inside another one: its Rules view says which Library it sits inside, and that its files are its own. See [Folder Libraries and the Rules view](#folder-libraries-and-the-rules-view).
+A Library inside another one says which Library it sits inside, and that its
+files are its own.
 
 | Light | Dark |
 |-------|------|
-| ![Nested folder Library, light](docs/screenshots/rules-folder-nested-light.png) | ![Nested folder Library, dark](docs/screenshots/rules-folder-nested-dark.png) |
+| ![A Library inside a Library, light](docs/screenshots/library-nested-light.png) | ![A Library inside a Library, dark](docs/screenshots/library-nested-dark.png) |
 
-#### Inboxes
+#### RomM
 
-A folder saved as the Library's Inbox, with its settle time, last poll, the files waiting to settle, in progress, held with a Finding, and processed. See [Inboxes](#inboxes).
-
-| Light | Dark |
-|-------|------|
-| ![Inboxes, light](docs/screenshots/rules-inboxes-light.png) | ![Inboxes, dark](docs/screenshots/rules-inboxes-dark.png) |
-
-#### Check Rule
-
-A PS2 Platform with a conversion Rule and a check Rule: 50 GB a night between 01:00 and 05:00. See [Check Rules](#check-rules).
+Connect a [RomM](https://romm.app) instance on its Connection tab; Browse and
+Automation then work on RomM's consoles. See [RomM integration](#romm-integration).
 
 | Light | Dark |
 |-------|------|
-| ![Check Rule in the rule editor, light](docs/screenshots/rule-editor-check-light.png) | ![Check Rule in the rule editor, dark](docs/screenshots/rule-editor-check-dark.png) |
+| ![RomM's Connection tab, light](docs/screenshots/romm-connect-light.png) | ![RomM's Connection tab, dark](docs/screenshots/romm-connect-dark.png) |
+| ![RomM's console table, light](docs/screenshots/romm-automation-light.png) | ![RomM's console table, dark](docs/screenshots/romm-automation-dark.png) |
 
 #### Needs attention
 
@@ -1874,21 +1885,23 @@ A file dropped in a watch folder with no console: pick it and **Place it**.
 |-------|------|
 | ![Place it, light](docs/screenshots/activity-watch-folder-light.png) | ![Place it, dark](docs/screenshots/activity-watch-folder-dark.png) |
 
-#### DAT Library
+#### Game identification
 
-Import or sync No-Intro / Redump / MAMERedump datasets and match converted files against known-good hashes.
-
-| Light | Dark |
-|-------|------|
-| ![DAT Library, light](docs/screenshots/dat-light.png) | ![DAT Library, dark](docs/screenshots/dat-dark.png) |
-
-When more than one DAT knows a file, the higher one in the list names it. Each
-DAT shows its family; move them up or down to set your own order. Until you do,
-Redump comes first for disc Images and No-Intro first for cartridge Images.
+**Settings → Game identification**: get Redump's lists for your disc consoles,
+import game lists (DATs) from No-Intro or Redump, or update MAME Redump, and
+converted files are matched against known-good hashes.
 
 | Light | Dark |
 |-------|------|
-| ![DAT order, light](docs/screenshots/dat-ranking-light.png) | ![DAT order, dark](docs/screenshots/dat-ranking-dark.png) |
+| ![Game identification, light](docs/screenshots/settings-identification-light.png) | ![Game identification, dark](docs/screenshots/settings-identification-dark.png) |
+
+When more than one list knows a game, the higher one names it. Open **Name
+order** to move them up or down. Until you do, Redump comes first for discs and
+No-Intro first for cartridges.
+
+| Light | Dark |
+|-------|------|
+| ![Name order, light](docs/screenshots/settings-name-order-light.png) | ![Name order, dark](docs/screenshots/settings-name-order-dark.png) |
 
 #### Rename to DAT name
 
@@ -1902,11 +1915,22 @@ The preview for a Recognized cartridge, then the finished job, then the preview 
 
 #### Settings
 
-Notification destinations for finished sweeps and failed jobs.
+Everything set once, on one page: Connections (RomM, Hasheous, the *arr
+webhook), Game identification, Notifications, Defaults and Converters. On a wide
+screen the section list stays at the left as you scroll.
 
 | Light | Dark |
 |-------|------|
 | ![Settings, light](docs/screenshots/settings-light.png) | ![Settings, dark](docs/screenshots/settings-dark.png) |
+
+**Defaults**: what new conversions start with, the compression for each format,
+and how long History is kept. **Converters**: each program, the formats it makes,
+whether it can run here, and the CHD badge scan.
+
+| Light | Dark |
+|-------|------|
+| ![Settings Defaults, light](docs/screenshots/settings-defaults-light.png) | ![Settings Defaults, dark](docs/screenshots/settings-defaults-dark.png) |
+| ![Settings Converters, light](docs/screenshots/settings-converters-light.png) | ![Settings Converters, dark](docs/screenshots/settings-converters-dark.png) |
 
 A new generic webhook's form: its signing secret and the messages it gets.
 
@@ -2934,7 +2958,7 @@ waits for its checks: an Image that is not Intact, or whose check could not
 run, makes it exit `1`, and the check Rule's night counts as done only once its
 checks have finished.
 
-After the Rules, `run-rules` makes one pass over the [Inboxes](#inboxes) of
+After the Rules, `run-rules` makes one pass over the [watch folders](#watch-folders) of
 the Libraries it swept, as the server's tick does, under the same lock. Each
 run is a new process, so what intake has seen settling is kept between runs:
 a file one run sees is taken by the next run once its settle time has passed

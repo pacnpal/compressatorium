@@ -151,9 +151,24 @@ class ConversionStore {
   // compression, so the choice follows them across sessions and browsers.
   #compressionPrefs = {};
   #saveTimer = null;
+  // The preference PUTs, one at a time in the order asked for, so an older
+  // body can never land after a newer one.
+  #saveChain = Promise.resolve();
+  // Why the last preference save failed, or null once one lands. Settings →
+  // Defaults shows it with Try again; the failure is also toasted, so an
+  // edit made in the Convert panel never fails silently either.
+  compressionSaveError = $state(null);
   // Set once the user changes any compression control, so a late boot
   // preference fetch can't revert an edit made while it was in flight.
   #compressionTouched = false;
+  // Bumped by every read of the remembered compression and every local
+  // change to it; a read adopts its answer only if nothing came after it, so
+  // a late boot read can't put old values over a newer edit (Codex 4652391157).
+  #prefsGeneration = 0;
+  // The tools whose compression changed here and isn't on the server yet. A
+  // save sends only these over the server's current copy (CodeRabbit
+  // 4652269814), so it never writes back what another tab saved meanwhile.
+  #dirtyTools = new Set();
 
   // ─── Derived ──────────────────────────────────────────────────────────
   get currentTool() {
@@ -406,8 +421,10 @@ class ConversionStore {
   // ─── Server-saved compression preference ────────────────────────────────
   /** Fetch saved per-tool compression defaults and apply the current tool's. */
   async loadServerPrefs() {
+    const generation = ++this.#prefsGeneration;
     try {
       const prefs = await api.getConversionPrefs();
+      if (generation !== this.#prefsGeneration) return;
       if (prefs && typeof prefs === 'object') {
         this.#compressionPrefs = prefs;
         // Don't clobber a selection the user made while the fetch was in flight.
@@ -458,14 +475,84 @@ class ConversionStore {
     this.#compressionTouched = true;
     const value = this.compressionValue;
     if (value == null) return; // mode without compression, nothing to save
+    this.#prefsGeneration += 1;
     this.#compressionPrefs = { ...this.#compressionPrefs, [this.primaryTool]: value };
+    this.#dirtyTools.add(this.primaryTool);
+    this.#schedulePrefsSave();
+  }
+
+  // The debounce lives here, in the store, so leaving the screen that made
+  // the change (Settings, the Convert panel) never drops it.
+  #schedulePrefsSave() {
     if (!isBrowser) return;
     if (this.#saveTimer) clearTimeout(this.#saveTimer);
-    const snapshot = { ...this.#compressionPrefs };
     this.#saveTimer = setTimeout(() => {
       this.#saveTimer = null;
-      api.putConversionPrefs(snapshot).catch(() => {});
+      this.#putPrefs();
     }, PREF_SAVE_DEBOUNCE_MS);
+  }
+
+  #putPrefs() {
+    this.#saveChain = this.#saveChain.then(async () => {
+      const tools = [...this.#dirtyTools];
+      if (!tools.length) return;
+      const local = { ...this.#compressionPrefs };
+      try {
+        // The PUT replaces the whole object: start from the server's copy as
+        // it is now and change only the tools edited here. A tool set back to
+        // its own default (null) drops its key.
+        const body = { ...((await api.getConversionPrefs()) ?? {}) };
+        for (const tool of tools) {
+          if (local[tool] == null) delete body[tool];
+          else body[tool] = local[tool];
+        }
+        await api.putConversionPrefs(body);
+        // Saved, unless it changed again while this save was out.
+        for (const tool of tools) {
+          if (this.#compressionPrefs[tool] === local[tool]) this.#dirtyTools.delete(tool);
+        }
+        this.compressionSaveError = null;
+      } catch (e) {
+        this.compressionSaveError = e?.message ?? 'Request failed';
+        toast.error(`Couldn't save the compression: ${this.compressionSaveError}`);
+      }
+    });
+    return this.#saveChain;
+  }
+
+  /** Send the remembered compression again, after a save failed. */
+  retryCompressionSave() {
+    if (this.#saveTimer) clearTimeout(this.#saveTimer);
+    this.#saveTimer = null;
+    return this.#putPrefs();
+  }
+
+  /** Send a debounced preference now; resolves once every save so far has landed. */
+  flushCompressionPrefs() {
+    if (this.#saveTimer) {
+      clearTimeout(this.#saveTimer);
+      this.#saveTimer = null;
+      this.#putPrefs();
+    }
+    return this.#saveChain;
+  }
+
+  /**
+   * Settings → Defaults saved *toolId*'s compression (*wire*, or null for the
+   * tool's own default): remember it, make it the live choice when it's the
+   * current tool, even after the user picked codecs here (an explicit save
+   * wins over the touched guard, which only shields an edit from a late boot
+   * fetch), and save it.
+   */
+  applySavedDefault(toolId, wire) {
+    this.#prefsGeneration += 1;
+    const next = { ...this.#compressionPrefs };
+    if (wire == null) delete next[toolId];
+    else next[toolId] = wire;
+    this.#compressionPrefs = next;
+    this.#dirtyTools.add(toolId);
+    if (toolId === this.primaryTool) this.#applyCompressionPref(toolId);
+    this.#schedulePrefsSave();
   }
 
   /**
@@ -741,14 +828,22 @@ class ConversionStore {
     this.duplicateCheck = null;
   }
 
+  // Only the newest delete-plan ask may answer; an older one, landing late or
+  // failing late, is dropped (null) instead of replacing or clearing it.
+  #deletePlanRequest = 0;
+
   async fetchDeletePlan(filePaths, duplicateAction = 'skip') {
     if (!filePaths?.length) return null;
+    const request = ++this.#deletePlanRequest;
     try {
-      this.deletePlan = await api.getDeletePlan(
+      const plan = await api.getDeletePlan(
         filePaths, this.mode, this.outputDir || null, duplicateAction,
       );
+      if (request !== this.#deletePlanRequest) return null;
+      this.deletePlan = plan;
       return this.deletePlan;
     } catch (e) {
+      if (request !== this.#deletePlanRequest) return null;
       toast.error(e?.message ?? 'Failed to build delete plan');
       this.deletePlan = null;
       throw e;

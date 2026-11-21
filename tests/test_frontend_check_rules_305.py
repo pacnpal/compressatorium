@@ -19,7 +19,9 @@ from .test_frontend_verification_store_298 import _run as _run_verification
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 _HELPER = _SRC / "lib" / "rules" / "checkRule.js"
-_EDITOR = _SRC / "lib" / "components" / "views" / "RuleEditor.svelte"
+# The console table (#541): a console's re-check sits in its More settings.
+_TABLE = _SRC / "lib" / "components" / "library" / "RuleTable.svelte"
+_ADVANCED = _SRC / "lib" / "components" / "library" / "RuleAdvanced.svelte"
 _FINDINGS = _SRC / "lib" / "components" / "activity" / "NeedsAttention.svelte"
 _JOB_ROW = _SRC / "lib" / "components" / "panels" / "JobRow.svelte"
 _ENDPOINTS = _SRC / "lib" / "api" / "endpoints.js"
@@ -50,10 +52,6 @@ def test_a_new_check_rule_keeps_the_schedule_defaults_and_drops_the_conversion()
     assert got["check_budget_gb"] == 50
     assert got["days"] == [0, 1, 2, 3, 4, 5, 6]
     assert got["delete_on_verify"] is False
-
-
-def test_the_summary_says_the_budget() -> None:
-    assert _run_helper("() => checkSummary({ check_budget_gb: 50 })") == "50 GB a night"
 
 
 def test_a_platform_keeps_its_conversion_rule_and_its_check_rule(tmp_path) -> None:
@@ -87,10 +85,11 @@ process.stdout.write(JSON.stringify({{
     assert data["loaded"]["rule"] == "createdvd"
     assert data["loaded"]["check"]["check_budget_gb"] == 50
     assert data["loaded"]["last"] == {"last_checks": 4}
-    # Saved with both kinds.
+    # Only what changed is sent (#541): the check Rule, not the conversion
+    # Rule, which the server keeps as it is.
     name, library_id, rules, checks = data["call"]
     assert (name, library_id) == ("saveLibraryRules", "folder:3")
-    assert rules["ps2"]["mode"] == "createdvd"
+    assert rules == {}
     assert checks["ps2"]["check_budget_gb"] == 80
     # Removing the check Rule leaves the conversion Rule.
     assert data["after"] == {}
@@ -332,42 +331,47 @@ def test_the_endpoints_send_the_check_rules() -> None:
 
 
 def test_the_editor_offers_a_check_rule_beside_the_conversion_rule() -> None:
-    src = _EDITOR.read_text(encoding="utf-8")
-    assert "source.setCheckRule(" in src
-    assert "source.removeCheckRule(" in src
-    assert "check_budget_gb" in src
+    table = _TABLE.read_text(encoding="utf-8")
+    advanced = _ADVANCED.read_text(encoding="utf-8")
+    assert "source.setCheckRule(" in table
+    assert "source.removeCheckRule(" in table
+    assert "check_budget_gb" in advanced
     # The window and weekdays come from the one snippet both forms render.
-    assert src.count("{@render schedule(") >= 2
+    assert advanced.count("{@render schedule(") >= 2
     # A check Rule is no target format of the conversion Rule any more.
-    assert "CHECK_RULE" not in src
+    assert "CHECK_RULE" not in table + advanced
 
 
-def test_the_editor_says_how_the_budget_and_schedule_work() -> None:
-    src = _EDITOR.read_text(encoding="utf-8")
+def _check_rules_section() -> str:
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    return readme.split("### Check Rules", 1)[1].split("\n### ", 1)[0]
+
+
+def test_the_readme_says_how_the_budget_and_schedule_work() -> None:
+    """The table drops the long hints (#541); the README keeps the rulings."""
+    section = _check_rules_section()
     # Ruling 3: stalest first, stop at the first that does not fit, an
     # oversized Image alone. Ruling 4: daily, and Run now spends another budget.
-    assert "does not fit" in src
-    assert "larger than the whole budget" in src
-    assert "once a day" in src
-    assert "Run now" in src and "another budget" in src
+    assert "does not fit" in section
+    assert "larger than the whole budget" in section
+    assert "once a day" in section
+    assert "Run now" in section and "another budget" in section
 
 
 def test_the_editor_and_readme_say_an_equal_window_is_all_day() -> None:
     """r2 M1: 03:00-03:00 is the whole day for a check Rule, and both places say so."""
-    assert "same start and end" in _EDITOR.read_text(encoding="utf-8")
-    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
-    section = readme.split("### Check Rules", 1)[1].split("\n### ", 1)[0]
-    assert "same start and end" in section
+    assert "same start and end" in _ADVANCED.read_text(encoding="utf-8")
+    assert "same start and end" in _check_rules_section()
 
 
 def test_only_the_check_form_offers_an_equal_window_as_all_day() -> None:
     """r3 I1: the shared schedule fields say "all day" only for a check Rule; a
     conversion Rule with an equal pair is paused and says why."""
-    src = _EDITOR.read_text(encoding="utf-8")
-    assert "{#snippet schedule(rule, change, equalIsAllDay)}" in src
-    assert "{@render schedule(check, (patch) => updateCheck(platform.id, patch), true)}" in src
-    assert "{@render schedule(rule, (patch) => update(platform.id, patch), false)}" in src
-    assert "starts and ends at the same time" in src
+    src = _ADVANCED.read_text(encoding="utf-8")
+    assert "{#snippet schedule(target, change, equalIsAllDay)}" in src
+    assert "{@render schedule(check, oncheck, true)}" in src
+    assert "{@render schedule(rule, onupdate, false)}" in src
+    assert "starts and ends at the same time" in _TABLE.read_text(encoding="utf-8")
 
 
 def test_a_not_intact_finding_has_a_label_and_no_set_platform() -> None:
@@ -385,7 +389,7 @@ def test_a_check_job_shows_its_name_and_result() -> None:
 
 
 def test_shots_capture_the_check_rule_form() -> None:
-    assert "rule-editor-check" in _SHOTS.read_text(encoding="utf-8")
+    assert "library-automation-advanced" in _SHOTS.read_text(encoding="utf-8")
 
 
 def test_shots_capture_a_not_intact_finding_and_a_check_job() -> None:

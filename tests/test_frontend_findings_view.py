@@ -583,3 +583,52 @@ def test_history_reads_its_status_from_the_url_and_names_the_check():
     for shown in ("✓ Exact copy", "✓ Checked", "✓ Known good dump"):
         assert shown in src, shown
     assert "Nothing has run yet." in src and "Nothing matches." in src and "Clear filters" in src
+
+
+# ----------------------------------------------------------------------
+# What the deleted views offered, kept; no double submits; no state lost
+# ----------------------------------------------------------------------
+
+
+def test_every_problem_row_still_opens_its_folder():
+    """The old Findings view had Open folder on every row: it stays, after the fix."""
+    view = _VIEW.read_text(encoding="utf-8")
+    assert "{#if about.fix !== 'duplicates' || row.cause?.copies?.length}" not in view
+    assert view.count("fileBrowser.openFolder(row.folder)") == 1
+    assert "{#if row.folder}" in view
+
+
+def test_a_row_takes_one_action_at_a_time():
+    view = _VIEW.read_text(encoding="utf-8")
+    for action in ("async function place(row)", "async function dismiss(row)",
+                   "async function undismiss(row)"):
+        body = view.split(action, 1)[1].split("\n  }\n", 1)[0]
+        assert "if (busy[row.id]) return;" in body, action
+        assert "finally" in body, action
+
+
+def test_the_console_picked_survives_a_tab_switch(tmp_path):
+    view = _VIEW.read_text(encoding="utf-8")
+    assert "findings.placeChoices" in view and "let picked" not in view
+    data = _run(tmp_path, """
+findings.placeChoices[7] = 'ps2';
+process.stdout.write(JSON.stringify({ kept: findings.placeChoices[7] }));
+""")
+    assert data["kept"] == "ps2"
+
+
+def test_a_library_filter_from_the_url_is_always_an_option():
+    view = _VIEW.read_text(encoding="utf-8")
+    assert "libraryFilter && !seen.has(libraryFilter)" in view
+
+
+def test_history_keeps_its_filters_and_shows_the_all_time_totals():
+    src = (_ACTIVITY / "HistoryList.svelte").read_text(encoding="utf-8")
+    assert "<script module>" in src and "const kept = $state(" in src
+    assert "ledger.totals" in src
+
+
+def test_the_summary_keeps_the_savings_split_and_a_running_check():
+    src = (_ACTIVITY / "ActivitySummary.svelte").read_text(encoding="utf-8")
+    assert "savings?.by_platform" in src and "savings?.by_format" in src
+    assert "verification.batchRun" in src

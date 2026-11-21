@@ -564,12 +564,13 @@ async def test_a_held_file_that_leaves_the_inbox_has_its_finding_cleared(vol, db
 
 def test_the_libraries_view_lists_inboxes_with_their_status():
     root = Path(__file__).resolve().parents[1]
-    view = (root / "src/lib/components/views/RulesView.svelte").read_text()
-    panel = (root / "src/lib/components/views/LibraryInboxes.svelte").read_text()
+    view = (root / "src/lib/components/library/LibraryAutomation.svelte").read_text()
+    panel = (root / "src/lib/components/library/WatchFolders.svelte").read_text()
     endpoints = (root / "src/lib/api/endpoints.js").read_text()
     findings_view = (root / "src/lib/components/activity/NeedsAttention.svelte").read_text()
-    assert "<LibraryInboxes" in view
+    assert "<WatchFolders" in view
     assert "api.listInboxes" in panel and "api.createInbox" in panel
+    # The status line (#541): last checked, still downloading, need you, taken in.
     for status in ("last_poll", "waiting", "in_progress", "held", "processed"):
         assert f"row.{status}" in panel
     assert "/inboxes`" in endpoints
@@ -580,8 +581,8 @@ def test_the_libraries_view_lists_inboxes_with_their_status():
     shots = (root / "shots.yml").read_text()
     readme = (root / "README.md").read_text()
     for theme in ("light", "dark"):
-        assert f"output: docs/screenshots/rules-inboxes-{theme}.png" in shots
-        assert f"docs/screenshots/rules-inboxes-{theme}.png" in readme
+        assert f"output: docs/screenshots/library-watch-folders-{theme}.png" in shots
+        assert f"docs/screenshots/library-watch-folders-{theme}.png" in readme
 
 
 # ---- no Inbox around or inside any Library ---------------------------------
@@ -1198,14 +1199,15 @@ async def test_a_verifier_that_must_stop_stops_the_pass(vol, db, monkeypatch):
     assert sorted(p.name for p in (vol / "ROMs" / "ps2").glob("*.iso")) == ["A.iso", "B.iso"]
 
 
-def test_a_save_keeps_a_draft_typed_while_it_was_out():
-    """CodeRabbit 4603498609: the folder field is cleared only when the
-    Library and the draft are still the ones that were saved."""
+def test_a_save_reloads_only_the_library_it_was_for():
+    """CodeRabbit 4603498609: the folder is picked, not typed (#541), so no
+    draft can be lost; a save that lands after another Library was opened
+    still reloads only its own."""
     panel = (
-        Path(__file__).resolve().parents[1] / "src/lib/components/views/LibraryInboxes.svelte"
+        Path(__file__).resolve().parents[1] / "src/lib/components/library/WatchFolders.svelte"
     ).read_text()
-    assert "if (libraryId === id && folder === submitted) folder = '';" in panel
-    assert "\n      folder = '';\n" not in panel
+    assert "if (libraryId === id) await load(id);" in panel
+    assert "<input" not in panel
 
 
 # ---- review round four (CodeRabbit follow-ups on #443) ----------------------
@@ -2194,7 +2196,8 @@ def test_the_inbox_screenshot_requires_its_own_inbox():
     """CodeRabbit 4606148050: after a 409 the shot lists the Library's
     Inboxes and requires the expected folder, and waits for its row."""
     shots = (Path(__file__).resolve().parents[1] / "shots.yml").read_text()
-    block = shots[shots.index("rules-inboxes-light"):shots.index("rules-inboxes-dark")]
+    start = shots.index("shot === 'library-watch-folders'")
+    block = shots[start:shots.index("} else if", start + 1)]
     assert "/inboxes`" in block and "listed.inboxes" in block
     assert "downloads" in block and "status row" in block
 
@@ -2319,11 +2322,11 @@ def _run_inbox_shot(listed: list[str]) -> subprocess.CompletedProcess:
     import yaml
 
     shots = yaml.safe_load((Path(__file__).resolve().parents[1] / "shots.yml").read_text())
-    script = next(s for s in shots if "rules-inboxes-light" in s["url"])["javascript"]
+    script = next(s for s in shots if "library-watch-folders-light" in s["url"])["javascript"]
     harness = """
 const listed = JSON.parse(process.argv[1]);
 const json = (data, status = 200) => ({ ok: status < 300, status, json: async () => data });
-globalThis.location = { search: '?s=rules-inboxes-light', hash: '' };
+globalThis.location = { search: '?s=library-watch-folders-light', hash: '' };
 globalThis.localStorage = { setItem() {} };
 globalThis.StorageEvent = class { constructor() {} };
 globalThis.window = { dispatchEvent() {} };
@@ -2338,11 +2341,11 @@ globalThis.fetch = async (url, opts = {}) => {
   throw new Error('unexpected fetch ' + url);
 };
 const rows = listed.map(folder => ({
-  querySelector: sel => (sel === '.where code' ? { textContent: folder }
-    : sel === '.status' ? {} : null),
+  dataset: { folder },
+  querySelector: sel => (sel === '.status' ? {} : null),
 }));
 const panel = { querySelectorAll: () => rows, scrollIntoView() {} };
-globalThis.document = { querySelector: sel => (sel === '.inboxes' ? panel : null) };
+globalThis.document = { querySelector: sel => (sel === '.watch' ? panel : null) };
 eval(require('fs').readFileSync(process.argv[2], 'utf8'))
   .then(() => console.log('captured'), e => { console.log('refused: ' + e.message); });
 """

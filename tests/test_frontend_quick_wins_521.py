@@ -74,37 +74,20 @@ process.stdout.write(JSON.stringify({ view: ui.navigated }));
     assert data["view"] == ["libraries", {"id": "folder:3", "tab": None}], data
 
 
-def test_the_rules_view_skips_romm_when_it_is_not_set_up(tmp_path):
-    data = _run_libraries(tmp_path, f"""
-const loading = libraries.load();
-await tick();
-__calls[0].resolve([{{ id: 'romm', kind: 'romm' }}, {_FOLDER}]);
-await loading;
-libraries.openOnConfigured(true);
-const configured = libraries.selectedId;
-libraries.openOnConfigured(false);
-const unconfigured = libraries.selectedId;
-process.stdout.write(JSON.stringify({{ configured, unconfigured }}));
-""")
-    assert data == {"configured": "romm", "unconfigured": "folder:3"}, data
+def test_an_unconfigured_romm_opens_on_connection():
+    """A bare `#/libraries/romm` with RomM not set up shows its Connection tab
+    (the one thing that can happen there), derived from the route (#541)."""
+    page = _read("lib", "components", "views", "LibraryView.svelte")
+    assert "(isRomm && romm.status && !romm.configured ? 'connection' : 'browse')" in page
+    browse = _read("lib", "components", "library", "RommBrowse.svelte")
+    assert "ui.navigate('libraries', { id: 'romm', tab: 'connection' })" in browse
 
 
-def test_the_rules_view_wires_the_opening_choice():
-    src = _read("lib", "components", "views", "RulesView.svelte")
-    assert "libraries.openOnConfigured(romm.configured)" in src
-    # An unconfigured RomM shows one way to connect it, not its Rules.
-    assert "{#if rommMissing}" in src
-    assert "ui.navigate('libraries', { id: 'romm', tab: 'connection' })" in src
-
-
-def test_romms_automation_tab_lists_romm_only():
-    src = _read("lib", "components", "views", "RulesView.svelte")
-    head = src.split('<div class="rules-view"', 1)[1]
-    picker = head.index('label="Library"')
-    assert head.rfind("{#if !embedded}", 0, picker) > head.rfind("{/if}", 0, picker), (
-        "the embedded Rules view still shows the Library picker"
-    )
-    assert "libraries.open(id)" not in src
+def test_a_library_page_has_no_library_picker():
+    """One Library per page (#541): no picker to show another one under it."""
+    page = _read("lib", "components", "views", "LibraryView.svelte")
+    assert 'label="Library"' not in page
+    assert "libraries.open(id)" not in page
 
 
 def test_set_platform_is_offered_only_inside_a_folder_library(tmp_path):
@@ -130,7 +113,7 @@ process.stdout.write(JSON.stringify({{
 
 def test_no_pointer_names_a_settings_section_that_does_not_exist():
     for path in (
-        ("lib", "components", "views", "RommView.svelte"),
+        ("lib", "components", "library", "RommBrowse.svelte"),
         ("lib", "stores", "romm.svelte.js"),
     ):
         src = _read(*path)

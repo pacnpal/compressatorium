@@ -135,6 +135,10 @@ class FindingsStore {
    * folder, and is taken in at once. The row leaves the list; a refusal
    * (a name already taken, the file gone) throws with the backend's reason.
    */
+  // The console picked for each Place it row, by Finding id: kept here so a
+  // tab switch (which unmounts the list) doesn't lose it.
+  placeChoices = $state({});
+
   async place(id, platform) {
     const placed = await api.placeFinding(id, platform);
     this.#superseded();

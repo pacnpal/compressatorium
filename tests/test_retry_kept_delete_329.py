@@ -398,6 +398,23 @@ def test_a_validation_paused_rule_keeps_it_even_when_named(env, dolphin, capsys,
     assert _rule_state(env)["gc"]["kept_sources"]["Game.iso"]["attempts"] == 0
 
 
+def test_an_automatic_import_never_deletes_for_a_paused_console(env, dolphin, capsys, kept):
+    """An *arr import names its console but honours the pause (#541, codex
+    4653575647): a kept Source of a paused console is not tried."""
+    from services.rules import sweep as rules_sweep
+
+    _store_rules(env, {"shelf": _rule(env, enabled=False)})
+
+    result = asyncio.run(rules_sweep.sweep(
+        env["shelf"], platform_ids=["gc"], honour_pauses=True,
+    ))
+
+    assert result["skipped_paused"] == 1
+    assert not result["errors"]
+    assert kept["iso"].exists()
+    assert _rule_state(env)["gc"]["kept_sources"]["Game.iso"]["attempts"] == 0
+
+
 def test_a_retargeted_rule_drops_the_entry_without_deleting(env, dolphin, capsys, kept):
     elsewhere = env["vol"] / "elsewhere"
     elsewhere.mkdir()

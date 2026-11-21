@@ -15,6 +15,22 @@
   const running = $derived(jobs.runningList);
   const busy = $derived(running.filter((j) => j.status === 'processing').length);
   const checked = $derived(verification.statuses.size);
+  const batch = $derived(verification.batchRun);
+
+  // Where the space came from, as the old card split it: by console and by format.
+  const split = (obj) => Object.entries(obj ?? {})
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([key, bytes]) => `${key} ${formatSize(bytes)}`)
+    .join(', ');
+  const savedFrom = $derived.by(() => {
+    const parts = [
+      ['By console', split(ledger.savings?.by_platform)],
+      ['By format', split(ledger.savings?.by_format)],
+    ].filter(([, text]) => text);
+    return parts.map(([label, text]) => `${label}: ${text}`).join('\n');
+  });
 
   const stats = $derived([
     {
@@ -31,12 +47,15 @@
       label: 'Space saved',
       value: formatSize(ledger.savings?.saved_bytes ?? 0),
       href: hashFor('activity', { tab: 'history' }),
+      note: savedFrom,
     },
     {
       // "{n} games checked", the number large.
       label: 'Checked',
       value: String(checked),
-      unit: checked === 1 ? 'game checked' : 'games checked',
+      unit: batch
+        ? `checking ${batch.done}/${batch.total}`
+        : checked === 1 ? 'game checked' : 'games checked',
       href: `${hashFor('activity', { tab: 'history' })}?status=checked`,
     },
   ]);
@@ -46,11 +65,12 @@
   <ul class="stats" aria-label="Activity at a glance">
     {#each stats as stat (stat.label)}
       <li>
-        <a class="stat" href={stat.href}>
+        <a class="stat" href={stat.href} title={stat.note || undefined}>
           <span class="label">{stat.label}</span>
           <span class="value">
             {stat.value}{#if stat.unit}<span class="unit">{stat.unit}</span>{/if}
           </span>
+          {#if stat.note}<span class="note">{stat.note.split('\n')[0]}</span>{/if}
         </a>
       </li>
     {/each}
@@ -83,6 +103,11 @@
     font-weight: var(--weight-semibold);
     color: var(--text-1);
     font-variant-numeric: tabular-nums;
+  }
+  .note {
+    font-size: var(--text-xs);
+    color: var(--text-2);
+    overflow-wrap: anywhere;
   }
   .unit {
     font-size: var(--text-sm);
