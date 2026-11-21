@@ -202,8 +202,9 @@ _reported_unrunnable: dict[tuple[str, str, str], str] = {}
 
 # The checks a sweep makes before it runs a conversion Rule, in the order it
 # makes them: its tool is installed, its output folder is inside a Volume, the
-# Library doesn't ignore its outputs (#532), its mode is one for the Platform. A Rule that fails one is skipped with no run
-# recorded, so it is tried again on the next tick (#480).
+# Library doesn't ignore its outputs (#532), its mode is one for the Platform.
+# A Rule that fails one is skipped with no run recorded, so it is tried again
+# on the next tick (#480).
 _SKIP_CHECKS = ("tool", "output_dir", "output_excluded", "platform")
 
 # (library id, kind, platform id) -> (check, reason) the sweep last skipped
