@@ -17,6 +17,7 @@
   import { toast } from 'svelte-sonner';
   import { registry } from '$lib/tools/registry.js';
   import { fromRule, toRule } from '$lib/tools/compression.js';
+  import { numberValue, patternProblem } from '$lib/rules/ruleTable.js';
   import { safetyControls } from '$lib/util/safetyOptions.js';
   import { CHECK_LEVEL } from '$lib/util/checkLevels.js';
   import { DAY_LABELS, ORDER_LABELS } from '$lib/stores/romm.svelte.js';
@@ -64,7 +65,22 @@
     onupdate({ [field]: value, ...(value ? { [other]: false } : {}) });
   }
 
-  const num = (e) => Number(e.currentTarget.value);
+  /** A number field's change: saved only when it holds a number. */
+  function setNumber(field, e, change = onupdate) {
+    const value = numberValue(e.currentTarget.value);
+    if (value !== null) change({ [field]: value });
+  }
+
+  // Name filters as typed. A pattern the server can't read is shown with
+  // why and never saved: the server would null it and pause the console.
+  let drafts = $state({});
+  const patternError = (field) => patternProblem(drafts[field] ?? '');
+  function setPattern(field, text) {
+    drafts = { ...drafts, [field]: text };
+    if (patternProblem(text)) return;
+    onupdate({ [field]: text || null }, TEXT_DELAY);
+  }
+  const patternValue = (field) => drafts[field] ?? rule[field] ?? '';
 
   async function forget() {
     forgetting = true;
@@ -162,23 +178,31 @@
       <label class="field">
         <span>Only games between (MB)</span>
         <input type="number" min="0" value={rule.min_size_mb ?? 0}
-          onchange={(e) => onupdate({ min_size_mb: num(e) })} />
+          onchange={(e) => setNumber('min_size_mb', e)} />
       </label>
       <label class="field">
         <span>and (MB, 0 = any)</span>
         <input type="number" min="0" value={rule.max_size_mb ?? 0}
-          onchange={(e) => onupdate({ max_size_mb: num(e) })} />
+          onchange={(e) => setNumber('max_size_mb', e)} />
       </label>
     </div>
     <label class="field">
       <span>Only names matching</span>
-      <input type="text" placeholder="e.g. \(USA\)" value={rule.include_pattern ?? ''}
-        oninput={(e) => onupdate({ include_pattern: e.currentTarget.value || null }, TEXT_DELAY)} />
+      <input type="text" placeholder="e.g. \(USA\)" value={patternValue('include_pattern')}
+        aria-invalid={!!patternError('include_pattern')}
+        oninput={(e) => setPattern('include_pattern', e.currentTarget.value)} />
+      {#if patternError('include_pattern')}
+        <span class="bad" role="alert">Not saved: {patternError('include_pattern')}</span>
+      {/if}
     </label>
     <label class="field">
       <span>Skip names matching</span>
-      <input type="text" placeholder="e.g. \(Beta\)" value={rule.exclude_pattern ?? ''}
-        oninput={(e) => onupdate({ exclude_pattern: e.currentTarget.value || null }, TEXT_DELAY)} />
+      <input type="text" placeholder="e.g. \(Beta\)" value={patternValue('exclude_pattern')}
+        aria-invalid={!!patternError('exclude_pattern')}
+        oninput={(e) => setPattern('exclude_pattern', e.currentTarget.value)} />
+      {#if patternError('exclude_pattern')}
+        <span class="bad" role="alert">Not saved: {patternError('exclude_pattern')}</span>
+      {/if}
     </label>
     <Checkbox
       checked={!!rule.only_matched}
@@ -197,19 +221,19 @@
     <label class="field">
       <span>Every (minutes)</span>
       <input type="number" min="5" max="10080" value={rule.interval_minutes}
-        onchange={(e) => onupdate({ interval_minutes: num(e) })} />
+        onchange={(e) => setNumber('interval_minutes', e)} />
     </label>
     {@render schedule(rule, onupdate, false)}
     <div class="pair">
       <label class="field">
         <span>At most, per run</span>
         <input type="number" min="1" max="1000" value={rule.max_per_run}
-          onchange={(e) => onupdate({ max_per_run: num(e) })} />
+          onchange={(e) => setNumber('max_per_run', e)} />
       </label>
       <label class="field">
         <span>Priority</span>
         <input type="number" min="-100" max="100" value={rule.priority}
-          onchange={(e) => onupdate({ priority: num(e) })} />
+          onchange={(e) => setNumber('priority', e)} />
       </label>
     </div>
     {#if orderOptions.length}
@@ -230,7 +254,7 @@
       <label class="field">
         <span>Up to (GB a night)</span>
         <input type="number" min="1" value={check.check_budget_gb}
-          onchange={(e) => oncheck({ check_budget_gb: num(e) })} />
+          onchange={(e) => setNumber('check_budget_gb', e, oncheck)} />
       </label>
       {@render schedule(check, oncheck, true)}
     {/if}
@@ -336,6 +360,7 @@
   }
   .field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
   .field span { font-size: var(--text-xs); color: var(--text-2); }
+  .field .bad { color: var(--error); }
   .field input {
     background: var(--surface-1);
     border: 1px solid var(--border-subtle);

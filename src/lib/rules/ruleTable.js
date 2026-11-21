@@ -24,7 +24,47 @@ export function ruleUpdate(current, patch, { isNew = false, zone = 'UTC' } = {})
     ...patch,
   };
   if (next.delete_on_verify) next.verify_after = true;
+  // A value the server refused and paused the console for, now changed: drop
+  // its flag (the server keeps a sent one) and, when nothing else still holds
+  // it, turn the console back on, as it was before the refusal.
+  let fixed = false;
+  for (const [flag, fields] of Object.entries(VALIDATED)) {
+    if (next[flag] && fields.some((f) => f in patch)) {
+      delete next[flag];
+      fixed = true;
+    }
+  }
+  if (fixed && !Object.keys(VALIDATED).some((flag) => next[flag])) next.enabled = true;
   return next;
+}
+
+// The server's refusal flags, each with the fields that fix it.
+const VALIDATED = Object.freeze({
+  invalid_pattern: ['include_pattern', 'exclude_pattern'],
+  invalid_output_dir: ['output_dir'],
+  invalid_window: ['window_start', 'window_end'],
+});
+
+/**
+ * Why *text* isn't a name filter the server can read, or null when it is
+ * (blank is no filter). Checked before saving: a refused one is nulled and
+ * pauses the console (Codex 4652664855).
+ */
+export function patternProblem(text) {
+  if (!text) return null;
+  try {
+    new RegExp(text);
+    return null;
+  } catch (e) {
+    return e?.message ?? 'not a valid pattern';
+  }
+}
+
+/** A number field's value, or null when it's blank or not a number (nothing is saved). */
+export function numberValue(raw) {
+  if (raw === '' || raw == null) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
 }
 
 /**

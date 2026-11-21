@@ -183,7 +183,18 @@
             </optgroup>
           {/each}
         </select>
-        {#if configured && !rule.enabled}<span class="muted">Paused</span>{/if}
+        {#if configured}
+          <!-- Its own switch: picking the same format again isn't a retarget,
+               so a console paused any way is turned back on here. -->
+          <label class="on">
+            <input
+              type="checkbox"
+              checked={!!rule.enabled}
+              onchange={(e) => update(platform.id, { enabled: e.currentTarget.checked })}
+            />
+            <span>{rule.enabled ? 'On' : 'Paused'}</span>
+          </label>
+        {/if}
       </span>
       <span role="cell" class="check">
         {#if spec?.supportsVerify || spec?.supportsDeleteOnVerify}
@@ -276,6 +287,8 @@
     padding: var(--space-2);
     cursor: pointer;
   }
+  .on { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); color: var(--text-2); cursor: pointer; }
+  .on input { accent-color: var(--accent); width: 16px; height: 16px; }
   .check label { display: inline-flex; align-items: center; gap: var(--space-2); cursor: pointer; }
   .check input { accent-color: var(--accent); width: 16px; height: 16px; }
   .check input:disabled { cursor: not-allowed; }

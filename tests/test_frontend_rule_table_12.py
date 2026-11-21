@@ -208,3 +208,56 @@ def test_the_table_saves_every_change_and_has_no_save_button():
     # Preview, Run now and turning automation on save first.
     assert automation.count("await committed()") >= 3
     assert "if (enabled && !(await committed())) return;" in automation
+
+
+def test_a_paused_console_can_be_turned_back_on(tmp_path):
+    """Codex 4652664852: picking the same format isn't a retarget, so the row
+    has its own On switch, and it resumes a console paused any way."""
+    data = _node(_plain(_TABLE) + """
+const paused = { mode: 'createcd', enabled: false };
+process.stdout.write(JSON.stringify(ruleUpdate(paused, { enabled: true })));
+""", tmp_path)
+    assert data["enabled"] is True
+    table = (_COMPONENTS / "RuleTable.svelte").read_text(encoding="utf-8")
+    assert "update(platform.id, { enabled: e.currentTarget.checked })" in table
+
+
+def test_an_unfinished_pattern_is_never_saved(tmp_path):
+    """Codex 4652664855: autosave of `(` would be refused by the backend,
+    which nulls it and pauses the console. It is checked here first."""
+    data = _node(_plain(_TABLE) + """
+process.stdout.write(JSON.stringify({
+  open: patternProblem('('),
+  fine: patternProblem('\\\\(USA\\\\)'),
+  blank: patternProblem(''),
+}));
+""", tmp_path)
+    assert data["open"]
+    assert data["fine"] is None and data["blank"] is None
+    advanced = (_COMPONENTS / "RuleAdvanced.svelte").read_text(encoding="utf-8")
+    assert "patternProblem(" in advanced
+
+
+def test_fixing_what_validation_paused_resumes_the_console(tmp_path):
+    """A fixed pattern, folder or window drops the server's flag and turns
+    the console back on, unless another refusal still holds it."""
+    data = _node(_plain(_TABLE) + """
+const bad = { mode: 'createcd', enabled: false, invalid_pattern: true };
+const both = { ...bad, invalid_output_dir: '/gone' };
+process.stdout.write(JSON.stringify({
+  fixed: ruleUpdate(bad, { include_pattern: 'USA' }),
+  still: ruleUpdate(both, { include_pattern: 'USA' }),
+  folder: ruleUpdate({ mode: 'createcd', enabled: false, invalid_output_dir: '/gone' },
+    { output_dir: null }),
+}));
+""", tmp_path)
+    assert data["fixed"]["enabled"] is True and "invalid_pattern" not in data["fixed"]
+    assert data["still"]["enabled"] is False and "invalid_pattern" not in data["still"]
+    assert data["folder"]["enabled"] is True and "invalid_output_dir" not in data["folder"]
+
+
+def test_a_blank_number_saves_nothing(tmp_path):
+    data = _node(_plain(_TABLE) + """
+process.stdout.write(JSON.stringify([numberValue(''), numberValue('abc'), numberValue('12')]));
+""", tmp_path)
+    assert data == [None, None, 12]
