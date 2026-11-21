@@ -461,3 +461,54 @@ def test_another_server_answering_an_address_is_not_taken(
     assert "--server" in err
     assert stub.batches == []
     assert dolphin["runs"] == []
+
+
+@pytest.mark.parametrize(("argv", "env", "port"), [
+    (["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "9090", "--reload"], {}, 9090),
+    (["uvicorn", "main:app", "--port=9091"], {}, 9091),
+    (["uvicorn", "main:app"], {"UVICORN_PORT": "9092"}, 9092),
+    (["uvicorn", "main:app", "--port", "nope"], {}, None),
+    (["pytest"], {}, None),
+])
+def test_the_listening_port_is_read_from_the_launch(argv, env, port):
+    from main import _launch_port
+
+    assert _launch_port(argv, env) == port
+
+
+def test_a_server_names_its_port_when_it_starts(monkeypatch, tmp_path):
+    """Before any request (Codex PRRT_kwDOQ9nULM66RoML): a server on
+    PORT=9090 that nothing has asked for /health yet is still found."""
+    import asyncio
+    import contextlib
+    import sys
+
+    import main
+    from services import scheduler_lock
+
+    from config import settings
+
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "concurrency_lock_dir", None)
+    monkeypatch.setattr(
+        sys, "argv", ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "9090"],
+    )
+
+    @contextlib.asynccontextmanager
+    async def no_serve(app):
+        yield
+
+    monkeypatch.setattr(main, "_serve", no_serve)
+    # The process's logging is the logging suite's to set up, not this test's.
+    monkeypatch.setattr(main, "configure_logging", lambda: None)
+    seen = {}
+
+    async def start():
+        async with main.lifespan(main.app):
+            with pytest.raises(scheduler_lock.SchedulerLockHeld) as held:
+                scheduler_lock.check()
+            seen.update(held.value.holder)
+
+    asyncio.run(start())
+
+    assert seen["port"] == 9090

@@ -5774,9 +5774,12 @@ this process's) decide which Images are converted:
 
 * `--server URL` names a server: the jobs go there.
 * The lock held by a server: the jobs go to it. The server names its host in
-  the lock's holder note when it takes it, and its port on its first `/health`
-  request (`SchedulerLock.note_port`; the Docker `HEALTHCHECK` asks every
-  30 s). It also writes a random `id` and its own non-loopback IPv4
+  the lock's holder note when it takes it, and its port at once, from
+  uvicorn's launch (`main._launch_port`: `--port N`, `--port=N` or
+  `UVICORN_PORT`; uvicorn binds only after the lifespan starts and tells the
+  app nothing), so a server on `PORT=9090` (`run_dev.sh`) is found before any
+  request. Each `/health` request also names the port it arrived on
+  (`SchedulerLock.note_port`), for a launch that named none. It also writes a random `id` and its own non-loopback IPv4
   addresses (`scheduler_lock.own_addresses`, stdlib only: the hostname's
   entry and the address a UDP socket would send from; none readable, none
   written), because a container's hostname resolves for its siblings on a

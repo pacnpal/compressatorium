@@ -64,7 +64,8 @@
   server never work on the same file. A server in another container is found
   with nothing to set: by its host name on a Compose network, and by its own
   address on Docker's default bridge (`docker run`, Unraid), checked to be
-  that server. `--server URL` names one that still can't be found. The
+  that server, on whatever port it was started with (`PORT=9090` too).
+  `--server URL` names one that still can't be found. The
   cross-process job queue the two used to share in `/config/locks`
   (`queue_*.ticket`, `holder_*.lock`, `convert_slot_*.lock`) is gone; old
   files there are harmless and can be deleted.

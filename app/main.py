@@ -2,6 +2,7 @@ import json
 import logging
 from logging_setup import get_logger
 import os
+import sys
 import threading
 from contextlib import asynccontextmanager, contextmanager, suppress
 from pathlib import Path
@@ -220,6 +221,26 @@ def startup_volume_work() -> None:
         get_logger().info("Removed %d temp file(s) left by interrupted repacks", removed)
 
 
+def _launch_port(argv: list[str], environ) -> int | None:
+    """The port uvicorn was told to listen on, from its command line
+    (``--port N`` / ``--port=N``) or ``UVICORN_PORT``; ``None`` when neither
+    names one. uvicorn binds only after the lifespan starts and tells the app
+    nothing, so this is how a server names its port before any request (#533):
+    ``run_dev.sh`` passes ``--port "$PORT"``, the image ``--port 8080``.
+    """
+    raw = environ.get("UVICORN_PORT")
+    for i, arg in enumerate(argv):
+        if arg == "--port" and i + 1 < len(argv):
+            raw = argv[i + 1]
+        elif arg.startswith("--port="):
+            raw = arg.split("=", 1)[1]
+    try:
+        port = int(raw) if raw is not None else None
+    except ValueError:
+        return None
+    return port if port and 0 < port < 65536 else None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Wait for the Rule scheduler lock, then start the app (``_serve``).
@@ -246,6 +267,9 @@ async def lifespan(app: FastAPI):
         except scheduler_lock.StoppedWaiting as exc:
             raise RuntimeError(str(exc)) from None
     app.state.scheduler = scheduler
+    # Named now, for a CLI looking before anything has asked /health (which
+    # still names the port a request arrives on).
+    scheduler.note_port(_launch_port(sys.argv, os.environ))
     try:
         async with _serve(app):
             yield
