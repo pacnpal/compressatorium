@@ -154,7 +154,9 @@ export function specsForTarget(value) {
 
 /** A file's format by its name ('Game.chd' -> 'CHD'), or null with no extension. */
 export function formatOfPath(path) {
-  const name = String(path ?? '').split('::').pop().split(/[\\/]/).pop().toLowerCase();
+  const name = String(path ?? '').split('::').pop().split(/[\\/]/).pop().toLowerCase()
+    // A split build's first part (`Game.iso.0`) is the image itself.
+    .replace(/(\.[a-z0-9]+)\.\d+$/, '$1');
   const compound = Object.keys(FORMAT_LABELS).find((ext) => name.endsWith(ext));
   if (compound) return FORMAT_LABELS[compound];
   const dot = name.lastIndexOf('.');

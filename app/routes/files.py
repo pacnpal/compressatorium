@@ -477,7 +477,11 @@ def disc_marks(
             continue
         for entry in m3u.entries(data):
             disc = listed.get(os.path.normpath(os.path.join(folder, entry)))
-            if disc is not None and disc != path and disc not in marks:
+            # A playlist is never another playlist's disc: two that name each
+            # other would otherwise both fold away.
+            if disc is None or disc == path or disc.lower().endswith(PLAYLIST_EXTENSIONS):
+                continue
+            if disc not in marks:
                 marks[disc] = path
     return marks
 

@@ -1592,6 +1592,9 @@ async def _plan_auto(request: AutoPlanRequest) -> list:
         _checked_auto_plan, list(request.file_paths),
         compression_prefs=prefs, output_dir=output_dir, ready_tool_ids=ready,
         target=request.target, platform_overrides=request.platform_overrides,
+        # The panel queues with duplicate action Skip: say so in the plan, so
+        # its delete preview never covers a game the queue will leave out.
+        skip_existing_outputs=True,
     )
     return _with_checked_compression(plan)
 

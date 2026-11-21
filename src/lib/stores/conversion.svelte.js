@@ -559,8 +559,12 @@ class ConversionStore {
           throw stopped;
         }
         // The route queues with the saved compression: send a change still
-        // inside its debounce first.
+        // inside its debounce first, and stop if it didn't save (the choice
+        // stays, with Try again in Settings).
         await this.flushCompressionPrefs();
+        if (this.compressionSaveError) {
+          throw new Error(`Couldn't save the compression: ${this.compressionSaveError}`);
+        }
         const result = await api.createAutoJobs(items, outputDir, 'skip', sent);
         const createdJobs = Array.isArray(result?.jobs) ? result.jobs : [];
         jobs.adopt(createdJobs);

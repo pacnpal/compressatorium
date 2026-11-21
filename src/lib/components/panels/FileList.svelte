@@ -170,9 +170,15 @@
   });
 
   let searchInput = $state('');
-  // A new folder starts with no name filter (the store drops it on navigate).
+  // A new folder starts with no name filter (the store drops it on
+  // navigate); a scope change keeps what was typed.
+  let typedIn = fileBrowser.currentPath;
   $effect(() => {
-    if (!fileBrowser.folderQuery && !fileBrowser.searchMode) searchInput = '';
+    const path = fileBrowser.currentPath;
+    if (path !== typedIn) {
+      typedIn = path;
+      searchInput = '';
+    }
   });
 
   // Count of terminated dat_match background jobs. Tracked as a

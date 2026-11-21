@@ -81,10 +81,37 @@ def test_one_click_starts_one_run_and_queues_what_was_planned():
     before_await = run.split("await ", 1)[0]
     for read in ("const snapshot = [...paths];", "const outputDir = conversion.outputDir",
                  "const platformId = fileBrowser.rommPlatformId;",
-                 "const choice = { ...safety", "platformOverrides: conversion.overridesFor(snapshot)"):
+                 "let choice = { ...safety", "platformOverrides: conversion.overridesFor(snapshot)",
+                 "submitAbort = controller;"):
         assert read in before_await, read
+    # A big selection takes the options shown with its plan, once confirmed.
+    assert "if (!(await waiting) || controller.signal.aborted) return;" in run
+    assert "{@render optionsBody()}" in _PANEL.split("<BaseModal", 1)[1]
     assert "conversion.fetchDeletePlan(groups, outputDir)" in run
     assert "rommPlatformId: platformId," in run
+
+
+def test_a_delete_preview_never_opens_after_the_panel_is_gone():
+    """CodeRabbit 4654265189: the run's abort is checked between the preview
+    request and the confirmation."""
+    run = _PANEL.split("async function run() {", 1)[1]
+    after_fetch = run.split("conversion.fetchDeletePlan(groups, outputDir)", 1)[1]
+    guard = after_fetch.split("ui.deletePlanPromptOpen = true;", 1)[0]
+    assert "if (controller.signal.aborted) {" in guard
+    assert "conversion.clearDeletePlan();" in guard
+
+
+def test_cancelling_the_folder_picker_keeps_next_to_the_original():
+    """CodeRabbit 4654265200: the other-folder radio only opens the picker;
+    it reads as chosen once a folder is."""
+    assert "e.preventDefault();\n            setWhere('folder');" in _PANEL
+    assert "checked={!!outputDir}" in _PANEL
+
+
+def test_a_reloading_romm_catalog_keeps_the_picked_target():
+    """CodeRabbit 4654265178."""
+    effect = _PANEL.split("// A RomM catalog reloading offers nothing for a moment", 1)[1]
+    assert "if (catalogLoading) return;" in effect.split("untrack", 1)[0]
 
 
 def test_leaving_the_view_answers_an_open_dialog():

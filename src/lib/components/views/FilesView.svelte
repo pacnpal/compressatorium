@@ -273,5 +273,8 @@
       border-bottom-right-radius: 0;
     }
     .view:has(.right.sheet) { padding-bottom: 55dvh; }
+    /* Focus scrolling stops above the sheet, so a focused row is never
+       hidden under it. */
+    :global(:is(html, main):has(.right.sheet)) { scroll-padding-bottom: 55dvh; }
   }
 </style>

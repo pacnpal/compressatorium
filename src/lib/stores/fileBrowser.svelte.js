@@ -1038,6 +1038,18 @@ class FileBrowserStore {
     this.lastSelectedIndex = -1;
   }
 
+  /**
+   * Untick *paths* only (a finished run's games), and any playlist whose discs
+   * are no longer all ticked; everything else stays selected.
+   */
+  deselect(paths) {
+    for (const path of paths ?? []) this.selectedFiles.delete(path);
+    for (const [path, row] of [...this.selectedPlaylists]) {
+      if (!this.isRowSelected(row)) this.selectedPlaylists.delete(path);
+    }
+    if (this.selectedFiles.size === 0) this.lastSelectedIndex = -1;
+  }
+
   clearSelection() {
     this.selectedFiles.clear();
     this.selectedPlaylists.clear();

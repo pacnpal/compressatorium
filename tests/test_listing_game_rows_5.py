@@ -155,3 +155,19 @@ async def test_a_stalled_pass_marks_nothing_and_still_lists(tmp_path, monkeypatc
 
     assert set(marks) == {"Game.cue", "Game.bin", "Game.m3u"}
     assert all(m == (None, None) for m in marks.values()), marks
+
+
+@pytest.mark.asyncio
+async def test_playlists_naming_each_other_stay_listed(tmp_path):
+    """CodeRabbit 4654265165: a playlist is never another playlist's disc, so
+    two that name each other both stay rows."""
+    folder = tmp_path / "psx"
+    disc = _write(folder / "Game (Disc 1).chd")
+    a = _write(folder / "A.m3u", b"B.m3u\nGame (Disc 1).chd\n")
+    _write(folder / "B.m3u", b"A.m3u\n")
+
+    marks = await _listing(folder)
+
+    assert marks["A.m3u"] == (None, None)
+    assert marks["B.m3u"] == (None, None)
+    assert marks[disc.name] == (None, str(a))

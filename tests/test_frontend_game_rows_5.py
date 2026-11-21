@@ -152,3 +152,20 @@ process.stdout.write(JSON.stringify({
     assert data == {
         "searchMode": False, "searching": False, "scope": "folder", "shown": ["Saga.m3u"],
     }, data
+
+
+def test_a_finished_convert_unticks_only_what_it_sent(tmp_path):
+    """CodeRabbit 4654265194: a game ticked while the queue request was out
+    stays ticked; a playlist whose discs went with the run is unticked."""
+    data = _run(tmp_path, _LISTING + """
+const m = fileBrowser.rows.find((r) => r.path === '/v/Saga.m3u');
+fileBrowser.toggleSelect(m);
+fileBrowser.toggleSelect(loose);
+fileBrowser.deselect(['/v/Saga (Disc 1).chd', '/v/Saga (Disc 2).chd']);
+process.stdout.write(JSON.stringify({
+  files: [...fileBrowser.selectedFiles.keys()],
+  playlists: [...fileBrowser.selectedPlaylists.keys()],
+}));
+""")
+
+    assert data == {"files": ["/v/Loose.iso"], "playlists": []}, data

@@ -878,3 +878,29 @@ await store.submitAuto(['/v/a.iso'], { plan });
 process.stdout.write(JSON.stringify(order));
 """)
     assert data == [["put", "lzma"], ["plan", "lzma"], ["put", "zlib"], ["queue", "zlib"]], data
+
+
+def test_a_compression_that_did_not_save_queues_nothing(tmp_path):
+    """CodeRabbit 4654265219: the Auto route queues with the saved compression,
+    so when the change can't be saved the run stops and says so; the choice
+    is kept for Try again."""
+    data = _run_in_browser(tmp_path, """
+const store = conversion;
+api.putConversionPrefs = async () => { throw new Error('disk full'); };
+let queued = 0;
+api.createAutoJobs = async () => { queued += 1; return { jobs: [] }; };
+store.setCompressionFor('createcd', { codecs: ['lzma'] });
+let failed = false;
+try {
+  await store.submitAuto(['/v/a.iso'], { plan: [{ file_path: '/v/a.iso', mode: 'createcd' }] });
+} catch (_e) {
+  failed = true;
+}
+process.stdout.write(JSON.stringify({
+  failed, queued, kept: store.prefs.chdman,
+  errors: toasts.filter(([kind]) => kind === 'error').map(([, m]) => m),
+}));
+""")
+    assert data["failed"] is True and data["queued"] == 0, data
+    assert data["kept"] == "lzma", data
+    assert any("Couldn't save the compression" in m for m in data["errors"]), data

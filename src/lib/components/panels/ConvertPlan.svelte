@@ -143,13 +143,15 @@
           </details>
           {#if line.kind === 'pick' && onoverride}
             <div class="pick">
-              <Button variant="secondary" size="sm" onclick={() => pick(line)}>Pick console</Button>
+              <Button variant="secondary" size="sm" onclick={() => pick(line)}>
+                {line.rows.length === 1 ? 'Pick console' : `Pick console for all ${line.rows.length}`}
+              </Button>
               {#if picking === line.key}
                 <select
                   aria-label="Pick the console"
                   onchange={(e) => choose(line, e.currentTarget.value)}
                 >
-                  <option value="">This is a…</option>
+                  <option value="">{line.rows.length === 1 ? 'This is a…' : 'These are all…'}</option>
                   {#each consoles as c (c.slug)}
                     <option value={c.slug}>{c.name}</option>
                   {/each}

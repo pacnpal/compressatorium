@@ -1133,6 +1133,7 @@ def plan_auto(
     tools_registry=None,
     target: str | None = None,
     platform_overrides: dict[str, str] | None = None,
+    skip_existing_outputs: bool = False,
 ) -> list[AutoTarget]:
     """Work out each Image's Platform and default target, without queueing.
 
@@ -1140,6 +1141,8 @@ def plan_auto(
     modes that write it instead of its default (``route_for``).
     ``platform_overrides`` maps a path to the console the user picked for it;
     it replaces only a detection that decided nothing (``how = "chosen"``).
+    ``skip_existing_outputs`` skips a game whose new file is already there,
+    as the Convert panel's queue (duplicate action Skip) would.
 
     ``compression_prefs`` is the saved per-tool compression (the convert
     panel's remembered setting, keyed by tool id). A mode that takes no
@@ -1187,12 +1190,19 @@ def plan_auto(
                 f"({os.path.basename(out)})"
             ),
         )
-    return [
-        replace(t, output_name=os.path.basename(out)) if t.mode and (
-            out := _target_output(t.file_path, t.mode, output_dir, tools_registry)
-        ) else t
-        for t in plan
-    ]
+    named: list[AutoTarget] = []
+    for t in plan:
+        out = _target_output(t.file_path, t.mode, output_dir, tools_registry) if t.mode else None
+        if out is None:
+            named.append(t)
+        elif skip_existing_outputs and os.path.lexists(out):
+            named.append(replace(
+                t, mode=None, tool_id=None, compression=None,
+                skip_reason=f"{os.path.basename(out)} already exists",
+            ))
+        else:
+            named.append(replace(t, output_name=os.path.basename(out)))
+    return named
 
 
 def _plan_targets(

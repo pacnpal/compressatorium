@@ -62,6 +62,8 @@
     if (count === 0) untrack(() => conversion.chooseTarget(''));
   });
   $effect(() => {
+    // A RomM catalog reloading offers nothing for a moment; its choice stays.
+    if (catalogLoading) return;
     const offered = targetGroups.flatMap((g) => g.options.map((o) => o.value));
     untrack(() => {
       if (selected.length && conversion.target && !offered.includes(conversion.target)) {
@@ -230,7 +232,11 @@
     const outputDir = conversion.outputDir || null;
     const platformId = fileBrowser.rommPlatformId;
     const fromRomm = platformId !== null;
-    const choice = { ...safety, split: conversion.split };
+    let choice = { ...safety, split: conversion.split };
+    // Leaving the view aborts this run wherever it is waiting: no
+    // dialog opens and nothing is queued after that.
+    const controller = new AbortController();
+    submitAbort = controller;
     // The plan's own inputs, so the server replans what was shown.
     const planned = {
       target: conversion.target || null,
@@ -246,7 +252,9 @@
         if (conversion.planError) toast.error(`Couldn't plan this: ${conversion.planError}`);
         return;
       }
-      if (!(await waiting)) return;
+      if (!(await waiting) || controller.signal.aborted) return;
+      // The dialog showed the options for this plan: take them as confirmed.
+      choice = { ...safety, split: conversion.split };
     }
     const rows = confirmed.filter((row) => row.mode);
     const options = {
@@ -270,14 +278,16 @@
         } catch (_e) {
           return; // toast already raised
         }
+        if (controller.signal.aborted) {
+          conversion.clearDeletePlan();
+          return;
+        }
         ui.deletePlanPromptOpen = true;
         const proceed = await new Promise((resolve) => { deletePrompt = resolve; });
         conversion.clearDeletePlan();
         if (!proceed) return;
       }
     }
-    const controller = new AbortController();
-    submitAbort = controller;
     try {
       await conversion.submitAuto(snapshot, {
         plan: confirmed,
@@ -295,7 +305,8 @@
       if (fromRomm) romm.setPendingRepins(conversion.lastRepinPending);
     }
     if (controller.signal.aborted) return;
-    fileBrowser.clearSelection();
+    // Only what this run sent: a game ticked while it was out stays ticked.
+    fileBrowser.deselect(snapshot);
     // Back from search results to the folder, so the new files show in place.
     if (fileBrowser.searchMode && ui.searchAutoReturnToFileList) {
       fileBrowser.exitSearch();
@@ -362,58 +373,7 @@
     {#if paths.length > 0}
       <details class="options">
         <summary>Options <span class="muted">{optionsSummary}</span></summary>
-        <div class="options-body">
-          <SafetyOptions
-            {specs}
-            checkAfter={safety.checkAfter}
-            deleteOriginal={safety.deleteOriginal}
-            quickCheck={safety.quickCheck}
-            onchange={(next) => conversion.setSafety(next)}
-            idPrefix="convert-safety"
-          />
-          {#each pickers as p (p.mode)}
-            <CompressionPicker
-              mode={p.mode}
-              label={`${p.format} compression`}
-              value={conversion.compressionFor(p.mode)}
-              onchange={(v) => conversion.setCompressionFor(p.mode, v)}
-            />
-          {/each}
-          <fieldset class="where">
-            <legend class="label">Where the new files go</legend>
-            <label class="radio">
-              <input
-                type="radio"
-                name="convert-where"
-                checked={!outputDir}
-                onchange={() => setWhere('beside')}
-              />
-              Next to the original
-            </label>
-            <label class="radio">
-              <input
-                type="radio"
-                name="convert-where"
-                checked={!!outputDir}
-                onchange={() => setWhere('folder')}
-              />
-              In another folder…
-            </label>
-            {#if outputDir}
-              <p class="chosen">
-                <span class="mono">{outputLabel}</span>
-                <Button variant="ghost" size="sm" onclick={() => (pickingFolder = true)}>Change</Button>
-              </p>
-            {/if}
-          </fieldset>
-          {#if offersSplit}
-            <Checkbox
-              bind:checked={conversion.split}
-              label="Split into 4 GB parts"
-              description="For FAT32 drives."
-            />
-          {/if}
-        </div>
+        <div class="options-body">{@render optionsBody()}</div>
       </details>
     {/if}
 
@@ -429,6 +389,63 @@
   {/if}
 </section>
 
+{#snippet optionsBody()}
+    <SafetyOptions
+      {specs}
+      checkAfter={safety.checkAfter}
+      deleteOriginal={safety.deleteOriginal}
+      quickCheck={safety.quickCheck}
+      onchange={(next) => conversion.setSafety(next)}
+      idPrefix="convert-safety"
+    />
+    {#each pickers as p (p.mode)}
+      <CompressionPicker
+        mode={p.mode}
+        label={`${p.format} compression`}
+        value={conversion.compressionFor(p.mode)}
+        onchange={(v) => conversion.setCompressionFor(p.mode, v)}
+      />
+    {/each}
+    <fieldset class="where">
+      <legend class="label">Where the new files go</legend>
+      <label class="radio">
+        <input
+          type="radio"
+          name="convert-where"
+          checked={!outputDir}
+          onchange={() => setWhere('beside')}
+        />
+        Next to the original
+      </label>
+      <label class="radio">
+        <input
+          type="radio"
+          name="convert-where"
+          checked={!!outputDir}
+          onclick={(e) => {
+            // Picked once a folder is chosen; cancelling keeps the choice.
+            e.preventDefault();
+            setWhere('folder');
+          }}
+        />
+        In another folder…
+      </label>
+      {#if outputDir}
+        <p class="chosen">
+          <span class="mono">{outputLabel}</span>
+          <Button variant="ghost" size="sm" onclick={() => (pickingFolder = true)}>Change</Button>
+        </p>
+      {/if}
+    </fieldset>
+    {#if offersSplit}
+      <Checkbox
+        bind:checked={conversion.split}
+        label="Split into 4 GB parts"
+        description="For FAT32 drives."
+      />
+    {/if}
+{/snippet}
+
 <BaseModal
   open={!!planPrompt}
   onClose={() => resolvePlanPrompt(false)}
@@ -442,6 +459,14 @@
       error={conversion.planError}
       onretry={() => conversion.requestPlan(paths, { delay: 0 })}
     />
+    {#if conversion.plan?.some((row) => row.mode)}
+      <!-- The options this plan offers (the 4 GB split for PS3 folders),
+           set before Convert is confirmed. -->
+      <details class="options" open>
+        <summary>Options <span class="muted">{optionsSummary}</span></summary>
+        <div class="options-body">{@render optionsBody()}</div>
+      </details>
+    {/if}
   {/snippet}
   {#snippet footer()}
     <Button variant="secondary" onclick={() => resolvePlanPrompt(false)}>Cancel</Button>
