@@ -22,12 +22,31 @@
     { id: 'converters', title: 'Converters' },
   ];
 
+  // How long a deep link keeps its section in place while the sections above
+  // it load and grow. ponytail: a fixed window; a "loaded" signal from each
+  // section would end it exactly.
+  const SETTLE_MS = 2000;
+  let sectionsEl = $state();
+
   $effect(() => {
     const section = ui.settingsSection;
-    if (!section) return;
-    tick().then(() => {
+    if (!section || !sectionsEl) return;
+    const scroll = () =>
       document.getElementById(`settings-${section}`)?.scrollIntoView({ block: 'start' });
-    });
+    tick().then(scroll);
+    // Re-scroll whenever the page grows, until it settles or the user scrolls.
+    const observer = new ResizeObserver(scroll);
+    observer.observe(sectionsEl);
+    const stop = () => {
+      observer.disconnect();
+      clearTimeout(timer);
+      for (const name of ['wheel', 'touchstart', 'keydown']) window.removeEventListener(name, stop);
+    };
+    const timer = setTimeout(stop, SETTLE_MS);
+    for (const name of ['wheel', 'touchstart', 'keydown']) {
+      window.addEventListener(name, stop, { passive: true });
+    }
+    return stop;
   });
 </script>
 
@@ -46,7 +65,7 @@
       {/each}
     </nav>
 
-    <div class="sections">
+    <div class="sections" bind:this={sectionsEl}>
       {#each SECTIONS as s (s.id)}
         {#if s.id === 'notifications'}
           <!-- NotificationSettings brings its own card and heading. -->
@@ -105,7 +124,7 @@
     padding: var(--space-4);
     min-width: 0;
   }
-  .card, .slot { scroll-margin-top: var(--space-4); }
+  .card, .slot { scroll-margin-top: calc(var(--topbar-height) + var(--space-4)); }
   /* NotificationSettings sizes itself for a page of its own; fill the column. */
   .slot > :global(.card) { max-width: none; box-shadow: var(--elev-1); }
   .card h2 {
@@ -119,7 +138,7 @@
     .layout { display: grid; grid-template-columns: 180px minmax(0, 1fr); align-items: start; }
     .jump {
       position: sticky;
-      top: var(--space-4);
+      top: calc(var(--topbar-height) + var(--space-4));
       flex-direction: column;
       gap: var(--space-2);
     }

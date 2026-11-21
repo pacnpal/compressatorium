@@ -151,6 +151,9 @@ class ConversionStore {
   // compression, so the choice follows them across sessions and browsers.
   #compressionPrefs = {};
   #saveTimer = null;
+  // The preference PUTs, one at a time in the order asked for, so an older
+  // body can never land after a newer one.
+  #saveChain = Promise.resolve();
   // Set once the user changes any compression control, so a late boot
   // preference fetch can't revert an edit made while it was in flight.
   #compressionTouched = false;
@@ -459,13 +462,48 @@ class ConversionStore {
     const value = this.compressionValue;
     if (value == null) return; // mode without compression, nothing to save
     this.#compressionPrefs = { ...this.#compressionPrefs, [this.primaryTool]: value };
+    this.#schedulePrefsSave();
+  }
+
+  // The debounce lives here, in the store, so leaving the screen that made
+  // the change (Settings, the Convert panel) never drops it.
+  #schedulePrefsSave() {
     if (!isBrowser) return;
     if (this.#saveTimer) clearTimeout(this.#saveTimer);
-    const snapshot = { ...this.#compressionPrefs };
     this.#saveTimer = setTimeout(() => {
       this.#saveTimer = null;
-      api.putConversionPrefs(snapshot).catch(() => {});
+      this.#putPrefs();
     }, PREF_SAVE_DEBOUNCE_MS);
+  }
+
+  #putPrefs() {
+    const snapshot = { ...this.#compressionPrefs };
+    this.#saveChain = this.#saveChain
+      .then(() => api.putConversionPrefs(snapshot))
+      .catch(() => {});
+    return this.#saveChain;
+  }
+
+  /** Send a debounced preference now; resolves once every save so far has landed. */
+  flushCompressionPrefs() {
+    if (this.#saveTimer) {
+      clearTimeout(this.#saveTimer);
+      this.#saveTimer = null;
+      this.#putPrefs();
+    }
+    return this.#saveChain;
+  }
+
+  /**
+   * Settings → Defaults saved the per-tool compression *prefs* (the whole
+   * object): adopt it, make the current tool's value the live one even after
+   * the user picked codecs here (an explicit save wins over the touched
+   * guard, which only shields an edit from a late boot fetch), and save it.
+   */
+  applySavedDefaults(prefs) {
+    this.#compressionPrefs = { ...prefs };
+    this.#applyCompressionPref(this.primaryTool);
+    this.#schedulePrefsSave();
   }
 
   /**

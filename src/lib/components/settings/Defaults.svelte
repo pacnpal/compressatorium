@@ -6,8 +6,9 @@
    *   and a new console row start from it).
    * - The remembered compression per format: the same per-tool preference the
    *   Convert panel saves (`/api/preferences/conversion`), one picker per tool
-   *   whose default mode compresses. The PUT replaces the whole object, so
-   *   it's merged here, and the Convert panel's copy is reloaded after.
+   *   whose default mode compresses. The conversion store saves the merged
+   *   object (`applySavedDefaults`): its debounce outlives this section, and
+   *   the saved value becomes the Convert panel's live one.
    * - How long History keeps its rows (`/api/ledger/settings`).
    *
    * Each part loads on its own and shows its own error.
@@ -53,12 +54,13 @@
   );
   let prefs = $state(null);
   let prefsError = $state(null);
-  let saveTimer = null;
-  let saveChain = Promise.resolve();
 
   async function loadPrefs() {
     prefsError = null;
     try {
+      // A change still waiting in the store's debounce (made here or in the
+      // Convert panel) goes out first, so the copy read back includes it.
+      await conversion.flushCompressionPrefs();
       prefs = (await api.getConversionPrefs()) ?? {};
     } catch (e) {
       prefsError = e?.message ?? 'Request failed';
@@ -67,19 +69,11 @@
 
   function setCompression(p, value) {
     prefs = { ...prefs, [p.tool.id]: formatCompression(p.mode, value) };
-    // Debounced (a level box sends every keystroke); saves go one at a time.
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      const body = Object.fromEntries(Object.entries(prefs).filter(([, v]) => v != null));
-      saveChain = saveChain.then(async () => {
-        try {
-          await api.putConversionPrefs(body);
-          await conversion.loadServerPrefs();
-        } catch (e) {
-          toast.error(e?.message ?? "Couldn't save the compression");
-        }
-      });
-    }, 600);
+    // The conversion store debounces and saves it (so leaving this page
+    // can't drop it) and makes it the live choice in the Convert panel.
+    conversion.applySavedDefaults(
+      Object.fromEntries(Object.entries(prefs).filter(([, v]) => v != null)),
+    );
   }
 
   // ─── History ────────────────────────────────────────────────────────────
@@ -138,7 +132,6 @@
   onMount(() => {
     loadPrefs();
     loadRetention();
-    return () => clearTimeout(saveTimer);
   });
 </script>
 

@@ -123,11 +123,15 @@ def test_the_defaults_section_writes_the_shared_store():
 
 def test_the_defaults_section_edits_the_remembered_compression_and_history():
     src = _read("settings/Defaults.svelte")
-    # The same per-tool preference the Convert panel remembers, merged (the PUT
-    # replaces the whole object) and handed back to the Convert panel's store.
-    assert "api.getConversionPrefs()" in src and "api.putConversionPrefs(" in src
+    # The same per-tool preference the Convert panel remembers. The conversion
+    # store owns the save (its debounce outlives this section, Codex
+    # 4652247060) and applies it live even after an edit (Codex 4652247066);
+    # a pending save is flushed before the section reads the server's copy.
+    assert "await conversion.flushCompressionPrefs();" in src
+    assert "api.getConversionPrefs()" in src
+    assert "conversion.applySavedDefaults(" in src
+    assert "api.putConversionPrefs(" not in src and "setTimeout(" not in src
     assert "formatCompression(" in src and "parseCompression(" in src
-    assert "conversion.loadServerPrefs()" in src
     assert "<CompressionPicker" in src
     # History retention, which nothing in the UI set before.
     assert "api.getLedgerSettings()" in src and "api.putLedgerSettings(" in src
@@ -136,8 +140,6 @@ def test_the_defaults_section_edits_the_remembered_compression_and_history():
     # Retention saves run in order and only the newest one's answer shows.
     assert "retentionChain = retentionChain.then(" in src
     assert "if (ticket === retentionSaves) retention = retentionStored;" in src
-    # Compression saves are chained too, never two PUTs racing.
-    assert "saveChain = saveChain.then(" in src
     endpoints = (_SRC / "api" / "endpoints.js").read_text(encoding="utf-8")
     assert "getLedgerSettings:" in endpoints and "putLedgerSettings(" in endpoints
     assert "/ledger/settings" in endpoints
@@ -154,8 +156,17 @@ def test_settings_is_five_sections_with_deep_links():
     for part in ("<Connections />", "<Identification />", "<NotificationSettings />",
                  "<Defaults />", "<Converters />"):
         assert part in src, part
-    # The in-page nav is sticky on a wide screen.
+    # The in-page nav is sticky on a wide screen, below the sticky top bar
+    # (Codex 4652247071), and a section scrolled to stops below it too.
     assert "position: sticky" in src and "1100px" in src
+    assert "top: calc(var(--topbar-height) + var(--space-4));" in src
+    assert "scroll-margin-top: calc(var(--topbar-height) + var(--space-4));" in src
+    # The sections above load on their own and grow after the first scroll, so
+    # a deep link keeps its section in place until the page settles or the
+    # user scrolls.
+    assert "new ResizeObserver(" in src and "SETTLE_MS" in src
+    for stop in ("'wheel'", "'touchstart'", "'keydown'"):
+        assert stop in src, stop
     # ...which needs <main> not to be a scroll box: the page scrolls, and a
     # sticky child sticks to its nearest scroll box.
     app = (_ROOT / "src" / "App.svelte").read_text(encoding="utf-8")

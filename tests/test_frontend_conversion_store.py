@@ -1103,3 +1103,58 @@ def test_the_picker_reads_one_level_and_range():
     assert picker.count("value={level") == 2
     panel = (_SRC / "components" / "panels" / "ConvertPanel.svelte").read_text(encoding="utf-8")
     assert "value={conversion.compressionChoice}" in panel
+
+
+_BROWSER = """
+globalThis.window = {};
+const puts = [];
+api.putConversionPrefs = async (body) => { puts.push(body); return body; };
+"""
+
+
+def _run_in_browser(tmp_path: Path, scenario: str) -> dict:
+    """As `_run`, but with `window` defined so the store saves to the server."""
+    node = _find_node()
+    if node is None:
+        pytest.skip("node not available to evaluate the conversion store")
+    script = tmp_path / "conversion_store_browser.mjs"
+    levels = re.sub(r"^export ", "", _LEVELS_JS.read_text(encoding="utf-8"), flags=re.MULTILINE)
+    script.write_text(_STUBS + _BROWSER + levels + _plain_js() + scenario, encoding="utf-8")
+    proc = subprocess.run(
+        [node, str(script)], capture_output=True, text=True, timeout=30, check=False,
+    )
+    if proc.returncode != 0:
+        pytest.fail(f"Could not evaluate the conversion store via node:\n{proc.stderr}")
+    return json.loads(proc.stdout)
+
+
+def test_a_default_saved_in_settings_applies_even_after_an_edit(tmp_path):
+    """Codex 4652247066: once the user picked codecs in the Convert panel, a
+    compression saved in Settings → Defaults still has to become the live one."""
+    data = _run_in_browser(tmp_path, """
+const store = conversion;
+store.setCompression(['zlib']);           // the user's own pick: touched
+store.applySavedDefaults({ chdman: 'lzma' });
+process.stdout.write(JSON.stringify({ live: store.compressionSelection }));
+""")
+    assert data == {"live": ["lzma"]}
+
+
+def test_a_debounced_preference_survives_leaving_the_page(tmp_path):
+    """Codex 4652247060: the debounce lives in the store, not in the Settings
+    section, so leaving Settings can't drop it; and a flush sends it at once."""
+    data = _run_in_browser(tmp_path, """
+const store = conversion;
+store.applySavedDefaults({ chdman: 'lzma', dolphin: 'zstd:19' });
+const before = puts.length;
+await store.flushCompressionPrefs();
+const flushed = puts.slice();
+store.applySavedDefaults({ chdman: 'zlib' });
+await new Promise((r) => setTimeout(r, 700));   // past the debounce, no component left
+process.stdout.write(JSON.stringify({ before, flushed, later: puts[puts.length - 1] }));
+""")
+    assert data == {
+        "before": 0,
+        "flushed": [{"chdman": "lzma", "dolphin": "zstd:19"}],
+        "later": {"chdman": "zlib"},
+    }
