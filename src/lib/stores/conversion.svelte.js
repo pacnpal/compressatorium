@@ -161,6 +161,10 @@ class ConversionStore {
   // Set once the user changes any compression control, so a late boot
   // preference fetch can't revert an edit made while it was in flight.
   #compressionTouched = false;
+  // Bumped by every read of the remembered compression and every local
+  // change to it; a read adopts its answer only if nothing came after it, so
+  // a late boot read can't put old values over a newer edit (Codex 4652391157).
+  #prefsGeneration = 0;
 
   // ─── Derived ──────────────────────────────────────────────────────────
   get currentTool() {
@@ -413,8 +417,10 @@ class ConversionStore {
   // ─── Server-saved compression preference ────────────────────────────────
   /** Fetch saved per-tool compression defaults and apply the current tool's. */
   async loadServerPrefs() {
+    const generation = ++this.#prefsGeneration;
     try {
       const prefs = await api.getConversionPrefs();
+      if (generation !== this.#prefsGeneration) return;
       if (prefs && typeof prefs === 'object') {
         this.#compressionPrefs = prefs;
         // Don't clobber a selection the user made while the fetch was in flight.
@@ -465,6 +471,7 @@ class ConversionStore {
     this.#compressionTouched = true;
     const value = this.compressionValue;
     if (value == null) return; // mode without compression, nothing to save
+    this.#prefsGeneration += 1;
     this.#compressionPrefs = { ...this.#compressionPrefs, [this.primaryTool]: value };
     this.#schedulePrefsSave();
   }
@@ -518,6 +525,7 @@ class ConversionStore {
    * guard, which only shields an edit from a late boot fetch), and save it.
    */
   applySavedDefaults(prefs) {
+    this.#prefsGeneration += 1;
     this.#compressionPrefs = { ...prefs };
     this.#applyCompressionPref(this.primaryTool);
     this.#schedulePrefsSave();
@@ -796,14 +804,22 @@ class ConversionStore {
     this.duplicateCheck = null;
   }
 
+  // Only the newest delete-plan ask may answer; an older one, landing late or
+  // failing late, is dropped (null) instead of replacing or clearing it.
+  #deletePlanRequest = 0;
+
   async fetchDeletePlan(filePaths, duplicateAction = 'skip') {
     if (!filePaths?.length) return null;
+    const request = ++this.#deletePlanRequest;
     try {
-      this.deletePlan = await api.getDeletePlan(
+      const plan = await api.getDeletePlan(
         filePaths, this.mode, this.outputDir || null, duplicateAction,
       );
+      if (request !== this.#deletePlanRequest) return null;
+      this.deletePlan = plan;
       return this.deletePlan;
     } catch (e) {
+      if (request !== this.#deletePlanRequest) return null;
       toast.error(e?.message ?? 'Failed to build delete plan');
       this.deletePlan = null;
       throw e;

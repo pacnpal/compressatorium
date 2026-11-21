@@ -1181,3 +1181,53 @@ process.stdout.write(JSON.stringify({ failed, toasted, after: store.compressionS
         "after": None,
         "puts": [{"chdman": "lzma"}],
     }
+
+
+def test_a_late_boot_read_never_overwrites_a_newer_local_change(tmp_path):
+    """Codex 4652391157: the boot read of the remembered compression answers
+    after Settings saved lzma. Its old answer must not replace the cache, the
+    live choice, or what the pending save sends; nor after a Convert-panel edit."""
+    data = _run_in_browser(tmp_path, """
+const store = conversion;
+let answer;
+api.getConversionPrefs = () => new Promise((r) => { answer = r; });
+const boot = store.loadServerPrefs();
+store.applySavedDefaults({ chdman: 'lzma' });
+answer({ chdman: 'zlib' });
+await boot;
+const live = store.compressionSelection;
+await store.flushCompressionPrefs();
+const saved = puts[puts.length - 1];
+
+// The same with an edit made in the Convert panel while the read is out.
+const boot2 = store.loadServerPrefs();
+store.setCompression(['huff']);
+answer({ chdman: 'zlib' });
+await boot2;
+await store.flushCompressionPrefs();
+process.stdout.write(JSON.stringify({
+  live, saved, live2: store.compressionSelection, saved2: puts[puts.length - 1],
+}));
+""")
+    assert data == {
+        "live": ["lzma"], "saved": {"chdman": "lzma"},
+        "live2": ["huff"], "saved2": {"chdman": "huff"},
+    }
+
+
+def test_an_older_delete_plan_never_replaces_a_newer_one(tmp_path):
+    """The same rule for the delete plan: two asks answering out of order keep
+    the newer plan, and the older one's failure doesn't clear it."""
+    data = _run(tmp_path, """
+const store = conversion;
+const answers = [];
+api.getDeletePlan = () => new Promise((resolve, reject) => answers.push({ resolve, reject }));
+const older = store.fetchDeletePlan(['/a.iso']).catch(() => 'older failed');
+const newer = store.fetchDeletePlan(['/b.iso']);
+answers[1].resolve({ plan: 'newer' });
+await newer;
+answers[0].reject(new Error('gone'));
+const olderResult = await older;
+process.stdout.write(JSON.stringify({ plan: store.deletePlan, olderResult }));
+""")
+    assert data == {"plan": {"plan": "newer"}, "olderResult": None}
