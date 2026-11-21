@@ -1955,10 +1955,14 @@ async def dat(args) -> int:
     """``dat import PATH...`` and ``dat sync``: thin wrappers over
     ``services.dat_import``, the Web UI's own. Exit 1 when anything failed.
 
-    No rematch job: that runs in a server. The files whose verdict a new DAT
-    dropped are matched again the next time they are asked about.
+    The files a changed DAT set may name are re-matched, local-only, as the
+    server does, and the command waits for that before it exits, so a cached
+    remote hit the new DAT knows upgrades to its name (Codex PR #527). RomM's
+    saved settings are read first, so a sync finds its consoles.
     """
+    from routes import dat as dat_routes
     from services import dat_import
+    from services.romm import settings as romm_settings
 
     if args.dat_command == "import":
         files = [(p, os.path.abspath(p)) for p in args.paths]
@@ -1966,19 +1970,20 @@ async def dat(args) -> int:
         if missing:
             raise UsageError(f"not a file: {', '.join(missing)}")
         _open_db(False)
-        result = await dat_import.import_files(files, rematch=False)
+        result = await dat_import.import_files(files)
+        await dat_routes.wait_for_match_jobs()
         lines = [f"imported {d['file']}: {d['name']} ({d['file_count']} entries)"
                  for d in result["imported"]]
         failed = bool(result["errors"])
     else:
         _open_db(False)
+        await romm_settings.load()
         try:
-            result = await dat_import.sync_redump(
-                args.platform, force=args.force, rematch=False,
-            )
+            result = await dat_import.sync_redump(args.platform, force=args.force)
         except dat_import.SyncRunning as exc:
             print(f"compressatorium: {exc}", file=sys.stderr)
             return EXIT_FAILED
+        await dat_routes.wait_for_match_jobs()
         lines = [f"{s['system']}: {s['status'].replace('_', ' ')}"
                  + (f": {s['error']}" if s.get("error") else "")
                  for s in result["systems"]]

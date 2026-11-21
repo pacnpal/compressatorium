@@ -10,9 +10,11 @@ import io
 import zipfile
 from pathlib import Path
 from typing import ClassVar
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from services import dat_import
 
 from app.routes import dat as dat_routes
@@ -36,11 +38,22 @@ def _zip_bytes(members: dict[str, str | bytes]) -> bytes:
     return buf.getvalue()
 
 
-def _upload(data: bytes, filename: str):
-    upload = MagicMock()
-    upload.filename = filename
-    upload.read = AsyncMock(side_effect=[data, b""])
-    return upload
+def _upload(data: bytes, filename: str) -> tuple[str, tuple[str, bytes]]:
+    return ("files", (filename, data))
+
+
+def _client() -> httpx.AsyncClient:
+    app = FastAPI()
+    app.include_router(dat_routes.router, prefix="/api")
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
+
+
+async def _batch(files: list) -> dict:
+    """POST *files* to the batch route as a real multipart body."""
+    async with _client() as client:
+        response = await client.post("/api/dat/import-batch", files=files)
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 @pytest.fixture
@@ -82,12 +95,14 @@ def prefs(monkeypatch):
 @pytest.mark.asyncio
 async def test_batch_upload_imports_several_dats_and_a_pack_zip(store):
     pack = _zip_bytes({
-        "No-Intro/Nintendo - Game Boy (20261120).dat": _dat_xml("Nintendo - Game Boy", "G", "a" * 40),
+        "No-Intro/Nintendo - Game Boy (20261120).dat": _dat_xml(
+            "Nintendo - Game Boy", "G", "a" * 40,
+        ),
         "No-Intro/Sega - Game Gear (20261120).dat": _dat_xml("Sega - Game Gear", "S", "b" * 40),
         "readme.txt": "not a DAT",
         "__MACOSX/No-Intro/._Sega - Game Gear (20261120).dat": b"\x00\x05junk",
     })
-    result = await dat_routes.import_dat_batch(files=[
+    result = await _batch([
         _upload(_dat_xml("Sony - PlayStation", "P", "c" * 40).encode(), "psx.dat"),
         _upload(pack, "No-Intro Love Pack.zip"),
     ])
@@ -101,7 +116,7 @@ async def test_batch_upload_imports_several_dats_and_a_pack_zip(store):
 
 @pytest.mark.asyncio
 async def test_one_bad_dat_does_not_stop_the_rest(store):
-    result = await dat_routes.import_dat_batch(files=[
+    result = await _batch([
         _upload(b"not xml", "bad.dat"),
         _upload(_dat_xml("Good", "G", "a" * 40).encode(), "good.dat"),
         _upload(b"whatever", "notes.txt"),
@@ -114,8 +129,8 @@ async def test_one_bad_dat_does_not_stop_the_rest(store):
 async def test_reimporting_a_dat_replaces_the_older_copy(store):
     old = _dat_xml("Nintendo - Game Boy", "Old", "a" * 40, homepage="No-Intro")
     new = _dat_xml("Nintendo - Game Boy", "New", "b" * 40, homepage="No-Intro")
-    await dat_routes.import_dat_batch(files=[_upload(old.encode(), "gb.dat")])
-    await dat_routes.import_dat_batch(files=[_upload(new.encode(), "gb.dat")])
+    await _batch([_upload(old.encode(), "gb.dat")])
+    await _batch([_upload(new.encode(), "gb.dat")])
     dats = store.list_dats()
     assert len(dats) == 1
     assert store.lookup_sha1("a" * 40) is None
@@ -129,7 +144,7 @@ async def test_a_zip_with_an_unsafe_member_name_is_refused_whole(store, member):
         "fine.dat": _dat_xml("Fine", "F", "a" * 40),
         member: _dat_xml("Evil", "E", "b" * 40),
     })
-    result = await dat_routes.import_dat_batch(files=[_upload(pack, "pack.zip")])
+    result = await _batch([_upload(pack, "pack.zip")])
     assert store.list_dats() == []
     assert result["errors"] and result["errors"][0]["file"] == "pack.zip"
 
@@ -138,12 +153,12 @@ async def test_a_zip_with_an_unsafe_member_name_is_refused_whole(store, member):
 async def test_a_member_over_the_dat_size_cap_is_refused(store, monkeypatch):
     monkeypatch.setattr(dat_import, "MAX_DAT_SIZE", 64)
     pack = _zip_bytes({"big.dat": _dat_xml("Big", "B", "a" * 40)})
-    result = await dat_routes.import_dat_batch(files=[_upload(pack, "pack.zip")])
+    result = await _batch([_upload(pack, "pack.zip")])
     assert store.list_dats() == []
     assert result["errors"]
     # A loose DAT over the cap too, refused before it is parsed.
     loose = _dat_xml("Big", "B", "a" * 40).encode()
-    result = await dat_routes.import_dat_batch(files=[_upload(loose, "big.dat")])
+    result = await _batch([_upload(loose, "big.dat")])
     assert store.list_dats() == []
     assert "too large" in result["errors"][0]["error"]
 
@@ -155,7 +170,7 @@ async def test_a_zip_bomb_past_the_expansion_ratio_is_refused(store, monkeypatch
     monkeypatch.setattr(settings, "archive_inbox_max_ratio", 5)
     padding = "<!-- " + "x" * 50_000 + " -->"
     pack = _zip_bytes({"pad.dat": _dat_xml("Pad", "P", "a" * 40) + padding})
-    result = await dat_routes.import_dat_batch(files=[_upload(pack, "pack.zip")])
+    result = await _batch([_upload(pack, "pack.zip")])
     assert store.list_dats() == []
     assert "expand" in result["errors"][0]["error"]
 
@@ -176,7 +191,9 @@ def test_extracted_dats_never_take_the_member_name_on_disk(tmp_path):
 
 
 def _redump_zip(name: str, sha1: str) -> bytes:
-    return _zip_bytes({f"{name} (20261120).dat": _dat_xml(name, "Disc", sha1, homepage="redump.org")})
+    return _zip_bytes(
+        {f"{name} (20261120).dat": _dat_xml(name, "Disc", sha1, homepage="redump.org")},
+    )
 
 
 @pytest.fixture
@@ -255,17 +272,17 @@ def test_redump_urls_are_metadata_only():
     """Only /datfile/: never /keys/, /dkeys/, a -bios set, or a ROM."""
     for system in dat_import.REDUMP_SYSTEMS.values():
         url = dat_import.redump_url(system)
-        assert url == f"http://redump.org/datfile/{system}/"
+        assert url == f"https://redump.org/datfile/{system}/"
         assert "bios" not in url and "keys" not in url
 
 
 class _Conn:
-    """A stand-in for http.client.HTTPConnection: records what was asked."""
+    """A stand-in for http.client.HTTPSConnection: records what was asked."""
 
     seen: ClassVar[dict] = {}
     status = 200
 
-    def __init__(self, host, timeout):
+    def __init__(self, host, timeout, context):
         _Conn.seen = {"host": host}
 
     def request(self, method, path, headers):
@@ -282,7 +299,7 @@ class _Conn:
 
 
 def test_fetch_asks_redump_with_a_generic_user_agent(monkeypatch, tmp_path):
-    monkeypatch.setattr(dat_import.http.client, "HTTPConnection", _Conn)
+    monkeypatch.setattr(dat_import.http.client, "HTTPSConnection", _Conn)
     _Conn.status = 200
     path, meta = dat_import._fetch("psx", {"etag": '"old"'}, str(tmp_path))
     seen = _Conn.seen
@@ -295,7 +312,7 @@ def test_fetch_asks_redump_with_a_generic_user_agent(monkeypatch, tmp_path):
 
 
 def test_fetch_refuses_anything_but_200_and_304(monkeypatch, tmp_path):
-    monkeypatch.setattr(dat_import.http.client, "HTTPConnection", _Conn)
+    monkeypatch.setattr(dat_import.http.client, "HTTPSConnection", _Conn)
     _Conn.status = 304
     assert dat_import._fetch("psx", {}, str(tmp_path)) == (None, {})
     # A redirect is not followed: it is refused like any other answer.
@@ -353,3 +370,374 @@ def test_present_platforms_reads_every_library_and_skips_one_that_is_down(monkey
         Lib("1", ["gc", "gba"]),
     ])
     assert dat_import.present_platforms() == {"ngc", "gba"}
+
+
+@pytest.mark.asyncio
+async def test_a_zip_whose_data_is_corrupt_is_refused_alone(store, tmp_path):
+    """Codex PR #527: corrupt deflate data is one zip's refusal, not the
+    batch's failure."""
+    bad = tmp_path / "bad.zip"
+    data = bytearray(_zip_bytes({"x.dat": _dat_xml("Broken", "B", "d" * 40) * 50}))
+    start = data.index(b"x.dat") + len(b"x.dat")
+    for i in range(start + 8, start + 40):
+        data[i] ^= 0xFF
+    bad.write_bytes(bytes(data))
+    good = tmp_path / "gb.dat"
+    good.write_text(_dat_xml("Nintendo - Game Boy", "G", "a" * 40))
+
+    result = await dat_import.import_files([("bad.zip", str(bad)), ("gb.dat", str(good))])
+
+    assert [d["name"] for d in result["imported"]] == ["Nintendo - Game Boy"]
+    assert [e["file"] for e in result["errors"]] == ["bad.zip"]
+
+
+def test_cli_dat_sync_reads_romms_saved_settings_first(store, prefs, fetches, monkeypatch):
+    """Codex PR #527: RomM set up in the Web UI is in the database; the sync
+    must read it before it asks which consoles are present."""
+    import cli
+    from services.romm import settings as romm_settings
+
+    order: list[str] = []
+
+    async def load(*_args, **_kwargs):
+        order.append("load")
+        return {}
+
+    def present():
+        order.append("present")
+        return set()
+
+    monkeypatch.setattr(cli, "_open_db", lambda dry_run: True)
+    monkeypatch.setattr(romm_settings, "load", load)
+    monkeypatch.setattr(dat_import, "present_platforms", present)
+
+    assert cli.main(["dat", "sync"]) == cli.EXIT_OK
+    assert order[:2] == ["load", "present"]
+
+
+def test_cli_dat_import_rematches_and_waits_for_it(store, prefs, monkeypatch, tmp_path):
+    """Codex PR #527: a DAT imported from the CLI refreshes the files it now
+    knows (a remote hit upgrades to the DAT's name), and the CLI waits for
+    that local-only rematch before it exits."""
+    import cli
+
+    waited = AsyncMock()
+    monkeypatch.setattr(cli, "_open_db", lambda dry_run: True)
+    monkeypatch.setattr("routes.dat.wait_for_match_jobs", waited, raising=False)
+    loose = tmp_path / "gb.dat"
+    loose.write_text(_dat_xml("Nintendo - Game Boy", "G", "a" * 40))
+
+    assert cli.main(["dat", "import", str(loose)]) == cli.EXIT_OK
+    store.rematch.assert_awaited_once()
+    waited.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_waiting_for_match_jobs_waits_for_one_started_in_turn(monkeypatch):
+    """A finishing job may start a deferred rematch; the wait covers it."""
+    import asyncio
+
+    import routes.dat as live_routes
+
+    done: list[str] = []
+
+    async def second():
+        await asyncio.sleep(0.01)
+        done.append("second")
+
+    async def first():
+        await asyncio.sleep(0.01)
+        live_routes._background_match_tasks.add(asyncio.create_task(second()))
+        done.append("first")
+
+    live_routes._background_match_tasks.add(asyncio.create_task(first()))
+    await live_routes.wait_for_match_jobs()
+
+    assert done == ["first", "second"]
+    live_routes._background_match_tasks.clear()
+
+
+# ---------------------------------------------------------------------------
+# Review findings on PR #527
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# The Redump cache trusts what is installed, not a DAT's name
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force", [False, True])
+async def test_a_redump_dat_replaced_by_hand_is_restored(
+    store, prefs, fetches, monkeypatch, force,
+):
+    """Codex + CodeRabbit PR #527: a DAT of the same name and family imported
+    by hand replaces the synced one; the next sync must not call it current."""
+    monkeypatch.setattr(dat_import, "present_platforms", lambda: {"psx"})
+    await dat_import.sync_redump()
+    assert store.lookup_sha1("a" * 40)
+
+    older = _dat_xml("Sony - PlayStation", "Old", "e" * 40, homepage="redump.org")
+    await dat_import.import_files([("old.dat", _write(older))])
+    assert store.lookup_sha1("a" * 40) is None
+
+    result = await dat_import.sync_redump(force=force)
+
+    assert len(fetches) == 2
+    assert fetches[1][1] == {}, "a conditional request could answer 304 and restore nothing"
+    assert result["systems"][0]["status"] == "imported"
+    assert store.lookup_sha1("a" * 40), "the synced DAT was not restored"
+
+
+def _write(text: str) -> str:
+    import os
+    import tempfile
+
+    fd, path = tempfile.mkstemp(suffix=".dat")
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# The batch upload is bounded before it is parsed
+# ---------------------------------------------------------------------------
+
+_BATCH_BOUNDARY = "datbatch"
+_SLICE = 64 * 1024
+
+
+class _Body:
+    """A multipart body of one ``files`` part of *size* bytes, a slice at a
+    time; ``sent`` is how much the server pulled."""
+
+    def __init__(self, size: int) -> None:
+        self.head = (
+            f"--{_BATCH_BOUNDARY}\r\n"
+            'Content-Disposition: form-data; name="files"; filename="big.zip"\r\n'
+            "Content-Type: application/zip\r\n\r\n"
+        ).encode()
+        self.tail = f"\r\n--{_BATCH_BOUNDARY}--\r\n".encode()
+        self.size = size
+        self.sent = 0
+
+    @property
+    def length(self) -> int:
+        return len(self.head) + self.size + len(self.tail)
+
+    async def __aiter__(self):
+        self.sent += len(self.head)
+        yield self.head
+        left = self.size
+        while left > 0:
+            chunk = b"\x00" * min(_SLICE, left)
+            left -= len(chunk)
+            self.sent += len(chunk)
+            yield chunk
+        self.sent += len(self.tail)
+        yield self.tail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declared", [True, False], ids=["content-length", "chunked"])
+async def test_an_oversized_batch_is_cut_off_as_it_arrives(
+    store, monkeypatch, tmp_path, declared,
+):
+    """CodeRabbit PR #527: the body is capped while it arrives, never spooled whole."""
+    import tempfile
+
+    monkeypatch.setattr(dat_import, "MAX_BATCH_SIZE", 1000)
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(spool))
+    body = _Body(8 * 1024 * 1024)
+    headers = {"Content-Type": f"multipart/form-data; boundary={_BATCH_BOUNDARY}"}
+    if declared:
+        headers["Content-Length"] = str(body.length)
+
+    async with _client() as client:
+        response = await client.post("/api/dat/import-batch", content=body, headers=headers)
+
+    assert response.status_code == 413, response.text
+    assert body.sent <= 1000 + 128 * 1024
+    if declared:
+        assert body.sent == 0
+    assert store.list_dats() == []
+    assert list(spool.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_a_batch_reads_every_file_part(store):
+    files = [
+        ("files", ("gb.dat", _dat_xml("Nintendo - Game Boy", "G", "a" * 40).encode())),
+        ("files", ("pack.zip", _zip_bytes({
+            "gg.dat": _dat_xml("Sega - Game Gear", "S", "b" * 40),
+        }))),
+        ("files", ("notes.txt", b"hello")),
+    ]
+    async with _client() as client:
+        response = await client.post("/api/dat/import-batch", files=files)
+    assert response.status_code == 200, response.text
+    assert sorted(d["name"] for d in store.list_dats()) == [
+        "Nintendo - Game Boy", "Sega - Game Gear",
+    ]
+    assert [e["file"] for e in response.json()["errors"]] == ["notes.txt"]
+
+
+# ---------------------------------------------------------------------------
+# One loose DAT: the size cap, and a read failure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_loose_dat_over_the_cap_is_refused_before_it_is_parsed(
+    store, monkeypatch, tmp_path,
+):
+    """CodeRabbit PR #527: the CLI and the Redump bare-DAT path skip the upload cap."""
+    monkeypatch.setattr(dat_import, "MAX_DAT_SIZE", 64)
+    big = tmp_path / "big.dat"
+    big.write_text(_dat_xml("Big", "B", "a" * 40))
+    result = await dat_import.import_files([("big.dat", str(big))])
+    assert store.list_dats() == []
+    assert [e["file"] for e in result["errors"]] == ["big.dat"]
+    assert "too large" in result["errors"][0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_dat_does_not_stop_the_batch(store, monkeypatch, tmp_path):
+    """CodeRabbit PR #527: a PermissionError is that file's error, not the batch's."""
+    from services import dat_store as dat_store_module
+
+    locked = tmp_path / "locked.dat"
+    locked.write_text(_dat_xml("Locked", "L", "a" * 40))
+    good = tmp_path / "good.dat"
+    good.write_text(_dat_xml("Good", "G", "b" * 40))
+    real = dat_store_module.parse_dat
+
+    def parse(source):
+        if str(source) == str(locked):
+            raise PermissionError(13, "Permission denied", str(locked))
+        return real(source)
+
+    monkeypatch.setattr(dat_store_module, "parse_dat", parse)
+    result = await dat_import.import_files(
+        [("locked.dat", str(locked)), ("good.dat", str(good))],
+    )
+
+    assert [d["name"] for d in result["imported"]] == ["Good"]
+    assert [e["file"] for e in result["errors"]] == ["locked.dat"]
+
+
+# ---------------------------------------------------------------------------
+# A partly imported Redump system still says the DATs changed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_partly_imported_system_reports_the_change(store, prefs, fetches, monkeypatch):
+    """CodeRabbit PR #527: the UI refreshes on ``changed``, not on the count of
+    systems that fully imported."""
+    monkeypatch.setattr(dat_import, "present_platforms", lambda: {"psx"})
+    body = _zip_bytes({
+        "good.dat": _dat_xml("Sony - PlayStation", "Disc", "a" * 40, homepage="redump.org"),
+        "bad.dat": "not xml",
+    })
+
+    def fake_fetch(system, cached, dest):
+        path = f"{dest}/{system}.zip"
+        with open(path, "wb") as fh:
+            fh.write(body)
+        return path, {}
+
+    monkeypatch.setattr(dat_import, "_fetch", fake_fetch)
+    result = await dat_import.sync_redump()
+
+    assert result["systems"][0]["status"] == "failed"
+    assert result["imported"] == 0
+    assert result["changed"] is True
+    assert (await dat_import.sync_redump(force=True))["changed"] is True
+    monkeypatch.setattr(dat_import, "present_platforms", set)
+    assert (await dat_import.sync_redump())["changed"] is False
+
+
+# ---------------------------------------------------------------------------
+# The verdict stamp sees a DAT change made by another process
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_dat_imported_by_another_process_retires_the_stamp(tmp_path):
+    """CodeRabbit PR #527: ``compressatorium dat import`` runs in its own
+    process, with its own in-memory counter. Two stores on one database stand
+    in for the server and the CLI."""
+    from services.dat_store import INDEX_GENERATION_KEY, DATStore
+
+    db = str(tmp_path / "shared.db")
+    server, cli_process = DATStore(store_path=db), DATStore(store_path=db)
+    path = "/vol/x.gba"
+    stamp = server.index_generation()
+
+    await cli_process.import_dat(_write(_dat_xml("Unrelated", "U", "a" * 40)))
+    assert server.index_generation() != stamp
+
+    miss = {"path": path, "matched": False, "checked_remote": None, INDEX_GENERATION_KEY: stamp}
+    assert list(await server.set_match(path, miss)) == [path]
+    assert server.get_match(path) is None
+    # A verdict stamped after the change is current.
+    fresh = {**miss, INDEX_GENERATION_KEY: server.index_generation()}
+    assert not await server.set_match(path, fresh)
+
+
+# ---------------------------------------------------------------------------
+# Redump is asked over HTTPS only
+# ---------------------------------------------------------------------------
+
+
+class _TlsConn:
+    seen: ClassVar[dict] = {}
+
+    def __init__(self, host, timeout, context=None):
+        _TlsConn.seen = {"host": host, "context": context}
+
+    def request(self, method, path, headers):
+        _TlsConn.seen.update(method=method, path=path)
+
+    def getresponse(self):
+        resp = io.BytesIO(b"PK")
+        resp.status, resp.reason = 200, "OK"
+        resp.headers = {}
+        return resp
+
+    def close(self):
+        pass
+
+
+def test_redump_is_asked_over_verified_https_only(monkeypatch, tmp_path):
+    """Codex security P1 on PR #527: a plaintext answer could be replaced on
+    the path and land in the DAT index."""
+    import ssl
+
+    def plaintext(*_a, **_k):
+        raise AssertionError("asked redump.org over plain HTTP")
+
+    monkeypatch.setattr(dat_import.http.client, "HTTPConnection", plaintext)
+    monkeypatch.setattr(dat_import.http.client, "HTTPSConnection", _TlsConn)
+    dat_import._fetch("psx", {}, str(tmp_path))
+    assert _TlsConn.seen["host"] == "redump.org"
+    context = _TlsConn.seen["context"]
+    assert isinstance(context, ssl.SSLContext)
+    assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
+    assert dat_import.redump_url("psx") == "https://redump.org/datfile/psx/"
+
+
+def test_no_https_answer_says_so(monkeypatch, tmp_path):
+    """redump.org refused port 443 when this was written: the error says why."""
+
+    class Refused(_TlsConn):
+        def request(self, method, path, headers):
+            raise ConnectionRefusedError(61, "Connection refused")
+
+    monkeypatch.setattr(dat_import.http.client, "HTTPSConnection", Refused)
+    with pytest.raises(ValueError, match="over HTTPS"):
+        dat_import._fetch("psx", {}, str(tmp_path))
