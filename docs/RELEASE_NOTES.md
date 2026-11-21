@@ -91,6 +91,11 @@
 
 ### Fixed
 
+- **Sync MAMERedump no longer deletes your other DATs** (#525). It used to
+  delete every DAT in the store after a successful sync, including No-Intro
+  packs and Redump DATs you had imported or synced. It now replaces only the
+  DATs it brings a new copy of (same name and family).
+
 - **A sweep queues nothing from a listing that adding or removing a Library
   made stale** (#518 follow-up). A sweep that listed a Platform
   before a Library was registered or removed inside it (or before RomM's
@@ -121,13 +126,6 @@
   folder outside every Volume, and a folder detection would read as another
   Platform are still refused. Synology's `@eaDir` folder, which RomM scans as
   a platform, is no longer listed, placed or swept.
-
-### Fixed
-
-- **Sync MAMERedump no longer deletes your other DATs** (#525). It used to
-  delete every DAT in the store after a successful sync, including No-Intro
-  packs and Redump DATs you had imported or synced. It now replaces only the
-  DATs it brings a new copy of (same name and family).
 
 ## 4.6.0 (2026-11-20)
 
