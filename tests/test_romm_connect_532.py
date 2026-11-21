@@ -456,3 +456,59 @@ def test_the_platform_folder_follows_the_declared_prefix(romm_root):
     other.write_bytes(b"x")
     with patch.object(romm_connect, "structure", return_value=(("roms",), ())):
         assert romm_library.platform_folder(str(other)) == str(romm_root / "roms" / "gc")
+
+
+def _half_client(*, config_ok: bool, structure_error: int | None):
+    """A RomM stand-in where one layout call answers and the other may fail:
+    *structure_error* is the structure read's HTTP status, None for success."""
+    from unittest.mock import MagicMock
+
+    client = MagicMock(base_url="http://romm.test")
+    if config_ok:
+        client.config.return_value = {"EXCLUDED_SINGLE_EXT": ["bak"]}
+    else:
+        client.config.side_effect = RommError("timed out")
+    if structure_error is None:
+        client.library_structure.return_value = "roms/{platform}/{game}"
+    else:
+        client.library_structure.side_effect = RommError("failed", status=structure_error)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_exclusions_and_structure_are_known_separately(romm_db, romm_root, monkeypatch):
+    """One layout call answering doesn't make the other known (Codex
+    PRRT_kwDOQ9nULM66RyEm): the sweep waits for the exclusions, placement for
+    the structure, and only the call that failed is retried soon."""
+    from services.romm import settings as romm_settings
+    from services.romm.library import romm_library
+
+    await romm_settings.save({"url": "http://romm.test", "token": "rmm_x"})
+    monkeypatch.setattr(romm_connect, "_LAYOUT_RETRY", 0.0)
+
+    # The exclusions failed, the structure answered.
+    client = _half_client(config_ok=False, structure_error=None)
+    romm_connect.refresh_layout_now(client)
+    assert not romm_connect.exclusions_known()
+    assert romm_connect.structure_known()
+    assert romm_library.sweep_blocked() == "romm_layout_unread"
+    romm_connect.refresh_layout_now(client)
+    assert (client.config.call_count, client.library_structure.call_count) == (2, 1)
+
+    # The exclusions answered, the structure failed: placement waits.
+    romm_connect.reset_for_tests()
+    client = _half_client(config_ok=True, structure_error=500)
+    romm_connect.refresh_layout_now(client)
+    assert romm_connect.exclusions_known()
+    assert not romm_connect.structure_known()
+    assert romm_library.sweep_blocked() is None
+    with pytest.raises(PlacementUnknown):
+        romm_library.placement("ps2")
+    romm_connect.refresh_layout_now(client)
+    assert (client.config.call_count, client.library_structure.call_count) == (1, 2)
+
+    # A RomM before 5.3 has no structure setting: its 404 is an answer.
+    romm_connect.reset_for_tests()
+    romm_connect.refresh_layout_now(_half_client(config_ok=True, structure_error=404))
+    assert romm_connect.structure_known()
+    assert romm_library.placement("ps2").folder == str(romm_root / "roms" / "ps2")

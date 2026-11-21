@@ -3103,13 +3103,16 @@ the Volumes), and the layout cache (`refresh_layout()`; `structure()` and
 `excluded()` / `excluded_extension()` only read it). The layout is re-read at
 most every five minutes, by `/api/romm/status`, every sweep and Inbox poll
 (the Library's `refresh()` hook, below), and forced by a connection test and a
-Save that changes the connection. A read where RomM answered neither call
-(a 404 for the structure counts as an answer) is retried after
-`_LAYOUT_RETRY` (30 s) instead of the full TTL. Until a read has ever
-succeeded for the configured RomM (`layout_known()`), an empty layout means
-"not known", never "nothing excluded": `RommLibrary.sweep_blocked()` defers
-the sweep with `romm_layout_unread`, and placement with no declared structure
-raises `PlacementUnknown`, so an Inbox holds the file for a later pass.
+Save that changes the connection. The two parts, the exclusions
+(`/api/config`) and the structure (`/api/setup/library`), are read, timed
+and known separately: a part RomM didn't answer is retried after
+`_LAYOUT_RETRY` (30 s) without re-reading the other, which keeps its full
+TTL (a 404 for the structure is an answer: RomM before 5.3 has none). Until
+a part has ever been read for the configured RomM, its emptiness means "not
+known": `RommLibrary.sweep_blocked()` defers the sweep with
+`romm_layout_unread` until `exclusions_known()`, and placement with no
+declared structure raises `PlacementUnknown` until `structure_known()`, so
+an Inbox holds the file for a later pass.
 RomM placement uses the declared structure when there is one, and refuses a
 structure with a wildcard level (`{category}`); `platform_folder()` looks
 under the same declared prefix (`games/{platform}/{game}` gives
@@ -3141,7 +3144,7 @@ names), so the token, URL and Library path are committed by one Save.
   the scheduler and `run-rules` read RomM's layout without the RomM page
   open. `LibraryDefaults` does nothing; RomM
   calls `refresh_layout()` (within its five-minute TTL). The suite's conftest
-  turns RomM's off, and reads its layout as known, unless a test module sets
+  turns RomM's off, and reads both layout parts as known, unless a test module sets
   `READS_ROMM_LAYOUT = True`.
 - `summary_fields()` seeds every per-Platform summary and the result (RomM:
   `repins_recorded: 0`).

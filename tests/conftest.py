@@ -56,14 +56,14 @@ def _no_romm_layout_reads(request):
     async def no_read(_self) -> None:
         return None
 
-    real, known = RommLibrary.refresh, romm_connect.layout_known
+    real = RommLibrary.refresh, romm_connect.exclusions_known, romm_connect.structure_known
     RommLibrary.refresh = no_read
-    # ...and read as declaring nothing, so a sweep isn't deferred for it.
-    romm_connect.layout_known = lambda: True
+    # ...and read as declaring nothing, so a sweep or placement isn't deferred.
+    romm_connect.exclusions_known = romm_connect.structure_known = lambda: True
     try:
         yield
     finally:
-        RommLibrary.refresh, romm_connect.layout_known = real, known
+        RommLibrary.refresh, romm_connect.exclusions_known, romm_connect.structure_known = real
 
 
 @pytest.fixture(autouse=True)

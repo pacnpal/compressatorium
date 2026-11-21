@@ -120,7 +120,7 @@ def _structure(root: str, name: str) -> tuple[str, str | None]:
     declared = romm_connect.structure()
     if declared is not None:
         return _declared(root, name, *declared), None
-    if not romm_connect.layout_known():
+    if not romm_connect.structure_known():
         # Not "no structure declared": RomM hasn't been asked successfully.
         raise PlacementUnknown(
             "RomM's folder structure couldn't be read yet; the next pass tries again",
@@ -503,9 +503,10 @@ class RommLibrary(LibraryDefaults):
         cleanup on its own tick, under the locks it requires, and a sweep
         holding the sweep lock is the one caller that cannot take them.
         """
-        if self.configured() and not romm_connect.layout_known():
-            # RomM's exclusions and structure were never read (#532): a sweep
-            # now would convert what RomM ignores. Deferred, not guessed.
+        if self.configured() and not romm_connect.exclusions_known():
+            # RomM's exclusions were never read (#532): a sweep now would
+            # convert what RomM ignores. Deferred, not guessed. (Placement
+            # waits for the structure on its own: `_structure`.)
             return "romm_layout_unread"
         if not romm_settings.cleanup_owed():
             return None

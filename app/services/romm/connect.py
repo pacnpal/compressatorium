@@ -58,7 +58,9 @@ _LAYOUT_SECONDS = 10.0
 # A read where RomM answered neither call is tried again this soon instead.
 _LAYOUT_RETRY = 30.0
 
-_layouts: dict[str, tuple[float, dict[str, Any]]] = {}
+_layouts: dict[str, dict[str, Any]] = {}
+# When each part of a RomM's layout is due to be read again (monotonic).
+_due: dict[str, dict[str, float]] = {}
 _lock = threading.Lock()
 
 
@@ -202,58 +204,73 @@ def _names(values: Any) -> tuple[str, ...]:
     return tuple(v for v in values or () if isinstance(v, str) and v.strip())
 
 
-def _read_layout(client: RommClient, previous: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """RomM's layout, fresh where RomM answered, else *previous*, and whether
-    RomM answered either call (``read``: a 404 for the structure counts, a
-    RomM before 5.3 has none). Blocking."""
-    layout = dict(previous)
-    answered = False
+def _read_exclusions(client: RommClient, layout: dict[str, Any]) -> bool:
+    """RomM's ``exclude:`` settings into *layout*; whether RomM answered.
+    Blocking."""
     try:
         config = client.config(timeout=_LAYOUT_SECONDS)
     except RommError as exc:
         logger.info("romm: couldn't read RomM's exclusions: %s", exc)
-    else:
-        answered = True
-        layout["excluded_exts"] = (
-            _lower_exts(config.get("EXCLUDED_SINGLE_EXT"))
-            + _lower_exts(config.get("DEFAULT_EXCLUDED_EXTENSIONS"))
-        )
-        layout["excluded_names"] = (
-            _names(config.get("EXCLUDED_SINGLE_FILES"))
-            + _names(config.get("EXCLUDED_MULTI_FILES"))
-            + _names(config.get("DEFAULT_EXCLUDED_FILES"))
-        )
+        return False
+    layout["excluded_exts"] = (
+        _lower_exts(config.get("EXCLUDED_SINGLE_EXT"))
+        + _lower_exts(config.get("DEFAULT_EXCLUDED_EXTENSIONS"))
+    )
+    layout["excluded_names"] = (
+        _names(config.get("EXCLUDED_SINGLE_FILES"))
+        + _names(config.get("EXCLUDED_MULTI_FILES"))
+        + _names(config.get("DEFAULT_EXCLUDED_FILES"))
+    )
+    return True
+
+
+def _read_structure(client: RommClient, layout: dict[str, Any]) -> bool:
+    """RomM's folder structure into *layout*; whether RomM answered (a 404
+    counts: a RomM before 5.3 has no structure setting). Blocking."""
     try:
         template = client.library_structure(timeout=_LAYOUT_SECONDS)
     except RommError as exc:
-        # A RomM before 5.3 has no structure setting: 404, nothing to read.
         logger.info("romm: couldn't read RomM's folder structure: %s", exc)
-        answered = answered or exc.status == 404
-    else:
-        answered = True
-        layout["structure_template"] = template
-        layout["structure"] = parse_structure(template) if template else None
-    if answered:
-        layout["read"] = True
-    return layout, answered
+        if exc.status != 404:
+            return False
+        template = None
+    layout["structure_template"] = template
+    layout["structure"] = parse_structure(template) if template else None
+    return True
+
+
+# Each part of the layout, its reader, and the key saying it was read once.
+_PARTS = {
+    "exclusions": (_read_exclusions, "exclusions_read"),
+    "structure": (_read_structure, "structure_read"),
+}
 
 
 def refresh_layout_now(client: RommClient | None = None, *, force: bool = False) -> dict:
-    """Read RomM's layout unless it was read in the last few minutes. Blocking."""
+    """Read each part of RomM's layout that is due: read in the last few
+    minutes, it isn't; a part RomM didn't answer is due again after
+    `_LAYOUT_RETRY`, without re-reading the other. Blocking."""
     client = client or romm_client
     base = client.base_url
     if not base:
         return {}
+    now = time.monotonic()
     with _lock:
-        stamp, cached = _layouts.get(base, (0.0, {}))
-    if not force and stamp and time.monotonic() - stamp < _LAYOUT_TTL:
+        cached = _layouts.get(base, {})
+        due = dict(_due.get(base, {}))
+    stale = [p for p in _PARTS if force or due.get(p, 0.0) <= now]
+    if not stale:
         return cached
-    layout, answered = _read_layout(client, cached)
-    # Stamped as if read earlier when RomM answered nothing, so the next
-    # refresh after `_LAYOUT_RETRY` tries again.
-    stamp = time.monotonic() - (0.0 if answered else _LAYOUT_TTL - _LAYOUT_RETRY)
+    layout = dict(cached)
+    for part in stale:
+        read, flag = _PARTS[part]
+        answered = read(client, layout)
+        if answered:
+            layout[flag] = True
+        due[part] = time.monotonic() + (_LAYOUT_TTL if answered else _LAYOUT_RETRY)
     with _lock:
-        _layouts[base] = (stamp, layout)
+        _layouts[base] = layout
+        _due[base] = due
     return layout
 
 
@@ -270,14 +287,20 @@ async def refresh_layout(client: RommClient | None = None, *, force: bool = Fals
 def layout() -> dict[str, Any]:
     """The configured RomM's layout as last read, {} before then. In memory."""
     with _lock:
-        return _layouts.get(romm_client.base_url, (0.0, {}))[1]
+        return _layouts.get(romm_client.base_url, {})
 
 
-def layout_known() -> bool:
-    """Whether RomM's layout was ever read for the configured RomM: until it
-    is, an empty :func:`layout` means "not known", not "nothing excluded, no
-    structure declared". In memory."""
-    return bool(layout().get("read"))
+def exclusions_known() -> bool:
+    """Whether RomM's ``exclude:`` settings were ever read for the configured
+    RomM: until they are, "nothing excluded" is not known. In memory."""
+    return bool(layout().get("exclusions_read"))
+
+
+def structure_known() -> bool:
+    """Whether RomM's folder structure was ever read (or RomM said it has
+    none) for the configured RomM: until it is, "none declared" is not
+    known. In memory."""
+    return bool(layout().get("structure_read"))
 
 
 def structure() -> tuple[tuple[str, ...], tuple[str | None, ...]] | None:
@@ -310,3 +333,4 @@ def excluded(name: str) -> bool:
 def reset_for_tests() -> None:
     with _lock:
         _layouts.clear()
+        _due.clear()
