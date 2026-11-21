@@ -2314,6 +2314,13 @@ async def put_romm_rules(payload: dict) -> dict:
     return await shared_rule_routes.save_rules(romm_library, payload)
 
 
+@router.patch("/romm/rules")
+async def patch_romm_rules(payload: dict) -> dict:
+    """Change only the platforms named (``null`` removes one), as the console
+    table sends (#541)."""
+    return await shared_rule_routes.patch_rules(romm_library, payload)
+
+
 @router.post("/romm/rules/forget-converted")
 async def forget_romm_converted(payload: dict | None = None) -> dict:
     """Forget which ROMs the automation has already converted.

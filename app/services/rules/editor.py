@@ -7,6 +7,7 @@ so the payload, the policy check and the sweep calls exist once.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from services.rules import rules as schema
@@ -63,6 +64,44 @@ async def save_rules(library: Library, payload: Any) -> dict[str, Any]:
     else:
         out["check_rules"] = await rules_sweep.get_rules(library, CHECK)
     return out
+
+
+# One merge at a time: two patches each reading the stored Rules before the
+# other wrote would each write back without the other's console.
+_patch_lock = asyncio.Lock()
+
+
+def _merged(stored: dict, patch: Any) -> dict:
+    """*stored* with each console *patch* names replaced (``None`` removes it)."""
+    out = dict(stored)
+    for platform_id, rule in (patch or {}).items():
+        if rule is None:
+            out.pop(str(platform_id), None)
+        else:
+            out[str(platform_id)] = rule
+    return out
+
+
+async def patch_rules(library: Library, payload: Any) -> dict[str, Any]:
+    """Merge the consoles a submission names into *library*'s stored Rules
+    (``{"rules": {id: rule | null}, "check_rules": {id: rule | null}}``) and
+    save the result through :func:`save_rules`, with all its checks.
+
+    What the console table sends (#541, Codex 4653298940): one console's
+    change, never the whole map, so a table holding none or some of the
+    Rules (one that saved before they loaded) can't delete the others.
+    """
+    if not isinstance(payload, dict):
+        payload = {}
+    async with _patch_lock:
+        merged: dict[str, Any] = {
+            "rules": _merged(await rules_sweep.get_rules(library), payload.get("rules")),
+        }
+        if "check_rules" in payload:
+            merged["check_rules"] = _merged(
+                await rules_sweep.get_rules(library, CHECK), payload.get("check_rules"),
+            )
+        return await save_rules(library, merged)
 
 
 async def forget_converted(

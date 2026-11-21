@@ -85,10 +85,11 @@ process.stdout.write(JSON.stringify({{
     assert data["loaded"]["rule"] == "createdvd"
     assert data["loaded"]["check"]["check_budget_gb"] == 50
     assert data["loaded"]["last"] == {"last_checks": 4}
-    # Saved with both kinds.
+    # Only what changed is sent (#541): the check Rule, not the conversion
+    # Rule, which the server keeps as it is.
     name, library_id, rules, checks = data["call"]
     assert (name, library_id) == ("saveLibraryRules", "folder:3")
-    assert rules["ps2"]["mode"] == "createdvd"
+    assert rules == {}
     assert checks["ps2"]["check_budget_gb"] == 80
     # Removing the check Rule leaves the conversion Rule.
     assert data["after"] == {}

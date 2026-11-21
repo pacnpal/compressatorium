@@ -28,6 +28,17 @@ async def save_rules(library: Library, payload: Any) -> dict:
         raise HTTPException(status_code=400, detail=exc.problem) from None
 
 
+async def patch_rules(library: Library, payload: Any) -> dict:
+    """``PATCH .../rules`` for any Library: merges the consoles it names
+    (``null`` removes one) and saves with ``PUT``'s checks and answers (#541)."""
+    try:
+        return await editor.patch_rules(library, payload)
+    except UnsupportedPolicy as exc:
+        raise HTTPException(status_code=422, detail=exc.detail()) from None
+    except UnusableCompression as exc:
+        raise HTTPException(status_code=400, detail=exc.problem) from None
+
+
 def requested_platform_ids(payload: dict | None) -> list[str] | None:
     """The ``platform_ids`` a forget-converted request names, as strings.
 

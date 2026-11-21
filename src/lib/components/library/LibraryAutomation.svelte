@@ -200,7 +200,8 @@
         type="checkbox"
         checked={nightly === true}
         indeterminate={nightly === 'mixed'}
-        disabled={converting.length === 0 && Object.keys(source.checkRules).length === 0}
+        disabled={!source.rulesLoaded || !!source.rulesError
+          || (converting.length === 0 && Object.keys(source.checkRules).length === 0)}
         onchange={(e) => setNightly(e.currentTarget.checked)}
       />
       <span>
@@ -246,6 +247,10 @@
         Couldn't load this Library's settings. {source.rulesError}
         <Button size="sm" variant="secondary" onclick={() => source.loadRules().catch(() => {})}>Try again</Button>
       </p>
+    {:else if !source.rulesLoaded}
+      <!-- No control that changes a Rule before the Rules are read (Codex
+           4653298940): an edit then would start from none of them. -->
+      <p class="muted"><Spinner size="sm" label="Loading" /> Loading this Library's settings…</p>
     {:else if source.platformsBusy}
       <!-- A listing of the folder is still running: a wait, not an error. -->
       <p class="state" role="status">

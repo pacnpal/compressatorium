@@ -100,11 +100,23 @@ process.stdout.write(JSON.stringify({
 _SOURCE_STUBS = """
 const __saves = [];
 let __release = [];
+// The server's side of a save (#541): it merges the consoles a patch names
+// (null removes one) and answers with every stored Rule.
+const __server = { rules: {}, checks: {} };
+const __merge = (into, patch) => {
+  for (const [k, v] of Object.entries(patch ?? {})) {
+    if (v === null) delete into[k]; else into[k] = v;
+  }
+};
 const endpoints = {
-  getRules: async () => ({ rules: {}, check_rules: {} }),
+  getRules: async () => ({ rules: { ...__server.rules }, check_rules: { ...__server.checks } }),
   saveRules: (rules, checkRules) => new Promise((resolve) => {
     __saves.push(JSON.parse(JSON.stringify(rules)));
-    __release.push(() => resolve({ rules, check_rules: checkRules }));
+    __release.push(() => {
+      __merge(__server.rules, rules);
+      __merge(__server.checks, checkRules);
+      resolve({ rules: { ...__server.rules }, check_rules: { ...__server.checks } });
+    });
   }),
   forgetConverted: async () => ({}),
   preview: async () => ({}),
@@ -126,10 +138,10 @@ const drain = async () => {
 
 def test_apply_recommended_never_overwrites_a_choice(tmp_path):
     data = _node(_SOURCE_STUBS + _plain(_SOURCE) + """
+__server.rules = { ps2: { mode: 'cso_compress', enabled: false } };
 const source = new RulesSource(endpoints);
 await source.loadRules();
 source.ruleDefaults = { interval_minutes: 60, enabled: false };
-source.rules = { ps2: { mode: 'cso_compress', enabled: false } };
 const applying = source.applyRecommended(() => ({ verify_after: true, delete_on_verify: false }));
 await drain();
 const result = await applying;
@@ -167,7 +179,8 @@ process.stdout.write(JSON.stringify({
     # One save at a time: the second waits for the first to answer.
     assert data["inFlight"] == 1
     assert data["saves"][0] == ["ps2"]
-    assert data["saves"][-1] == ["gba", "gc", "ps2"]
+    # Each save names only what changed since the last one (#541).
+    assert sorted(k for keys in data["saves"] for k in keys) == ["gba", "gc", "ps2"]
     assert data["state"] == "saved"
     assert data["dirty"] is False
 
@@ -350,7 +363,7 @@ process.stdout.write(JSON.stringify({
     advanced = (_COMPONENTS / "RuleAdvanced.svelte").read_text(encoding="utf-8")
     assert "{#if rule.mode}" in advanced
     automation = (_COMPONENTS / "LibraryAutomation.svelte").read_text(encoding="utf-8")
-    assert "disabled={converting.length === 0 && Object.keys(source.checkRules).length === 0}" in automation
+    assert "(converting.length === 0 && Object.keys(source.checkRules).length === 0)}" in automation
 
 
 def test_a_late_folder_save_never_undoes_a_later_choice():
@@ -391,3 +404,41 @@ def test_an_unknown_library_id_stops_loading_once_the_list_is_in():
     assert "{:else if libraries.loading || !libraries.loaded}" in view
     store = (_COMPONENTS.parent.parent / "stores" / "libraries.svelte.js").read_text(encoding="utf-8")
     assert "this.loaded = true;" in store
+
+
+def test_a_save_sends_only_the_consoles_that_changed(tmp_path):
+    """Codex 4653298940: a save that went out before the Rules loaded (or
+    with any partial map) sent the whole map and wiped the others. Each save
+    now names only the consoles changed since the last one; null removes."""
+    stubs = _SOURCE_STUBS.replace(
+        "    __saves.push(JSON.parse(JSON.stringify(rules)));",
+        "    __saves.push(JSON.parse(JSON.stringify({ rules, checkRules: checkRules ?? null })));",
+    )
+    assert stubs != _SOURCE_STUBS
+    data = _node(stubs + _plain(_SOURCE) + """
+const source = new RulesSource(endpoints);
+source.rules = { gc: { mode: 'dolphin_rvz' }, ps2: { mode: 'createdvd' } };
+source.checkRules = { gc: { enabled: true } };
+source.setRule('ps2', { mode: 'createdvd', enabled: false });
+source.scheduleSave(0);
+await drain();
+source.removeRule('gc');
+source.removeCheckRule('gc');
+source.scheduleSave(0);
+await drain();
+process.stdout.write(JSON.stringify(__saves));
+""", tmp_path)
+    first, second = data
+    assert first["rules"] == {"ps2": {"mode": "createdvd", "enabled": False}}
+    assert first["checkRules"] is None
+    assert second["rules"] == {"gc": None}
+    assert second["checkRules"] == {"gc": None}
+
+
+def test_the_table_waits_for_the_rules_before_it_can_change_them():
+    """Codex 4653298940: no rule-changing control before the Rules load."""
+    src = (_COMPONENTS / "LibraryAutomation.svelte").read_text(encoding="utf-8")
+    table = src.index("<RuleTable {source} />")
+    guard = src.rfind("{:else if !source.rulesLoaded}", 0, table)
+    assert guard != -1, "the table renders before the Rules have loaded"
+    assert "disabled={!source.rulesLoaded ||" in src

@@ -548,6 +548,13 @@ async def put_library_rules(library_id: str, payload: dict) -> dict:
     return await shared_rule_routes.save_rules(_library(library_id), payload)
 
 
+@router.patch("/libraries/{library_id}/rules")
+async def patch_library_rules(library_id: str, payload: dict) -> dict:
+    """Change only the consoles named (``null`` removes one): what the
+    console table sends, so it can never wipe the others (#541)."""
+    return await shared_rule_routes.patch_rules(_library(library_id), payload)
+
+
 @router.post("/libraries/{library_id}/rules/forget-converted")
 async def forget_library_converted(library_id: str, payload: dict | None = None) -> dict:
     """Clear the converted history and failed holds, per Platform or all."""

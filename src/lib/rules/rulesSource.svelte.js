@@ -90,6 +90,12 @@ export class RulesSource {
   #savesPending = 0;
   // The pending autosave's timer; see `scheduleSave`.
   #saveTimer = null;
+  // The consoles changed since the last save, conversion and check Rules
+  // apart. A save sends only these (null for one removed) and the server
+  // merges them (#541, Codex 4653298940): a table holding none or some of
+  // the Rules can never wipe the others.
+  #changedRules = new Set();
+  #changedChecks = new Set();
 
   constructor(endpoints) {
     this.#endpoints = endpoints;
@@ -192,6 +198,7 @@ export class RulesSource {
   setCheckRule(platformId, rule) {
     const key = String(platformId);
     this.checkRules = { ...this.checkRules, [key]: withoutStaleWindowFlag(this.checkRules[key], rule) };
+    this.#changedChecks.add(key);
     this.rulesDirty = true;
     this.#rulesRevision += 1;
   }
@@ -200,6 +207,7 @@ export class RulesSource {
     const next = { ...this.checkRules };
     delete next[String(platformId)];
     this.checkRules = next;
+    this.#changedChecks.add(String(platformId));
     this.rulesDirty = true;
     this.#rulesRevision += 1;
   }
@@ -207,6 +215,7 @@ export class RulesSource {
   setRule(platformId, rule) {
     const key = String(platformId);
     this.rules = { ...this.rules, [key]: withoutStaleWindowFlag(this.rules[key], rule) };
+    this.#changedRules.add(key);
     this.rulesDirty = true;
     this.#rulesRevision += 1;
   }
@@ -232,6 +241,7 @@ export class RulesSource {
     const next = { ...this.rules };
     delete next[String(platformId)];
     this.rules = next;
+    this.#changedRules.add(String(platformId));
     this.rulesDirty = true;
     this.#rulesRevision += 1;
   }
@@ -258,9 +268,26 @@ export class RulesSource {
     // The editor stays live while this is in flight, so anything typed after
     // this point is NOT in what we just submitted.
     const revision = this.#rulesRevision;
-    const data = await this.#endpoints.saveRules(
-      withoutWindowFlags(this.rules), withoutWindowFlags(this.checkRules),
+    // Only what changed: each console's Rule as it is now, null when removed.
+    const changed = [...this.#changedRules];
+    const changedChecks = [...this.#changedChecks];
+    this.#changedRules.clear();
+    this.#changedChecks.clear();
+    const patch = (keys, from) => withoutWindowFlags(
+      Object.fromEntries(keys.map((k) => [k, from[k] ?? null])),
     );
+    let data;
+    try {
+      data = await this.#endpoints.saveRules(
+        patch(changed, this.rules),
+        changedChecks.length ? patch(changedChecks, this.checkRules) : undefined,
+      );
+    } catch (e) {
+      // Not saved: they go with the next save.
+      for (const k of changed) this.#changedRules.add(k);
+      for (const k of changedChecks) this.#changedChecks.add(k);
+      throw e;
+    }
     this.#saveGeneration += 1;
     if (revision !== this.#rulesRevision) {
       // Edited mid-save. Adopting the server's copy would replace those

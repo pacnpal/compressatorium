@@ -755,12 +755,13 @@ export const api = {
       "Failed to read RomM's converter targets",
     ),
 
+  // The consoles changed (#541): `{id: rule | null}`, merged by the server.
   // `checkRules` (#305) is sent when given; without it the server keeps them.
   saveRommRules: (rules, checkRules) =>
     fetchJson(
       `${API_BASE}/romm/rules`,
       {
-        method: 'PUT',
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
           checkRules === undefined ? { rules } : { rules, check_rules: checkRules },
@@ -896,11 +897,12 @@ export const api = {
       'Failed to load the Rules',
     ),
 
+  // The consoles changed (#541): `{id: rule | null}`, merged by the server.
   saveLibraryRules: (id, rules, checkRules) =>
     fetchJson(
       `${API_BASE}/libraries/${encodeURIComponent(id)}/rules`,
       {
-        method: 'PUT',
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
           checkRules === undefined ? { rules } : { rules, check_rules: checkRules },
