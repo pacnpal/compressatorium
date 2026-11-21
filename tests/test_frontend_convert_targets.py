@@ -138,6 +138,27 @@ process.stdout.write(JSON.stringify({
     assert got["off"] == {"checkAfter": True, "deleteOriginal": False, "quickCheck": False}
 
 
+def test_the_mode_list_keeps_to_a_romm_platforms_formats():
+    """Codex 4651687770: on a RomM platform the shared Convert-to list offered
+    every ready tool (CHDMAN Create DVD on GameCube). While the panel shows a
+    RomM catalog it is narrowed to that platform's tool_ids and mode_ids."""
+    src = (_SRC / "components" / "panels" / "ModeSelect.svelte").read_text(encoding="utf-8")
+    assert "fileBrowser.rommPlatformId === null" in src
+    assert "romm.platforms.find((p) => p.id === romm.selectedPlatformId)" in src
+    assert "modeIds: platform?.mode_ids ?? null" in src
+    assert "toolIds: platform?.tool_ids ?? null" in src
+
+
+def test_narrowing_to_a_gamecube_platform(tmp_path):
+    got = _targets(tmp_path, """
+const values = convertTargets({
+  perMode: true, toolIds: ['dolphin'], modeIds: ['dolphin_rvz', 'dolphin_iso'],
+}).flatMap((g) => g.options.map((o) => o.value));
+process.stdout.write(JSON.stringify(values));
+""")
+    assert got == ["", "dolphin_rvz", "dolphin_iso"]
+
+
 def test_mode_select_lists_every_ready_tools_formats():
     src = (_SRC / "components" / "panels" / "ModeSelect.svelte").read_text(encoding="utf-8")
     assert "convertTargets({" in src and "perMode: true" in src

@@ -3,15 +3,27 @@
   // ($lib/tools/convertTargets.js). Picking one from another tool switches the
   // panel to that tool, so no tool needs a place of its own.
   import { conversion } from '$lib/stores/conversion.svelte.js';
+  import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
+  import { romm } from '$lib/stores/romm.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
   import { registry } from '$lib/tools/registry.js';
   import { convertTargets } from '$lib/tools/convertTargets.js';
 
   const mode = $derived(conversion.mode);
+  // A RomM catalog offers only what its platform allows (GameCube: Dolphin,
+  // never CHDMAN). Files offers every ready tool.
+  const platform = $derived(
+    fileBrowser.rommPlatformId === null
+      ? null
+      : (romm.platforms.find((p) => p.id === romm.selectedPlatformId) ?? null),
+  );
+  // A catalog whose platform isn't loaded yet offers nothing rather than all.
   const groups = $derived(
-    convertTargets({
+    fileBrowser.rommPlatformId !== null && !platform ? [] : convertTargets({
       perMode: true,
       ready: ui.toolsKnown ? ui.visibleTools.map((t) => t.id) : null,
+      modeIds: platform?.mode_ids ?? null,
+      toolIds: platform?.tool_ids ?? null,
     }).filter((g) => g.group !== 'Recommended'),
   );
 
