@@ -139,6 +139,24 @@ class ConversionStore {
   prefsVersion = $state(0);
   #touched = {};
   #saveTimer = null;
+  // The preference PUTs, one at a time in the order asked for, so an older
+  // body can never land after a newer one.
+  #saveChain = Promise.resolve();
+  // Why the last preference save failed, or null once one lands. Settings →
+  // Defaults shows it with Try again; the failure is also toasted, so an
+  // edit made in the Convert panel never fails silently either.
+  compressionSaveError = $state(null);
+  // Bumped by every read of the remembered compression and every local
+  // change to it; a read adopts its answer only if nothing came after it, so
+  // a late boot read can't put old values over a newer edit (Codex 4652391157).
+  #prefsGeneration = 0;
+  // The tools whose compression changed here and isn't on the server yet. A
+  // save sends only these over the server's current copy (CodeRabbit
+  // 4652269814), so it never writes back what another tab saved meanwhile.
+  #dirtyTools = {};
+  // Only the newest delete-plan ask may answer; an older one, landing late or
+  // failing late, is dropped (null) instead of replacing or clearing it.
+  #deletePlanRequest = 0;
 
   #planTimer = null;
   #planAbort = null;
@@ -235,8 +253,10 @@ class ConversionStore {
   // ─── Compression, remembered per tool ─────────────────────────────────
   /** Fetch the saved per-tool compression. Best-effort. */
   async loadServerPrefs() {
+    const generation = ++this.#prefsGeneration;
     try {
       const prefs = await api.getConversionPrefs();
+      if (generation !== this.#prefsGeneration) return;
       if (prefs && typeof prefs === 'object') {
         // A choice made while the fetch was in flight wins.
         this.prefs = { ...prefs, ...this.#touched };
@@ -262,19 +282,82 @@ class ConversionStore {
 
   /** Save one tool's wire value (null: the tool's own default). */
   setPref(toolId, wire) {
+    this.#prefsGeneration += 1;
     const next = { ...this.prefs };
     if (wire == null) delete next[toolId];
     else next[toolId] = wire;
     this.prefs = next;
     this.#touched = { ...this.#touched, [toolId]: wire ?? undefined };
+    this.#dirtyTools = { ...this.#dirtyTools, [toolId]: true };
     this.prefsVersion += 1;
+    this.#schedulePrefsSave();
+  }
+
+  /**
+   * Settings → Defaults saved *toolId*'s compression (*wire*, or null for the
+   * tool's own default): it becomes the live choice the plan uses, even over
+   * an edit made in the Convert panel, and is saved.
+   */
+  applySavedDefault(toolId, wire) {
+    this.setPref(toolId, wire);
+  }
+
+  // The debounce lives here, in the store, so leaving the screen that made
+  // the change (Settings, the Convert panel) never drops it.
+  #schedulePrefsSave() {
     if (!isBrowser) return;
     if (this.#saveTimer) clearTimeout(this.#saveTimer);
-    const snapshot = { ...next };
     this.#saveTimer = setTimeout(() => {
       this.#saveTimer = null;
-      api.putConversionPrefs(snapshot).catch(() => {});
+      this.#putPrefs();
     }, PREF_SAVE_DEBOUNCE_MS);
+  }
+
+  #putPrefs() {
+    this.#saveChain = this.#saveChain.then(async () => {
+      const tools = Object.keys(this.#dirtyTools);
+      if (!tools.length) return;
+      const local = { ...this.prefs };
+      try {
+        // The PUT replaces the whole object: start from the server's copy as
+        // it is now and change only the tools edited here. A tool set back to
+        // its own default (null) drops its key.
+        const body = { ...((await api.getConversionPrefs()) ?? {}) };
+        for (const tool of tools) {
+          if (local[tool] == null) delete body[tool];
+          else body[tool] = local[tool];
+        }
+        await api.putConversionPrefs(body);
+        // Saved, unless it changed again while this save was out.
+        const dirty = { ...this.#dirtyTools };
+        for (const tool of tools) {
+          if (this.prefs[tool] === local[tool]) delete dirty[tool];
+        }
+        this.#dirtyTools = dirty;
+        this.compressionSaveError = null;
+      } catch (e) {
+        this.compressionSaveError = e?.message ?? 'Request failed';
+        toast.error(`Couldn't save the compression: ${this.compressionSaveError}`);
+      }
+    });
+    return this.#saveChain;
+  }
+
+  /** Send the remembered compression again, after a save failed. */
+  retryCompressionSave() {
+    if (this.#saveTimer) clearTimeout(this.#saveTimer);
+    this.#saveTimer = null;
+    return this.#putPrefs();
+  }
+
+  /** Send a debounced preference now; resolves once every save so far has landed. */
+  flushCompressionPrefs() {
+    if (this.#saveTimer) {
+      clearTimeout(this.#saveTimer);
+      this.#saveTimer = null;
+      this.#putPrefs();
+    }
+    return this.#saveChain;
   }
 
   // ─── The plan ─────────────────────────────────────────────────────────
@@ -366,14 +449,18 @@ class ConversionStore {
   /**
    * The files each group's delete would remove, as one plan: `groups` maps a
    * mode to its sources (only modes that delete). Sets and returns `deletePlan`.
+   * Only the newest ask answers: an older one, landing or failing late,
+   * resolves null and changes nothing.
    */
   async fetchDeletePlan(groups, outputDir = this.outputDir || null) {
     const entries = Object.entries(groups ?? {}).filter(([, paths]) => paths?.length);
     if (entries.length === 0) return null;
+    const request = ++this.#deletePlanRequest;
     try {
       const parts = await Promise.all(
         entries.map(([mode, paths]) => api.getDeletePlan(paths, mode, outputDir, 'skip')),
       );
+      if (request !== this.#deletePlanRequest) return null;
       this.#deleteModes = entries.map(([mode]) => mode);
       this.deletePlan = {
         items: parts.flatMap((p) => p?.items ?? []),
@@ -383,6 +470,7 @@ class ConversionStore {
       };
       return this.deletePlan;
     } catch (e) {
+      if (request !== this.#deletePlanRequest) return null;
       toast.error(e?.message ?? "Couldn't work out what would be deleted");
       this.deletePlan = null;
       throw e;

@@ -37,6 +37,12 @@ CHECKED_FILES = [
     "panels/FileList.svelte",
     "panels/FileRow.svelte",
     "modals/DeletePlanModal.svelte",
+    # PR 5: Settings.
+    "settings/Connections.svelte",
+    "settings/HasheousQuestion.svelte",
+    "settings/Identification.svelte",
+    "settings/Defaults.svelte",
+    "views/NotificationSettings.svelte",
 ]
 
 OLD_WORDS = re.compile(

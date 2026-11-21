@@ -126,6 +126,26 @@
 - New `GET`/`PUT /api/preferences/defaults` store the safety choices new
   conversions start with (check each new file on, delete the original off).
   The Settings screen that edits them comes next.
+- **One Settings page** (#540). Five sections, each with its own link
+  (`#/settings/<section>`) and its own loading and error line, with the section
+  list pinned at the left on a wide screen:
+  - **Connections**: whether RomM answers, with **Manage** to its Library page;
+    the **Identify games online (Hasheous)** switch, moved here from the DAT
+    screen, which checks Hasheous answers as soon as it's turned on (the
+    separate Test button is gone), and the once-only question on a fresh
+    install; and where to set up Sonarr, Radarr and ROMarr.
+  - **Game identification** (the old DAT Library): **Import game lists…**
+    (several files or zips at once), **Get Redump lists for my consoles**,
+    **Update MAME Redump**, the lists with their game counts and dates, and the
+    order under **Name order**. The hash-count tiles and the hash essay are
+    gone. A second click while a Redump download or an import runs starts
+    nothing.
+  - **Defaults** (new): what new conversions start with (check each new file,
+    delete the original once it checks out, quick check), the compression for
+    each format (the same one the Convert panel remembers), and **Keep history
+    for** forever, 30 days, 90 days or a year. Nothing in the UI set History's
+    retention before.
+  - **Converters** keeps the CHD badge scan.
 - **`compressatorium convert` uses the running server** (#533). When the
   server is running on the same `/config`, the command finds it there and
   hands it the jobs: they show in the web UI's queue, share its limit on
@@ -224,6 +244,16 @@
   - Verify accepts a `.dosz` with no `dosbox.conf` when it holds a DOS program.
 
 ### Fixed
+
+- **Settings → Game identification** says when it couldn't check which
+  consoles Redump covers, with **Try again**, instead of claiming none of
+  your Libraries has one (#545 follow-up).
+- **Turning Hasheous on, then off quickly** no longer lets the first click
+  finish after the second: it can't switch the screen back to on or test
+  Hasheous once you've turned it off (#545 follow-up).
+- **Saving a format's compression in Settings** changes only that format on
+  the server, so a change saved meanwhile from another tab is kept
+  (#545 follow-up).
 
 - **Quick wins, contrast and plain details** (#521).
   - The RomM page's hints point to its own Settings tab, with a **Connect

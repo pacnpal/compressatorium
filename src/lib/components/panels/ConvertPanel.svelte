@@ -257,7 +257,8 @@
       }
       if (Object.keys(groups).length) {
         try {
-          await conversion.fetchDeletePlan(groups, outputDir);
+          // null: a newer ask took over, and its flow shows the plan.
+          if (!(await conversion.fetchDeletePlan(groups, outputDir))) return;
         } catch (_e) {
           return; // toast already raised
         }
