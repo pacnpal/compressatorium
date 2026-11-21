@@ -234,3 +234,22 @@ async def test_a_game_whose_new_file_exists_is_skipped_in_the_plan(queue_env):
     assert by_name["done.iso"].mode is None
     assert by_name["done.iso"].skip_reason == "done.chd already exists"
     assert by_name["todo.iso"].mode == "createdvd"
+
+
+@pytest.mark.asyncio
+async def test_rename_still_queues_a_game_whose_new_file_exists(queue_env):
+    """CodeRabbit 4654557556: only the panel's Skip leaves an existing output
+    out; an API caller's Rename still queues it, as before."""
+    from app.models import DuplicateAction
+
+    folder = queue_env["tmp_path"] / "pile"
+    done = _ps2(folder / "done.iso")
+    _write(folder / "done.chd", b"MComprHD" + b"\\0" * 56)
+
+    result = await convert_routes.create_auto_jobs(AutoJobCreateRequest(
+        items=[AutoJobItem(file_path=done, mode="createdvd")],
+        duplicate_action=DuplicateAction.RENAME,
+    ))
+
+    assert [call["mode"] for call in queue_env["calls"]] == ["createdvd"]
+    assert not result.skipped

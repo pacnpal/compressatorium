@@ -1579,7 +1579,7 @@ def _checked_auto_plan(file_paths: list[str], **plan_kwargs) -> list:
     return plan_auto(file_paths, **plan_kwargs)
 
 
-async def _plan_auto(request: AutoPlanRequest) -> list:
+async def _plan_auto(request: AutoPlanRequest, *, skip_existing: bool = True) -> list:
     prefs = await preferences_store.get(CONVERSION_PREFS_KEY) or {}
     output_dir = normalize_output_dir(request.output_dir)
     # The shared, bounded readiness probe (a tool that cannot run here, such as
@@ -1593,8 +1593,9 @@ async def _plan_auto(request: AutoPlanRequest) -> list:
         compression_prefs=prefs, output_dir=output_dir, ready_tool_ids=ready,
         target=request.target, platform_overrides=request.platform_overrides,
         # The panel queues with duplicate action Skip: say so in the plan, so
-        # its delete preview never covers a game the queue will leave out.
-        skip_existing_outputs=True,
+        # its delete preview never covers a game the queue will leave out. A
+        # queue asked to Rename or Overwrite plans the game as before.
+        skip_existing_outputs=skip_existing,
     )
     return _with_checked_compression(plan)
 
@@ -1691,7 +1692,7 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
     plan = await _plan_auto(AutoPlanRequest(
         file_paths=list(confirmed), output_dir=request.output_dir,
         target=request.target, platform_overrides=request.platform_overrides,
-    ))
+    ), skip_existing=request.duplicate_action == DuplicateAction.SKIP)
     skips: list[BatchSkip] = [
         BatchSkip(
             path=target.file_path,

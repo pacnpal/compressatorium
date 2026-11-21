@@ -194,3 +194,43 @@ def test_a_delete_on_verify_plan_keeps_a_companion_another_owner_names(vol):
     plan = build_delete_plan(str(cue), confine_to_volumes=True)
 
     assert any("Odd.m3u" in error for error in plan["errors"]), plan
+
+
+@pytest.mark.asyncio
+async def test_a_track_stays_when_its_requested_sheet_fails_to_delete(vol, monkeypatch):
+    """CodeRabbit 4654557559: a sheet in the request that isn't actually
+    deleted still needs its tracks, whatever order the request lists them in."""
+    folder = vol / "psx"
+    track = _write(folder / "Game.bin")
+    cue = _write(folder / "Game.cue", b'FILE "Game.bin" BINARY\n  TRACK 01 MODE2/2352\n')
+    real_remove = files_routes.os.remove
+
+    def refuse_the_sheet(path):
+        if str(path).endswith(".cue"):
+            raise PermissionError("read-only")
+        real_remove(path)
+
+    monkeypatch.setattr(files_routes.os, "remove", refuse_the_sheet)
+
+    response = await files_routes.delete_files_batch(
+        _confirmed(), files_routes.BulkDeleteRequest(paths=[str(track), str(cue)]),
+    )
+
+    by_path = {r["path"]: r for r in response["results"]}
+    assert by_path[str(cue)]["success"] is False
+    assert by_path[str(track)]["success"] is False
+    assert track.exists() and cue.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_track_listed_before_its_sheet_is_deleted_with_it(vol):
+    folder = vol / "psx"
+    track = _write(folder / "Game.bin")
+    cue = _write(folder / "Game.cue", b'FILE "Game.bin" BINARY\n  TRACK 01 MODE2/2352\n')
+
+    response = await files_routes.delete_files_batch(
+        _confirmed(), files_routes.BulkDeleteRequest(paths=[str(track), str(cue)]),
+    )
+
+    assert response["failed"] == 0, response
+    assert not track.exists() and not cue.exists()

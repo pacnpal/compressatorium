@@ -169,3 +169,24 @@ process.stdout.write(JSON.stringify({
 """)
 
     assert data == {"files": ["/v/Loose.iso"], "playlists": []}, data
+
+
+def test_a_refresh_during_a_search_keeps_the_newest_words(tmp_path):
+    """CodeRabbit 4654557567: Refresh while `beta` is still searching
+    searches `beta` again, not the last finished `alpha`."""
+    data = _run(tmp_path, _LISTING + """
+fileBrowser.currentPath = '/v';
+fileBrowser.searchScope = 'everywhere';
+api.searchFiles = async () => ({ files: [], archives: [] });
+await fileBrowser.search('alpha');
+let answer;
+api.searchFiles = () => new Promise((resolve) => { answer = resolve; });
+const beta = fileBrowser.search('beta');
+api.searchFiles = async () => ({ files: [], archives: [] });
+await fileBrowser.refresh({ force: true });
+answer({ files: [], archives: [] });
+await beta;
+process.stdout.write(JSON.stringify({ query: fileBrowser.searchQuery }));
+""")
+
+    assert data == {"query": "beta"}, data

@@ -1151,15 +1151,16 @@ def real_path_set(paths: list[str]) -> set[str]:
     return {os.path.normcase(os.path.realpath(p)) for p in paths}
 
 
-def still_owned(
-    path: str, deleting: set[str], companions_of: dict[str, list[str]] | None = None,
-) -> str | None:
-    """Why *path* must stay, or None: a file outside *deleting* (normcased real
-    paths) still names it as part of itself. Blocking.
+def owners_of(
+    path: str, companions_of: dict[str, list[str]] | None = None,
+) -> tuple[dict[str, str] | None, str | None]:
+    """``(owners, None)``: every file that names *path* as part of itself, as
+    normcased real path -> path; or ``(None, why)`` when that can't be told.
+    Blocking.
 
     Through ``image_sets.owners_naming``, the one ownership check: a sheet's
-    track, a playlist's disc, a set's later volume or part. Fails closed:
-    when the owners can't be told, the file is kept.
+    track, a playlist's disc, a set's later volume or part. Fails closed: when
+    the owners can't be told, the caller keeps the file.
     """
     name = os.path.basename(path)
     boundary = lock_boundary_root(path)
@@ -1167,14 +1168,12 @@ def still_owned(
     try:
         owners = image_sets.owners_naming(path, stop_at=stop, companions_of=companions_of)
     except image_sets.SheetOwnerUnknown as exc:
-        return f"{exc}, so whether another game still needs {name} is unknown; it is kept"
-    others = [o for o in owners if os.path.normcase(os.path.realpath(o)) not in deleting]
-    if not others:
-        return None
-    return (
-        f"{os.path.basename(others[0])} still needs {name} and isn't being deleted; "
-        f"{name} is kept"
-    )
+        return None, f"{exc}, so whether another game still needs {name} is unknown; it is kept"
+    return {os.path.normcase(os.path.realpath(o)): o for o in owners}, None
+
+
+def _still_needed_by(owner: str, name: str) -> str:
+    return f"{os.path.basename(owner)} still needs {name} and isn't being deleted; {name} is kept"
 
 
 @router.post("/files/delete-batch")
@@ -1187,14 +1186,42 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
     if not payload.paths:
         raise HTTPException(status_code=400, detail="No paths provided")
 
-    results = []
-    success_count = 0
-    failed_count = 0
-    # A file another game outside this request still names (a shared track, a
-    # disc two playlists list, a set's part) is kept (#549 review): deleting it
-    # with one game would break the other.
+    # A file another game still names (a shared track, a disc two playlists
+    # list, a set's part) goes only once every file naming it has actually
+    # been deleted in this request (#549 review). A file whose owners are still
+    # to come waits for a later round, whatever order the request lists them
+    # in; one whose owner stays (outside the request, or its delete failed) is
+    # kept.
     requested = await off_loop_bounded(real_path_set, payload.paths)
+    real_of = dict(zip(payload.paths, await off_loop_bounded(
+        lambda paths: [os.path.normcase(os.path.realpath(p)) for p in paths], payload.paths,
+    ), strict=True))
     companions_of: dict[str, list[str]] = {}
+    owners_cache: dict[str, tuple[dict[str, str] | None, str | None]] = {}
+    deleted: set[str] = set()
+    settled: set[str] = set()
+
+    async def ownership(path: str) -> tuple[str | None, bool]:
+        """``(why it is kept, False)``, ``(None, True)`` to wait for its
+        owners, or ``(None, False)`` when it may go now."""
+        if path not in owners_cache:
+            try:
+                owners_cache[path] = await off_loop_bounded(owners_of, path, companions_of)
+            except HTTPException as exc:
+                owners_cache[path] = (None, str(exc.detail))
+        owners, why = owners_cache[path]
+        if owners is None:
+            return why, False
+        name = os.path.basename(path)
+        waiting = False
+        for real, owner in owners.items():
+            if real in deleted:
+                continue
+            if real in requested and real not in settled:
+                waiting = True
+                continue
+            return _still_needed_by(owner, name), False
+        return None, waiting
 
     async def delete_single_file(path: str) -> dict:
         """Delete a single file and return result."""
@@ -1218,13 +1245,6 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
             await _assert_path_not_in_use(path, is_dir=is_dir)
         except HTTPException as exc:
             return {"path": path, "success": False, "error": exc.detail}
-        if not is_dir:
-            try:
-                kept = await off_loop_bounded(still_owned, path, requested, companions_of)
-            except HTTPException as exc:
-                return {"path": path, "success": False, "error": exc.detail}
-            if kept:
-                return {"path": path, "success": False, "error": kept}
 
         try:
             if is_dir:
@@ -1262,14 +1282,41 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
             logger.warning("Delete failed for %s: %s", path, e)
             return {"path": path, "success": False, "error": "File operation failed"}
 
-    # Process all files
-    for path in payload.paths:
-        result = await delete_single_file(path)
-        results.append(result)
-        if result["success"]:
-            success_count += 1
-        else:
-            failed_count += 1
+    # Process the files in rounds: a file named by another file of the request
+    # waits until that one has gone.
+    by_path: dict[str, dict] = {}
+    pending = list(dict.fromkeys(payload.paths))
+    while pending:
+        later = []
+        for path in pending:
+            is_file = await run_in_threadpool(os.path.isfile, path)
+            if is_file:
+                kept, wait = await ownership(path)
+                if wait:
+                    later.append(path)
+                    continue
+                if kept:
+                    by_path[path] = {"path": path, "success": False, "error": kept}
+                    settled.add(real_of[path])
+                    continue
+            result = await delete_single_file(path)
+            by_path[path] = result
+            settled.add(real_of[path])
+            if result["success"]:
+                deleted.add(real_of[path])
+        if len(later) == len(pending):
+            # Files that name each other: none of them can go first.
+            for path in later:
+                by_path[path] = {
+                    "path": path, "success": False,
+                    "error": f"{os.path.basename(path)} is named by another file here that "
+                             "names it back; it is kept",
+                }
+            break
+        pending = later
+    results = [by_path[path] for path in payload.paths]
+    success_count = sum(1 for r in results if r["success"])
+    failed_count = len(results) - success_count
 
     return {
         "total": len(payload.paths),

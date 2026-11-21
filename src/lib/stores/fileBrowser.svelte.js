@@ -132,6 +132,8 @@ class FileBrowserStore {
   searchScope = $state('folder');
   // Bumped by every search started and every exit from search mode.
   _searchGeneration = 0;
+  // The words of the search still on its way, for a refresh meanwhile.
+  _pendingSearchQuery = null;
   folderQuery = $state('');
   searchMode = $state(false);
   searchResults = $state(null);
@@ -520,7 +522,8 @@ class FileBrowserStore {
       // re-fetch on any forced refresh rather than gating on a non-empty
       // query (the legacy "Search All" behaviour).
       if (force && this.currentPath) {
-        await this._enterSearch(this.searchQuery);
+        // The newest words asked for, even while their search is still out.
+        await this._enterSearch(this._pendingSearchQuery ?? this.searchQuery);
       }
       return;
     }
@@ -716,6 +719,7 @@ class FileBrowserStore {
     // change or a navigation (`exitSearch`), never applies its answer or
     // lifts the busy state of the one after it.
     const generation = ++this._searchGeneration;
+    this._pendingSearchQuery = query;
     this.searching = true;
     // Clear any stale error from a prior failed search/load, symmetric
     // with the directory load paths. Otherwise the error banner survives
@@ -742,7 +746,10 @@ class FileBrowserStore {
       this.entriesError = e?.message ?? 'Search failed';
       // Stay out of search mode so the directory listing remains visible.
     } finally {
-      if (generation === this._searchGeneration) this.searching = false;
+      if (generation === this._searchGeneration) {
+        this.searching = false;
+        this._pendingSearchQuery = null;
+      }
     }
   }
 
@@ -793,6 +800,7 @@ class FileBrowserStore {
   exitSearch() {
     // A search still on its way belongs to the view being left.
     this._searchGeneration += 1;
+    this._pendingSearchQuery = null;
     this.searching = false;
     this.searchMode = false;
     this.searchResults = null;
