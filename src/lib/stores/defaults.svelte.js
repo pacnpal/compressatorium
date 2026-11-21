@@ -15,10 +15,14 @@ class DefaultsStore {
   values = $state({ ...SAFE_DEFAULTS });
   loaded = $state(false);
 
+  // Bumped when a save starts: a load that set off earlier is older than it.
+  #saves = 0;
+
   async load() {
+    const at = this.#saves;
     try {
       const data = await api.getDefaultsPrefs();
-      this.values = { ...SAFE_DEFAULTS, ...pick(data) };
+      if (at === this.#saves) this.values = { ...SAFE_DEFAULTS, ...pick(data) };
     } catch {
       // Keep the safe defaults; nothing reads this before a user acts.
     } finally {
@@ -26,7 +30,18 @@ class DefaultsStore {
     }
   }
 
-  async save(patch) {
+  // Saves run one at a time, in call order, so a failed save puts back only
+  // what it changed: a later save never starts from values it would undo.
+  #queue = Promise.resolve();
+
+  save(patch) {
+    this.#saves += 1;
+    const run = this.#queue.then(() => this.#saveNow(patch));
+    this.#queue = run.catch(() => {});
+    return run;
+  }
+
+  async #saveNow(patch) {
     const before = this.values;
     this.values = { ...before, ...pick(patch) };
     try {

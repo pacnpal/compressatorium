@@ -7,6 +7,8 @@ Four concerns, one package, in the order a conversion meets them:
 * :mod:`~services.romm.client` — the HTTP surface: the bounded, redirect-safe
   opener, the path mapper that turns a RomM record into a local path, and the
   multipart writer that pushes metadata back;
+* :mod:`~services.romm.connect` — what the app learns from RomM instead of
+  asking (#532): discovery, the library path, RomM's structure and exclusions;
 * :mod:`~services.romm.library` and :mod:`~services.romm.auto` — RomM as a
   Library for the shared Rule engine in :mod:`services.rules`, and the
   RomM-bound Rule functions the routes call;

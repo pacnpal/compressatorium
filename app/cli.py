@@ -4,8 +4,20 @@ Run as ``python -m cli`` with ``app/`` on ``PYTHONPATH``; the Docker image
 installs a ``compressatorium`` wrapper that does exactly that (and, started as
 root, drops to the ``converter`` user through the image's entrypoint first).
 
-The CLI starts no web server, but it is not a second conversion path. It
-drives the same pieces the web UI does, in-process:
+The CLI starts no web server, and it is not a second conversion path. One
+process works a data directory at a time (``services.scheduler_lock``), so
+``convert`` either hands its jobs to the running server or runs them alone:
+
+* a server running on the data directory holds its worker lock and names its
+  port there; ``convert`` finds it the way it finds the rest of its config,
+  through the data directory (or ``--server URL``), and queues each batch with
+  the server's batch route, following the jobs there (``services.server_client``).
+  Nothing runs in the CLI;
+* with no server, ``convert`` takes the lock and runs the jobs in-process. A
+  server started meanwhile waits for it, and another ``convert`` waits its
+  turn.
+
+Either way it drives the same pieces the web UI does:
 
 * finding Images: ``routes.files.scan_tree``, the recursive search walk, so
   subfolders and archive members are found the way the UI finds them;
@@ -16,15 +28,16 @@ drives the same pieces the web UI does, in-process:
   jobs (``_delete_check`` decides every delete; ``ledger.record`` writes every
   Ledger row);
 * locking: the job manager's output locks are ``flock`` files in the shared lock
-  directory (``<data dir>/locks``), so a running server and this process never
-  write one output twice;
+  directory (``<data dir>/locks``); ``verify``, which reads only, holds the same
+  shared read lock a job does, so it never checks a file a job is writing;
 * Rules (``run-rules``): ``rules.sweep.sweep``, the server scheduler's own
   sweep, once per Library from ``services.libraries``; the scheduler lock
   (``services.scheduler_lock``) keeps it from running beside a server.
 
 Exit status: 0 when everything finished or there was nothing to do, 1 when any
 Image failed (or was cancelled), 2 on bad arguments, 3 when ``run-rules`` finds
-another scheduler (a server) using the data directory, 4 when ``verify``
+another process (a server) using the data directory, or ``convert`` finds a
+server there that does not answer, 4 when ``verify``
 failed nothing but could not check at least one Image (``uncheckable``: no
 verdict, e.g. a file it could not open, or its own timeout). 2 and 3 stop the
 command before anything is checked or run; among the Images checked the worst
@@ -34,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
 import contextlib
 import dataclasses
 import json
@@ -44,6 +58,7 @@ import signal
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from http import HTTPStatus
 from pathlib import Path
 
 from logging_setup import get_logger
@@ -121,7 +136,8 @@ class Item:
 _EXIT_STATUS = (
     "exit status: 0 done (or nothing to do); 1 an Image or job failed; 2 bad "
     "arguments or a path that does not exist; 3 run-rules found another "
-    "scheduler; 4 verify failed nothing but could not check an Image "
+    "process using the data directory, or convert found a server that does not "
+    "answer; 4 verify failed nothing but could not check an Image "
     "(uncheckable). Order: 2 and 3 stop the command before anything is "
     "checked or run; among the Images checked, the worst wins: 1, then 4, "
     "then 0."
@@ -181,6 +197,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--any-platform", action="store_true",
         help="with --to: do not narrow by Platform or skip Conflicted Images",
     )
+    convert.add_argument(
+        "--server", metavar="URL",
+        help="hand the jobs to the server at URL; without it, a server running "
+             "on this data directory is found on its own, and with none the jobs "
+             "run here",
+    )
     _common(convert)
 
     verify = sub.add_parser("verify", help="check Images are Intact", epilog=_EXIT_STATUS)
@@ -199,6 +221,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--library", metavar="ID", help="only this Library's Rules (romm, ...)",
     )
     _common(run_rules_cmd)
+
+    dat = sub.add_parser("dat", help="import DATs, or sync Redump's (#524)")
+    dat_sub = dat.add_subparsers(dest="dat_command", metavar="ACTION", required=True)
+    dat_import = dat_sub.add_parser(
+        "import", help="import .dat/.xml files and zips of them (No-Intro's daily pack)",
+    )
+    dat_import.add_argument("paths", nargs="+", metavar="PATH")
+    dat_sync = dat_sub.add_parser(
+        "sync", help="download Redump's DATs for the disc Platforms in your Libraries",
+    )
+    dat_sync.add_argument(
+        "--platform", action="append", metavar="SLUG",
+        help="only this Platform (psx, ps2, ngc, ...); repeatable",
+    )
+    dat_sync.add_argument(
+        "--force", action="store_true", help="ask again even for a system synced today",
+    )
+    for cmd in (dat_import, dat_sync):
+        cmd.add_argument("--json", action="store_true", help="print the result as JSON")
+        cmd.add_argument("-v", "--verbose", action="store_true",
+                         help="also log INFO messages to stderr")
+        cmd.set_defaults(dry_run=False)
     return parser
 
 
@@ -645,7 +689,7 @@ def _decide_deletes(items: list[Item], args) -> None:
         item.kept_source = True
 
 
-async def _prepare_group(request, group: list[Item]):
+async def _prepare_group(request, group: list[Item], ready: list[str]):
     """``prepare_batch`` for one group; on a refusal, retry Image by Image.
 
     The planner refuses a whole batch for one file (a delete snapshot that
@@ -657,7 +701,7 @@ async def _prepare_group(request, group: list[Item]):
     from routes.convert import prepare_batch
 
     try:
-        return [await prepare_batch(request)]
+        return [await prepare_batch(request, ready_tool_ids=ready)]
     except HTTPException as exc:
         if len(group) == 1:
             group[0].status, group[0].reason = "failed", str(exc.detail)
@@ -665,13 +709,14 @@ async def _prepare_group(request, group: list[Item]):
     batches = []
     for item in group:
         batches += await _prepare_group(
-            request.model_copy(update={"file_paths": [item.path]}), [item],
+            request.model_copy(update={"file_paths": [item.path]}), [item], ready,
         )
     return batches
 
 
-async def _prepare(items: list[Item], args) -> list[tuple]:
-    """Plan every routed Image through the batch route's planner, by group.
+async def _prepare(items: list[Item], args, ready: list[str]) -> list[tuple]:
+    """Plan every routed Image through the batch route's planner, by group,
+    with ``ready`` the tools that can run where the jobs will.
 
     Returns ``[(PreparedBatch, {planned file path: Item}), ...]``. Images the
     planner leaves out are marked skipped with its reason (a file collapsed
@@ -709,7 +754,7 @@ async def _prepare(items: list[Item], args) -> list[tuple]:
         for item in group:
             by_path[item.path] = item
             by_path.setdefault(os.path.realpath(item.path), item)
-        for batch in await _prepare_group(request, group):
+        for batch in await _prepare_group(request, group, ready):
             for path, reason in batch.skipped.items():
                 item = by_path.get(path)
                 if item is None:
@@ -742,8 +787,9 @@ async def _prepare(items: list[Item], args) -> list[tuple]:
 def _in_flight_window(settings) -> int:
     """How many of this run's jobs may be queued at once.
 
-    Twice the conversion slots, so a slot never waits on this process, and
-    never more than MAX_QUEUE_DEPTH when that is set.
+    Twice the conversion slots, so a slot never waits on this run, and
+    never more than MAX_QUEUE_DEPTH when that is set. On a server it keeps a
+    whole library from going ahead of the web UI's work.
     """
     window = max(2, 2 * max(1, int(getattr(settings, "max_concurrent_jobs", 1) or 1)))
     max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
@@ -831,7 +877,7 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
     its temp dir.
     """
     from fastapi import HTTPException
-    from routes.convert import queue_prepared
+    from routes.convert import OUTPUT_CLAIMED_CODE, queue_prepared
     from services.job_manager import CANCEL_SHUTDOWN
 
     from config import settings
@@ -862,9 +908,8 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
     window = _in_flight_window(settings)
     async with _job_runner(state, on_terminal) as job_manager:
         for batch, planned in _chunks(prepared, window):
-            # Each queued job holds a ticket in the queue a running server
-            # shares, so only a small window is queued at a time (below
-            # MAX_QUEUE_DEPTH when that is set) and web UI work can interleave.
+            # Only a small window is queued at a time (below MAX_QUEUE_DEPTH
+            # when that is set), as on a server (`_run_remote`).
             while (
                 not state.stopping
                 and job_manager.get_queue_depth() + len(batch.plans) > window
@@ -893,6 +938,12 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
                 if item is not None:
                     watching[job.id] = item
                     pending.add(job.id)
+            # A file another job was already writing is left out (#520).
+            for skip in batch.skips:
+                item = planned.get(skip.path)
+                if item is not None and skip.code == OUTPUT_CLAIMED_CODE:
+                    item.status, item.reason = "skipped", skip.reason
+                    printer.line(item.convert_line())
             if state.stopping:
                 # A stop that arrived while this batch was being queued: the
                 # signal handler's cancel-all ran before these jobs existed.
@@ -928,6 +979,159 @@ def _finish(item: Item, job) -> None:
         item.path = job.filename
 
 
+# How often `_run_remote` asks the server about the jobs it follows, and
+# offers it a batch its full queue turned away.
+_REMOTE_POLL_S = 1.0
+
+
+async def _run_remote(server, prepared: list[tuple], printer: Printer, state: RunState) -> None:
+    """``_run_jobs`` on a running server (#533): each batch goes to the
+    server's batch route, below the same window, and each job is followed
+    there until it ends. A stop cancels this run's jobs on the server, and
+    only those. A server that stops answering fails the jobs still followed.
+    """
+    from models import ConversionJob, JobStatus
+    from services.server_client import ServerRefused, ServerUnreachable
+
+    from config import settings
+
+    ended_states = {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
+    watching: dict[str, Item] = {}
+    state.jobs_started = True  # a signal now stops the run, not the process
+
+    def end(item: Item, status: str, reason: str) -> None:
+        item.status, item.reason = status, reason
+        printer.line(item.convert_line())
+
+    async def follow() -> None:
+        for job_id in list(watching):
+            try:
+                data = await server.job(job_id)
+            except (ServerUnreachable, ServerRefused) as exc:
+                for lost in list(watching):
+                    end(watching.pop(lost), "failed", f"Lost the server: {exc}")
+                return
+            if data is None:
+                end(watching.pop(job_id), "failed", "The server no longer knows this job")
+                continue
+            job = ConversionJob.model_validate(data)
+            if job.status in ended_states:
+                item = watching.pop(job_id)
+                _finish(item, job)
+                printer.line(item.convert_line())
+
+    async def a_turn() -> None:
+        await follow()
+        if watching:
+            await asyncio.sleep(_REMOTE_POLL_S)
+
+    window = _in_flight_window(settings)
+    pending = collections.deque(_chunks(prepared, window))
+    while pending:
+        batch, planned = pending.popleft()
+        while not state.stopping and watching and len(watching) + len(batch.plans) > window:
+            await a_turn()
+        if state.stopping:
+            for plan in batch.plans:
+                if (item := planned.get(plan.file_path)) is not None:
+                    end(item, "cancelled", "Stopped before it was queued")
+            continue
+        request = batch.request.model_copy(
+            update={"file_paths": [plan.file_path for plan in batch.plans]},
+        )
+        try:
+            jobs, skipped = await server.queue(request.model_dump(mode="json"))
+        except ServerRefused as exc:
+            if exc.status != HTTPStatus.TOO_MANY_REQUESTS:
+                for plan in batch.plans:
+                    if (item := planned.get(plan.file_path)) is not None:
+                        end(item, "failed", str(exc))
+                continue
+            # The server's queue has no room (its MAX_QUEUE_DEPTH, which may be
+            # below this run's window, or other clients' jobs): split the batch
+            # until it fits, and wait with one job for room to come.
+            half = len(batch.plans) // 2
+            if half:
+                pending.extendleft([
+                    (dataclasses.replace(batch, plans=batch.plans[half:]), planned),
+                    (dataclasses.replace(batch, plans=batch.plans[:half]), planned),
+                ])
+            else:
+                pending.appendleft((batch, planned))
+                await (a_turn() if watching else asyncio.sleep(_REMOTE_POLL_S))
+            continue
+        except ServerUnreachable as exc:
+            for plan in batch.plans:
+                if (item := planned.get(plan.file_path)) is not None:
+                    end(item, "failed", str(exc))
+            continue
+        for data in jobs:
+            if (item := planned.get(data.get("file_path"))) is not None:
+                watching[data["id"]] = item
+        for skip in skipped:
+            if (item := planned.get(skip.get("path"))) is not None:
+                end(item, "skipped", skip.get("reason"))
+    # A stop cancels every job still followed. A cancel the server did not
+    # take (no answer, a 503) is asked again each turn until it is settled or
+    # the job ends; a job lost with the server is failed by `follow`.
+    to_cancel: set[str] | None = None
+    while watching:
+        if state.stopping and to_cancel is None:
+            to_cancel = set(watching)
+        for job_id in sorted(to_cancel or ()):
+            if job_id not in watching or await server.cancel(job_id):
+                to_cancel.discard(job_id)
+        await a_turn()
+
+
+@contextlib.asynccontextmanager
+async def _worker(args):
+    """Where this run's jobs go: a running server (yielded), or here (None).
+
+    ``--server`` names the server. Otherwise the data directory's worker lock
+    says: held by a server, the jobs go to it, at the port it named there;
+    free, this run takes it and the jobs run here while it holds it; held by
+    another CLI, this run waits its turn. A server that does not answer stops
+    the run (exit 3) before anything is queued.
+    """
+    from services import scheduler_lock
+    from services.server_client import Server, ServerUnreachable
+
+    if args.server:
+        try:
+            server = Server(args.server)
+        except ValueError as exc:
+            raise UsageError(f"--server: {exc}") from None
+        await server.check()
+        yield server
+        return
+    told_at = None
+    while True:
+        try:
+            held = await asyncio.to_thread(scheduler_lock.acquire, "convert", wait=0)
+        except scheduler_lock.SchedulerLockHeld as exc:
+            if exc.holder.get("by") == "server":
+                try:
+                    server = await Server.find_holder(exc.holder)
+                except ServerUnreachable as lost:
+                    raise ServerUnreachable(
+                        f"{exc}, but {lost}; pass --server URL to name it",
+                    ) from None
+                yield server
+                return
+            now = asyncio.get_running_loop().time()
+            if told_at is None or now - told_at >= scheduler_lock._WAIT_LOG_EVERY:
+                told_at = now
+                logger.warning("Waiting for the data directory: %s", exc)
+            await asyncio.sleep(scheduler_lock._WAIT_POLL)
+            continue
+        try:
+            yield None
+        finally:
+            held.release()
+        return
+
+
 async def convert(args, printer: Printer, state: RunState) -> int:
     _validate_convert(args)
     paths = _check_paths(args.paths)
@@ -949,27 +1153,47 @@ async def convert(args, printer: Printer, state: RunState) -> int:
     )
     # Once, on the final input set, before any mode is chosen.
     await run_in_threadpool(_skip_outside_volumes, items)
-    # The shared, bounded readiness probe the Auto route uses.
-    ready = await registry.ready_tool_ids()
-    if args.auto:
-        items = await _route_auto(items, args, prefs, ready)
-    else:
-        items = await run_in_threadpool(_route_to, items, args, prefs, ready)
-    _decide_deletes(items, args)
-    prepared = await _prepare(items, args)
-
-    for item in items:
-        if item.status and item.status != "dropped":
-            printer.line(item.convert_line())
     if args.dry_run:
+        # The shared, bounded readiness probe the Auto route uses.
+        items, prepared = await _plan(items, args, prefs, await registry.ready_tool_ids())
+        _print_routed(items, printer)
         for _batch, planned in prepared:
             for item in planned.values():
                 item.status = "planned"
                 printer.line(item.convert_line())
     else:
-        await _run_jobs(prepared, printer, state)
+        # Where the jobs run is decided first: a server's tools, not this
+        # process's, say what can be converted (a server with the Switch keys
+        # mounted converts NSZ for a CLI without them).
+        async with _worker(args) as server:
+            asked = registry if server is None else server
+            items, prepared = await _plan(items, args, prefs, await asked.ready_tool_ids())
+            _print_routed(items, printer)
+            if prepared and server is not None:
+                await _run_remote(server, prepared, printer, state)
+            elif prepared:
+                await _run_jobs(prepared, printer, state)
     failed = any(i.status in ("failed", "cancelled") or i.kept_source for i in items)
     return EXIT_FAILED if failed else EXIT_OK
+
+
+async def _plan(items: list[Item], args, prefs: dict, ready: list[str]) -> tuple:
+    """Route, decide deletes and plan, with ``ready`` the tools that can run
+    where the jobs will. ``(items, prepared)``."""
+    from fastapi.concurrency import run_in_threadpool
+
+    if args.auto:
+        items = await _route_auto(items, args, prefs, ready)
+    else:
+        items = await run_in_threadpool(_route_to, items, args, prefs, ready)
+    _decide_deletes(items, args)
+    return items, await _prepare(items, args, ready)
+
+
+def _print_routed(items: list[Item], printer: Printer) -> None:
+    for item in items:
+        if item.status and item.status != "dropped":
+            printer.line(item.convert_line())
 
 
 # --------------------------------------------------------------------------- #
@@ -1919,6 +2143,59 @@ def _signals(state: RunState):
                 loop.remove_signal_handler(sig)
 
 
+# --------------------------------------------------------------------------- #
+# dat
+# --------------------------------------------------------------------------- #
+
+
+async def dat(args) -> int:
+    """``dat import PATH...`` and ``dat sync``: thin wrappers over
+    ``services.dat_import``, the Web UI's own. Exit 1 when anything failed.
+
+    The files a changed DAT set may name are re-matched, local-only, as the
+    server does, and the command waits for that before it exits, so a cached
+    remote hit the new DAT knows upgrades to its name (Codex PR #527). RomM's
+    saved settings are read first, so a sync finds its consoles.
+    """
+    from routes import dat as dat_routes
+    from services import dat_import
+    from services.romm import settings as romm_settings
+
+    if args.dat_command == "import":
+        files = [(p, os.path.abspath(p)) for p in args.paths]
+        missing = [label for label, path in files if not os.path.isfile(path)]
+        if missing:
+            raise UsageError(f"not a file: {', '.join(missing)}")
+        _open_db(False)
+        result = await dat_import.import_files(files)
+        await dat_routes.wait_for_match_jobs()
+        lines = [f"imported {d['file']}: {d['name']} ({d['file_count']} entries)"
+                 for d in result["imported"]]
+        failed = bool(result["errors"])
+    else:
+        _open_db(False)
+        await romm_settings.load()
+        try:
+            result = await dat_import.sync_redump(args.platform, force=args.force)
+        except dat_import.SyncRunning as exc:
+            print(f"compressatorium: {exc}", file=sys.stderr)
+            return EXIT_FAILED
+        await dat_routes.wait_for_match_jobs()
+        lines = [f"{s['system']}: {s['status'].replace('_', ' ')}"
+                 + (f": {s['error']}" if s.get("error") else "")
+                 for s in result["systems"]]
+        failed = bool(result["failed"])
+    if args.json:
+        print(json.dumps(result), flush=True)
+    else:
+        for line in lines:
+            print(line, flush=True)
+        for error in result.get("errors", []):
+            print(f"refused {error['file']}: {error['error']}", flush=True)
+        print(result["message"], flush=True)
+    return EXIT_FAILED if failed else EXIT_OK
+
+
 async def _run(args) -> int:
     from services.lock_manager import lock_manager
 
@@ -1933,6 +2210,8 @@ async def _run(args) -> int:
             return await convert(args, printer, state)
         if args.command == "run-rules":
             return await run_rules(args, printer, state)
+        if args.command == "dat":
+            return await dat(args)
         return await verify(args, printer, state)
 
 
@@ -1944,6 +2223,7 @@ def main(argv: list[str] | None = None) -> int:
         return exc.code if isinstance(exc.code, int) else EXIT_USAGE
     with _logging(args.verbose):
         from services.scheduler_lock import SchedulerLockHeld
+        from services.server_client import ServerUnreachable
         from utils.process_limits import raise_open_file_limit
 
         raise_open_file_limit()
@@ -1954,6 +2234,9 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_USAGE
         except SchedulerLockHeld as exc:
             print(f"compressatorium: not running the Rules: {exc}", file=sys.stderr)
+            return EXIT_LOCKED
+        except ServerUnreachable as exc:
+            print(f"compressatorium: not converting: {exc}", file=sys.stderr)
             return EXIT_LOCKED
         except (asyncio.CancelledError, KeyboardInterrupt):
             print("compressatorium: stopped", file=sys.stderr)

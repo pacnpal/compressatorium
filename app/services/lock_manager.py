@@ -62,7 +62,7 @@ def still_linked(handle, path: str) -> bool:
     """Whether the file ``handle`` holds is still the one at ``path``.
 
     Compares device and inode; a missing path (ENOENT) is a mismatch. Shared
-    by every flock-based lock file here and in ``concurrency_manager``: after
+    by every flock-based lock file here: after
     an flock succeeds, a mismatch means the lock is on a file its last holder
     unlinked, which no other process can see.
     """
@@ -95,7 +95,7 @@ def open_lock_handle(path: str):
     The handle is held past the call (for as long as its lock is), so it is
     made from an ``os.open`` descriptor rather than a ``with`` block. Binary
     append: a flock-only handle, or one that records a path with ``write``.
-    Shared by every lock file here and in ``concurrency_manager``.
+    Shared by every lock file here.
     """
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o666)
     try:

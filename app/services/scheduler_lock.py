@@ -1,21 +1,28 @@
-"""One Rule scheduler per data directory (#307).
+"""One process works a data directory at a time (#307, #533).
 
-The server sweeps the stored Rules on its own clock, and ``compressatorium
-run-rules`` sweeps them from cron. Two of them on one data directory would
-plan against the same Rules and Volumes at once, so each holds this lock while
-it runs: the server from startup to shutdown, ``run-rules`` for its pass.
-``run-rules`` is turned away when the lock is held (exit 3). The server waits
-for it (``acquire_waiting``), logging who holds it, so a server started during
-a nightly pass, or beside another server, starts when the lock is free instead
-of crash-looping under a restart policy.
+The server, ``compressatorium run-rules`` and ``compressatorium convert`` each
+run jobs, sweep Rules and write the Volumes. Only one of them may do that on a
+data directory at once, so each holds this lock while it works: the server from
+startup to shutdown, ``run-rules`` for its pass, ``convert`` while its jobs
+run in-process. That is what keeps a CLI and a server from ever working on
+one file, and what keeps ``MAX_CONCURRENT_JOBS`` one limit for the directory.
+
+``convert`` never runs beside a server: when the server holds the lock, the
+CLI hands its jobs to it over HTTP (``services.server_client``), found from
+the host and port the server names here. ``run-rules`` is turned away when the
+lock is held (exit 3). A ``convert`` waits for another CLI. The server waits
+for whoever holds it (``acquire_waiting``), logging who, so a server started
+during a nightly pass, or beside another server, starts when the lock is free
+instead of crash-looping under a restart policy.
 
 The lock is an exclusive ``flock`` on ``scheduler.lock`` in the shared lock
 directory (``<data dir>/locks`` by default, see ``config._default_lock_dir``),
-the same directory and the same kind of lock as the job queue's (#306). Every
+the same directory as the job locks (#306). Every
 container that mounts the same ``/config`` sees it, and the kernel drops it when
 its holder dies, however it dies. The file is never unlinked, so the lock is
 always on the file every process opens. While held it names its holder (role,
-PID, host, start time) so the process that is turned away can say why.
+PID, host, start time, an id, and a server's IPv4 addresses and port) so the
+process that is turned away can say why, and a CLI can find the server.
 
 ``CHD_CONCURRENCY_LOCK_DIR`` moves this lock with the rest; processes that
 share a data directory must share the lock directory too.
@@ -26,8 +33,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
+import ipaddress
 import json
 import os
+import secrets
 import socket
 import time
 from collections.abc import Callable
@@ -87,7 +96,8 @@ class SchedulerLockHeld(Exception):
         by = self.holder.get("by")
         who = {
             "server": "the server",
-            "run-rules": "another run-rules",
+            "run-rules": "a run-rules pass",
+            "convert": "a compressatorium convert",
         }.get(by, "another process")
         details = []
         if self.holder.get("pid"):
@@ -98,15 +108,34 @@ class SchedulerLockHeld(Exception):
         extra = f" ({', '.join(details)})" if details else ""
         return (
             f"the data directory {settings.data_dir} is in use by {who}{extra}; "
-            "only one Rule scheduler runs per data directory"
+            "only one process works a data directory at a time"
         )
 
 
 class SchedulerLock:
     """A held scheduler lock. :meth:`release` lets it go."""
 
-    def __init__(self, fd: int) -> None:
+    def __init__(self, fd: int, record: dict | None = None, *, published: bool = True) -> None:
         self._fd: int | None = fd
+        self._record = record or {}
+        # Whether the file holds ``_record``: a write that failed is made
+        # again by the next ``note_port`` (each /health asks), in place.
+        self._published = published
+
+    def note_port(self, port: int | None) -> None:
+        """Name the port this server answers on, once, for a CLI to find it."""
+        if self._fd is None:
+            return
+        if port and self._record.get("port") != port:
+            self._record = {**self._record, "port": port}
+        elif self._published:
+            return
+        self._published = _write_record(self._fd, self._record)
+
+    @property
+    def worker_id(self) -> str | None:
+        """The id this holder answers ``/health`` with."""
+        return self._record.get("id")
 
     def release(self) -> None:
         if self._fd is None:
@@ -140,25 +169,65 @@ def _try(fd: int) -> bool:
     return True
 
 
-def _held_by(fd: int, by: str) -> SchedulerLock:
-    """Write the holder note into the file this fd holds, and wrap it."""
+def _write_record(fd: int, record: dict) -> bool:
+    """Write the holder note in place (the file is never replaced: the flock is
+    on it). False when the write failed; the flock is the lock either way."""
     try:
-        record = json.dumps({
-            "by": by,
-            "pid": os.getpid(),
-            "host": socket.gethostname(),
-            "since": datetime.now(timezone.utc).isoformat(timespec="seconds")
-            .replace("+00:00", "Z"),
-        }).encode("utf-8")
         os.ftruncate(fd, 0)
-        os.pwrite(fd, record, 0)
+        os.pwrite(fd, json.dumps(record).encode("utf-8"), 0)
     except OSError:
-        pass  # the holder note is for messages only; the flock is the lock
-    return SchedulerLock(fd)
+        return False
+    return True
+
+
+def own_addresses() -> list[str]:
+    """This host's own non-loopback IPv4 addresses, ``[]`` when they can't be read.
+
+    A container's hostname resolves for its siblings on a user-defined network
+    (Compose), not on Docker's default bridge (``docker run``, Unraid), where
+    only an address reaches it. The name's own entry (``/etc/hosts`` in a
+    container), and the address a datagram socket would send from (``connect``
+    on UDP sends nothing; TEST-NET-1 is never routed anywhere real).
+    """
+    found = []
+    with contextlib.suppress(OSError, UnicodeError):
+        for *_, sockaddr in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            found.append(sockaddr[0])
+    with contextlib.suppress(OSError), socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.connect(("192.0.2.1", 9))
+        found.append(probe.getsockname()[0])
+    usable = []
+    for address in found:
+        try:
+            ip = ipaddress.IPv4Address(address)
+        except ValueError:
+            continue
+        if not (ip.is_loopback or ip.is_unspecified) and address not in usable:
+            usable.append(address)
+    return usable
+
+
+def _held_by(fd: int, by: str) -> SchedulerLock:
+    """Write the holder note into the file this fd holds, and wrap it.
+
+    ``id`` is what a server answers on ``/health`` (``worker``), so a CLI that
+    finds it by address knows it reached this holder and not some other server.
+    """
+    record = {
+        "by": by,
+        "pid": os.getpid(),
+        "host": socket.gethostname(),
+        "id": secrets.token_hex(8),
+        "since": datetime.now(timezone.utc).isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
+    }
+    if by == "server" and (addresses := own_addresses()):
+        record["addresses"] = addresses
+    return SchedulerLock(fd, record, published=_write_record(fd, record))
 
 
 def acquire(by: str, *, wait: float = _ACQUIRE_WAIT) -> SchedulerLock:
-    """Take the lock for ``by`` (``"server"``, ``"run-rules"``), or raise.
+    """Take the lock for ``by`` (``"server"``, ``"run-rules"``, ``"convert"``), or raise.
 
     Never blocks for long: it retries for ``wait`` seconds and then raises
     :class:`SchedulerLockHeld`, naming the holder. For ``run-rules``, which

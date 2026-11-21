@@ -52,7 +52,7 @@ def test_safety_starts_from_the_defaults_and_reaches_the_submit():
 
 def test_delete_previews_only_the_groups_that_can_delete():
     assert "registry.specFor(row.mode)?.supportsDeleteOnVerify" in _PANEL
-    assert "conversion.fetchDeletePlan(groups)" in _PANEL
+    assert "conversion.fetchDeletePlan(groups, outputDir)" in _PANEL
     assert "<DeletePlanModal" in _PANEL
 
 
@@ -69,3 +69,19 @@ def test_the_plan_groups_by_console_and_format_and_offers_pick_console():
     assert "Working out the best format…" in _PLAN
     assert "Couldn't plan this: {error}" in _PLAN
     assert "None of these can be converted here." in _PLAN
+
+
+def test_one_click_starts_one_run_and_queues_what_was_planned():
+    """A second click while the plan dialog or the delete preview is open
+    starts nothing, and the folder, RomM platform, safety choices, target and
+    picked consoles are read before the first await."""
+    assert "|| inFlight," in _PANEL
+    assert "inFlight = true;" in _PANEL and "inFlight = false;" in _PANEL
+    run = _PANEL.split("async function run() {", 1)[1]
+    before_await = run.split("await ", 1)[0]
+    for read in ("const snapshot = [...paths];", "const outputDir = conversion.outputDir",
+                 "const platformId = fileBrowser.rommPlatformId;",
+                 "const choice = { ...safety", "platformOverrides: conversion.overridesFor(snapshot)"):
+        assert read in before_await, read
+    assert "conversion.fetchDeletePlan(groups, outputDir)" in run
+    assert "rommPlatformId: platformId," in run

@@ -274,6 +274,11 @@ class _State:
     # The Rules whose dropped or refused settings this pass logged already
     # (#477, `sweep.report_rule_changes`): once per pass, not per Image.
     rules_reported: set[tuple] = field(default_factory=set)
+    # Path -> when a trigger (#522: the *arr webhook, ``/api/scan``) said it
+    # is finished: an Image at, below or holding it skips the settle wait.
+    # When twice: on the monotonic clock for its expiry, and on the wall
+    # clock to compare with a file's mtime (a folder's marker).
+    ready: dict[str, tuple[float, float]] = field(default_factory=dict)
     last_poll: float | None = None
     waiting: int = 0
     error: str | None = None
@@ -508,6 +513,68 @@ def _job_done(reader: Any) -> None:
 
 def _state(inbox_id: int) -> _State:
     return _states.setdefault(inbox_id, _State())
+
+
+# How long a trigger's "this is finished" stands for a path no poll found yet.
+# ponytail: a fixed hour, long enough for a slow share to show the file.
+READY_SECONDS = 3600
+
+
+def mark_ready(inbox_id: int, path: str, *, resolved: bool = False) -> None:
+    """Say the file (or folder) at *path* in the Inbox is finished (#522), so
+    the next poll takes what is there without waiting for it to settle. A
+    held Image stays held, and only files the poll lists are ever taken. A
+    folder covers what was finished in it when it was named: a file written
+    there afterwards settles as usual (Codex PR #526). *resolved* says
+    *path* is already its real path (a caller on the event loop resolves it
+    in a bounded worker first, Codex PR #526); else it is resolved here,
+    which touches the disk."""
+    real = path if resolved else os.path.realpath(path)
+    _state(inbox_id).ready[real] = (time.monotonic(), time.time())
+
+
+def _written_by(path: str, wall: float) -> bool:
+    """Whether *path* and every file of its Image (a sheet's tracks) were
+    last written by *wall* (the wall clock), Codex PR #526. Blocking."""
+    try:
+        return all(
+            os.stat(member).st_mtime <= wall
+            for member in {path, *_members(path)}
+        )
+    except OSError:
+        return False
+
+
+async def _is_ready(state: _State, path: str) -> bool:
+    """Whether a trigger named *path*, a folder above it, or one of its
+    files (a sheet's track). The marker of a file goes once it is matched."""
+    if not state.ready:
+        return False
+    now = time.monotonic()
+    for marker, (at, _wall) in list(state.ready.items()):
+        if now - at > READY_SECONDS:
+            state.ready.pop(marker, None)
+    # A sheet's tracks are read only when a marker sits beside it.
+    beside = os.path.dirname(path) + os.sep
+    near = any(m.startswith(beside) and m != path for m in state.ready)
+    own = {path, *(await _step(_members, path) if near else ())}
+    # The markers that name this Image: a folder above it, the file itself,
+    # or one of its files (a sheet's track). Another sheet named beside it
+    # keeps its markers for its own turn (Codex PR #526).
+    naming = [
+        (marker, wall) for marker, (_at, wall) in state.ready.items()
+        if marker in own or path.startswith(marker + os.sep)
+    ]
+    for marker, wall in naming:
+        # Any marker covers only what was finished when it was named, so a
+        # new download at a named path still settles (Codex PR #526).
+        if await _step(_written_by, path, wall):
+            # Taken: its own markers go, so none can hurry a later file of
+            # the same name; a folder's stays for the rest of the folder.
+            for name in own:
+                state.ready.pop(name, None)
+            return True
+    return False
 
 
 def status(inbox_id: int) -> dict[str, Any]:
@@ -876,6 +943,8 @@ async def poll(
         if library is None:
             state.error = result["error"] = "library_missing"
             return result
+        # Placement reads the Library's layout (RomM's structure, #532).
+        await library.refresh()
         try:
             listing, unlisted, sharing, blocked = await run_detached_within_stall_bound(
                 _list, inbox.folder, library, what=f"The Inbox {inbox.folder}",
@@ -930,6 +999,9 @@ async def poll(
             state.ranked_holds.pop(path, None)
             state.taken_holds.pop(path, None)
             seen = state.seen.get(path)
+            if await _is_ready(state, path):
+                # A trigger said it's finished (#522): settled now.
+                seen = state.seen[path] = _Seen(fingerprint, now - inbox.settle_seconds)
             if seen is None or seen.fingerprint != fingerprint:
                 state.seen[path] = _Seen(fingerprint, now)
                 result["waiting"] += 1

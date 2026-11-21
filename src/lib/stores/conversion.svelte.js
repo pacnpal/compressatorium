@@ -452,38 +452,20 @@ class ConversionStore {
       groupByMode(Object.keys(modeOf), modeOf),
       { duplicateAction: 'skip', rommRepin, rommPlatformId, outputDir, signal },
       async () => {
-        let result;
-        try {
-          // After the RomM snapshot, right before queueing: an abort (the
-          // panel unmounted) stops here. Nothing becomes a job, so the shared
-          // path retires the metadata just recorded, without an error toast.
-          if (signal?.aborted) {
-            const stopped = new Error('Auto run aborted');
-            stopped.aborted = true;
-            throw stopped;
-          }
-          result = await api.createAutoJobs(items, outputDir, 'skip', sent);
-        } catch (e) {
-          // A later group was refused after earlier jobs had already
-          // finished: the route returns those in `detail.jobs`. They are real
-          // jobs, so adopt them and let the shared path reconcile against
-          // them before it retires any snapshot.
-          const kept = Array.isArray(e?.detail?.jobs) ? e.detail.jobs : null;
-          if (kept) {
-            jobs.adopt(kept);
-            e.createdJobs = kept;
-          }
-          throw e;
+        // After the RomM snapshot, right before queueing: an abort (the
+        // panel unmounted) stops here. Nothing becomes a job, so the shared
+        // path retires the metadata just recorded, without an error toast.
+        if (signal?.aborted) {
+          const stopped = new Error('Auto run aborted');
+          stopped.aborted = true;
+          throw stopped;
         }
+        const result = await api.createAutoJobs(items, outputDir, 'skip', sent);
         const createdJobs = Array.isArray(result?.jobs) ? result.jobs : [];
         jobs.adopt(createdJobs);
-        // Each game left out and why: the server's list, else the plan rows
-        // it came back without a target.
-        const skipped = Array.isArray(result?.skipped) ? result.skipped
-          : (result?.plan ?? [])
-            .filter((row) => !row?.mode && row?.skip_reason && wanted.has(row.file_path))
-            .map((row) => ({ path: row.file_path, reason: row.skip_reason }));
-        return { result, createdJobs, skipped };
+        // Each game left out and why (a plan that changed, an output another
+        // job holds), for the shared result toast (#520).
+        return { result, createdJobs, skipped: result?.skipped ?? [] };
       },
     );
   }

@@ -296,18 +296,13 @@ planAnswer = (paths, mode) => {
     recorded_ids: Object.fromEntries(paths.map((p) => [p, ids[p]])),
   };
 };
-// The route's answer when the dolphin_rvz group is refused after the
-// createdvd job already finished: a 409 whose detail carries the kept job in
-// the shape a success returns (what client.fetchJson attaches as err.detail).
-autoAnswer = () => {
-  const err = new Error('taken by another job. Already finished and kept: a.iso.');
-  err.status = 409;
-  err.detail = {
-    message: err.message,
-    jobs: [{ id: 'j1', file_path: '/v/ps2/a.iso', output_path: '/v/ps2/a.chd' }],
-  };
-  throw err;
-};
+// The route queues a.iso and leaves b.iso out (its plan changed since it
+// was confirmed, #520): b.iso is reported in `skipped`, not refused as a 409.
+autoAnswer = () => ({
+  plan,
+  jobs: [{ id: 'j1', file_path: '/v/ps2/a.iso', output_path: '/v/ps2/a.chd' }],
+  skipped: [{ path: '/v/gc/b.iso', reason: 'Its plan changed', code: 'plan_changed' }],
+});
 const store = new ConversionStore();
 let failed = false;
 try {
@@ -322,19 +317,23 @@ process.stdout.write(JSON.stringify({
   cancelled: calls.cancel.flat(),
   adopted: adopted.map((j) => j.id),
   recorded: store.lastRepinRecorded,
+  toasts,
 }));
 """
 
 
-def test_a_job_kept_after_an_auto_failure_keeps_its_re_pin_record(tmp_path):
+def test_an_image_auto_left_out_retires_only_its_own_re_pin_record(tmp_path):
     data = _run(tmp_path, _KEPT_AFTER_FAILURE)
 
-    assert data["failed"] is True, data
-    # a.iso's job finished and was kept: its snapshot (11) stays. Only b.iso's
-    # (22), which never became a job, is retired.
+    assert data["failed"] is False, data
+    # a.iso became a job: its snapshot (11) stays. Only b.iso's (22), which
+    # Auto left out, is retired.
     assert data["cancelled"] == [22], data
     assert data["adopted"] == ["j1"], data
     assert data["recorded"] == 1, data
+    assert any(
+        kind == "success" and "1 skipped" in msg for kind, msg in data["toasts"]
+    ), data
 
 
 

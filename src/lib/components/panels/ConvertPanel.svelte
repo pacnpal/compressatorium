@@ -36,16 +36,23 @@
   // console, only what that console allows.
   const ready = $derived(ui.toolsKnown ? ui.visibleTools.map((t) => t.id) : null);
   const noConverters = $derived(ui.toolsKnown && ui.visibleTools.length === 0);
-  const rommPlatform = $derived(
-    fileBrowser.rommPlatformId !== null
-      ? romm.platforms.find((p) => p.id === romm.selectedPlatformId) ?? null
-      : null,
+  // A RomM catalog offers only what its platform allows (GameCube: Dolphin,
+  // never CHDMAN); while its platform or rows are still loading (a platform
+  // switch leaves the old rows on screen until the new ones land) it offers
+  // nothing, and Convert waits.
+  const platform = $derived(
+    fileBrowser.rommPlatformId === null
+      ? null
+      : (romm.platforms.find((p) => p.id === fileBrowser.rommPlatformId) ?? null),
   );
-  const targetGroups = $derived(convertTargets({
+  const catalogLoading = $derived(
+    fileBrowser.rommPlatformId !== null && (!platform || fileBrowser.loading),
+  );
+  const targetGroups = $derived(catalogLoading ? [] : convertTargets({
     entries: selected.length ? selected : null,
     ready,
-    modeIds: Array.isArray(rommPlatform?.mode_ids) ? rommPlatform.mode_ids : null,
-    toolIds: Array.isArray(rommPlatform?.tool_ids) ? rommPlatform.tool_ids : null,
+    modeIds: platform?.mode_ids ?? null,
+    toolIds: platform?.tool_ids ?? null,
   }));
 
   // Convert to is session-only: Best again once nothing is selected, and
@@ -149,11 +156,7 @@
     const folders = [...new Set(list.map((p) => p.split('::')[0].replace(/\/[^/]*$/, '')))];
     if (folders.length !== 1 || fileBrowser.rommPlatformId !== null) return null;
     const [folder] = folders;
-    const inLibrary = libraries.folders.some((lib) => {
-      const root = String(lib.root ?? '').replace(/\/+$/, '');
-      return !!root && (folder === root || folder.startsWith(`${root}/`));
-    });
-    return inLibrary ? folder : null;
+    return libraries.folderLibraryFor(folder) ? folder : null;
   }
   function openMapping(folder) {
     mapping = true;
@@ -197,13 +200,37 @@
 
   const converting = $derived(conversion.converting);
   const convertCount = $derived(big && !plan ? paths.length : actionable.length);
+  // From the first click until the submit settles (the plan dialog and the
+  // delete preview included): a second click never starts a second run.
+  let inFlight = $state(false);
   const disabled = $derived(
-    convertCount === 0 || converting || conversion.planning || noConverters,
+    convertCount === 0 || converting || conversion.planning || noConverters || catalogLoading
+      || inFlight,
   );
 
   async function convert() {
     if (disabled) return;
+    inFlight = true;
+    try {
+      await run();
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  // Everything the run sends is read here, before the first await: what is
+  // queued is what was planned, whatever changes while a dialog is open.
+  async function run() {
     const snapshot = [...paths];
+    const outputDir = conversion.outputDir || null;
+    const platformId = fileBrowser.rommPlatformId;
+    const fromRomm = platformId !== null;
+    const choice = { ...safety, split: conversion.split };
+    // The plan's own inputs, so the server replans what was shown.
+    const planned = {
+      target: conversion.target || null,
+      platformOverrides: conversion.overridesFor(snapshot),
+    };
     let confirmed = plan;
     if (!confirmed) {
       ui.planPromptOpen = true;
@@ -216,10 +243,11 @@
     }
     const rows = confirmed.filter((row) => row.mode);
     const options = {
-      verifyAfter: safety.checkAfter || safety.deleteOriginal,
-      deleteOnVerify: safety.deleteOriginal,
-      containerOnly: safety.deleteOriginal && safety.quickCheck,
-      split: conversion.split,
+      verifyAfter: choice.checkAfter || choice.deleteOriginal,
+      deleteOnVerify: choice.deleteOriginal,
+      containerOnly: choice.deleteOriginal && choice.quickCheck,
+      split: choice.split,
+      ...planned,
     };
     if (options.deleteOnVerify) {
       const groups = {};
@@ -229,7 +257,7 @@
       }
       if (Object.keys(groups).length) {
         try {
-          await conversion.fetchDeletePlan(groups);
+          await conversion.fetchDeletePlan(groups, outputDir);
         } catch (_e) {
           return; // toast already raised
         }
@@ -239,15 +267,14 @@
         if (!proceed) return;
       }
     }
-    const fromRomm = fileBrowser.rommPlatformId !== null;
     const controller = new AbortController();
     submitAbort = controller;
     try {
       await conversion.submitAuto(snapshot, {
         plan: confirmed,
         rommRepin: fromRomm,
-        rommPlatformId: fileBrowser.rommPlatformId,
-        outputDir: conversion.outputDir || null,
+        rommPlatformId: platformId,
+        outputDir,
         signal: controller.signal,
         options,
       });

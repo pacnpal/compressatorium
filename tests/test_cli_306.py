@@ -642,24 +642,10 @@ def test_entrypoint_and_wrapper_diagnostics_go_to_stderr():
 
 def _point_locks_at(monkeypatch, lock_dir):
     """Aim the process-wide lock managers at ``lock_dir``, not yet set up."""
-    from services.concurrency_manager import concurrency_manager
     from services.lock_manager import lock_manager
 
     monkeypatch.setattr(lock_manager, "_lock_dir", str(lock_dir))
     monkeypatch.setattr(lock_manager, "_ready", False)
-    monkeypatch.setattr(concurrency_manager, "lock_dir", str(lock_dir))
-    monkeypatch.setattr(
-        concurrency_manager, "_slot_paths", [str(lock_dir / "convert_slot_0.lock")],
-    )
-    monkeypatch.setattr(
-        concurrency_manager, "_ticket_counter_path", str(lock_dir / "queue_counter"),
-    )
-    monkeypatch.setattr(concurrency_manager, "_ready", False)
-    monkeypatch.setattr(
-        concurrency_manager, "_holder_path",
-        str(lock_dir / f"holder_{concurrency_manager._holder_id}.lock"),
-    )
-    monkeypatch.setattr(concurrency_manager, "_holder_handle", None)
 
 
 def test_dry_run_creates_no_lock_dir(volume, dolphin, capsys, monkeypatch, tmp_path):
@@ -721,7 +707,7 @@ def test_a_hangup_stops_the_run_like_sigterm(volume, monkeypatch, capsys, signam
 
 
 def test_only_a_small_window_of_jobs_is_queued_at_once(volume, dolphin, capsys, monkeypatch):
-    """Each queued job holds a ticket in the queue the server shares: a run over
+    """Only a small window of jobs is queued at once (as on a server): a run over
     a whole library must not put every job ahead of the web UI's."""
     from routes import convert as convert_routes
     from services.job_manager import job_manager
@@ -784,18 +770,6 @@ def test_never_two_jobs_for_one_output_in_a_run(volume, dolphin, capsys, monkeyp
         (str(gc / writers[0]), str(gc / "Game.rvz")),
     ]
     assert code == 1  # Bad.iso
-
-
-def test_point_locks_at_moves_the_holder_file_too(monkeypatch, tmp_path):
-    import os
-
-    from services.concurrency_manager import concurrency_manager
-
-    lock_dir = tmp_path / "locks"
-    _point_locks_at(monkeypatch, lock_dir)
-
-    assert os.path.dirname(concurrency_manager._holder_path) == str(lock_dir)
-    assert concurrency_manager._holder_handle is None
 
 
 def test_verify_finds_images_that_only_a_check_reads(volume, dolphin, capsys):

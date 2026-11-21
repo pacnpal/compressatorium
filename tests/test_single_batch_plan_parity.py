@@ -807,38 +807,43 @@ async def test_delete_on_verify_allows_the_verified_default(parity_env):
 
 
 @pytest.mark.asyncio
-async def test_a_claimed_destination_is_a_conflict_not_a_server_error(
+async def test_a_claimed_destination_skips_the_file_in_a_batch_and_is_a_conflict_alone(
     parity_env, monkeypatch,
 ) -> None:
-    """Losing a race for a destination is a 409, on both routes.
+    """Losing a race for a destination never answers 500 (#520).
 
     The queue refuses the second of two submissions that resolved the same
-    output — correct, and the whole point of reserving destinations under its
-    own lock. But it surfaced as an unhandled `ValueError`, so a working
-    safety check answered 500: "the server broke" for something the caller can
-    simply retry or skip.
+    output: correct, and the whole point of reserving destinations under its
+    own lock. A batch skips that one file and reports it (``output_claimed``)
+    rather than failing every other file with it; a single job, which has
+    nothing else to queue, answers 409 so the caller can retry.
     """
     source = parity_env["tmp_path"] / "game.iso"
     source.write_bytes(b"data")
+    reason = "Another queued job (job-1) is already writing game.chd"
 
-    def _claimed(*_args, **_kwargs):
-        raise OutputClaimedError(
-            "Another queued job (job-1) is already writing game.chd",
-            claimed_by="job-1",
-        )
+    async def _claimed_in_batch(job_specs, _mode, *, skipped=None, **_kwargs):
+        assert skipped is not None
+        skipped.extend((spec["file_path"], reason) for spec in job_specs)
+        return []
 
-    async def _claimed_async(*args, **kwargs):
-        _claimed()
+    async def _claimed_single(*_args, **_kwargs):
+        raise OutputClaimedError(reason, claimed_by="job-1")
 
-    monkeypatch.setattr(convert_routes.job_manager, "create_jobs_atomic", _claimed_async)
-    monkeypatch.setattr(convert_routes.job_manager, "create_job", _claimed_async)
+    monkeypatch.setattr(convert_routes.job_manager, "create_jobs_atomic", _claimed_in_batch)
+    monkeypatch.setattr(convert_routes.job_manager, "create_job", _claimed_single)
 
-    batch = await _run_batch(
-        parity_env, file_path=str(source), mode=ConversionMode.CREATECD,
-        duplicate_action=DuplicateAction.SKIP, delete_on_verify=False,
+    batch = await convert_routes.create_batch_jobs(
+        BatchJobCreateRequest(
+            file_paths=[str(source)], mode=ConversionMode.CREATECD,
+            duplicate_action=DuplicateAction.SKIP,
+        ),
+        report_skipped=True,
     )
-    assert batch["status"] == 409, batch
-    assert "already writing" in batch["detail"]
+    assert batch.jobs == []
+    assert [(s.path, s.code, s.reason) for s in batch.skipped] == [
+        (str(source), "output_claimed", reason),
+    ]
 
     single = await _run_single(
         parity_env, file_path=str(source), mode=ConversionMode.CREATECD,
@@ -921,7 +926,6 @@ async def test_destination_canonicalisation_never_runs_on_the_event_loop(
 
     monkeypatch.setattr(jm.os.path, "realpath", _realpath)
     monkeypatch.setattr(jm, "_CANONICAL_PROBE_SECONDS", 0.2)
-    monkeypatch.setattr(jm.concurrency_manager, "reserve_ticket", lambda key: 0)
 
     manager = jm.JobManager(max_concurrent=1, max_job_history=10)
     ticks = 0
@@ -971,7 +975,6 @@ async def test_a_job_queued_during_another_preflight_still_claims_its_output(
     real.mkdir()
     link = tmp_path / "link"
     link.symlink_to(real)
-    monkeypatch.setattr(jm.concurrency_manager, "reserve_ticket", lambda key: 0)
 
     manager = jm.JobManager(max_concurrent=1, max_job_history=10)
     mode = ConversionMode.CREATECD
@@ -1035,7 +1038,6 @@ async def test_companion_enumeration_never_runs_on_the_event_loop(
     monkeypatch.setattr(jm.os.path, "realpath", _realpath)
     monkeypatch.setattr(jm.JobManager, "_companions", staticmethod(_slow_companions))
     monkeypatch.setattr(jm, "_CANONICAL_PROBE_SECONDS", 0.2)
-    monkeypatch.setattr(jm.concurrency_manager, "reserve_ticket", lambda key: 0)
 
     manager = jm.JobManager(max_concurrent=1, max_job_history=10)
     ticks = 0
@@ -1089,7 +1091,6 @@ async def test_a_reservation_refuses_rather_than_falling_back_to_lexical_keys(
     real.mkdir()
     link = tmp_path / "link"
     link.symlink_to(real)
-    monkeypatch.setattr(jm.concurrency_manager, "reserve_ticket", lambda key: 0)
     monkeypatch.setattr(jm, "_CANONICAL_PROBE_SECONDS", 0.05)
 
     # Wedged for *this* destination only. `realpath` is used across the

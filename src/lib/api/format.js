@@ -2,6 +2,12 @@
 
 const SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
 
+/** The last part of a path: what a toast or a job row names a file by. */
+export function baseName(path) {
+  const parts = String(path ?? '').split(/[/\\]/).filter(Boolean);
+  return parts.at(-1) ?? '';
+}
+
 export function formatSize(bytes) {
   if (bytes == null) return '';
   if (bytes === 0) return '0 B';

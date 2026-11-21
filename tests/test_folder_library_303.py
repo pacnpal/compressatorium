@@ -10,6 +10,7 @@ stubbed, as the other sweep tests do.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import time
 from pathlib import Path
@@ -87,11 +88,14 @@ def _queue(monkeypatch):
     """The queue stubbed: records what a run queued, and reports it in flight."""
     queued: list[str] = []
 
-    async def fake_batch(paths, mode, **_kwargs):
-        jobs = []
-        for path in paths:
-            queued.append(path)
-            jobs.append(SimpleNamespace(file_path=path, id=f"job-{len(queued)}"))
+    async def fake_batch(paths, mode, **kwargs):
+        # As the real queue does: the admission is entered around queueing.
+        admission = kwargs.get("admission")
+        with admission() if admission is not None else contextlib.nullcontext():
+            jobs = []
+            for path in paths:
+                queued.append(path)
+                jobs.append(SimpleNamespace(file_path=path, id=f"job-{len(queued)}"))
         return jobs
 
     monkeypatch.setattr(job_manager, "create_batch_jobs", fake_batch)
@@ -155,10 +159,10 @@ async def test_a_missing_folder_or_a_file_is_refused(tree: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_same_or_an_overlapping_folder_is_refused(tree: Path) -> None:
+async def test_the_same_folder_twice_is_refused(tree: Path) -> None:
     await _register(tree / "gc")
 
-    for path in (tree / "gc", tree, tree / "gc" / "."):
+    for path in (tree / "gc", tree / "gc" / "."):
         with pytest.raises(HTTPException) as exc:
             await _register(path)
         assert exc.value.status_code == 409, path
@@ -802,34 +806,34 @@ def test_every_platform_has_a_display_name() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_folder_inside_romms_library_is_refused(db: Path) -> None:
+async def test_a_folder_inside_or_around_romms_library_registers(db: Path) -> None:
+    """Libraries may overlap (#514); RomM's own folder still can't be one."""
     from services.romm import settings as romm_settings
 
     library = db / "library"
     (library / "roms" / "gc").mkdir(parents=True)
     await romm_settings.save({"url": "http://romm:8080", "library_root": str(library)})
 
-    with pytest.raises(HTTPException) as exc:
-        await _register(library / "roms" / "gc")
-    assert exc.value.status_code == 409
-    with pytest.raises(HTTPException) as around:
-        await _register(db)
-    assert around.value.status_code == 409
+    await _register(library / "roms" / "gc")
+    await _register(db)
+    with pytest.raises(HTTPException) as same:
+        await _register(library)
+    assert same.value.status_code == 409
 
 
 @pytest.mark.asyncio
-async def test_concurrent_nested_registrations_let_one_through(tree: Path) -> None:
+async def test_concurrent_registrations_of_one_folder_let_one_through(tree: Path) -> None:
     import asyncio
 
     outcomes = await asyncio.gather(
-        # Every pair overlaps: the root, a folder in it, and that folder again.
+        # The root, a folder in it (fine, #514), and that folder again (not).
         _register(tree), _register(tree / "gc"), _register(tree / "gc"),
         return_exceptions=True,
     )
     ok = [o for o in outcomes if isinstance(o, dict)]
     refused = [o for o in outcomes if isinstance(o, HTTPException)]
-    assert len(ok) == 1, outcomes
-    assert {e.status_code for e in refused} == {409}
+    assert len(ok) == 2, outcomes
+    assert [e.status_code for e in refused] == [409]
 
 
 @pytest.mark.asyncio
@@ -1968,15 +1972,15 @@ async def test_a_slow_walk_is_reused_from_when_it_finished(db: Path, monkeypatch
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("where", ["same", "parent", "child"])
+@pytest.mark.parametrize("where", ["same"])
 async def test_a_romm_root_overlapping_a_folder_library_is_refused(
     db: Path, where: str,
 ) -> None:
     """Codex 4576816771: saving RomM's library root checks every folder Library.
 
-    The same overlap rule as registration, the other way round: a RomM root
-    equal to, containing, or inside a registered folder is a 409 naming the
-    Library, and nothing is saved.
+    The same rule as registration, the other way round: a RomM root equal to
+    a registered folder is a 409 naming the Library, and nothing is saved.
+    Around or inside one is fine (#514, ``tests/test_library_overlap_514.py``).
     """
     from routes import romm as romm_routes
     from services.romm import settings as romm_settings

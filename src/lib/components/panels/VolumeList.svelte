@@ -22,7 +22,7 @@
   {:else if error}
     <div class="state error"><TriangleAlert size={14} /> {error}</div>
   {:else if volumes.length === 0}
-    <div class="state muted">No volumes configured</div>
+    <div class="state muted">No volumes. Mount game folders under /data, or set COMPRESSATORIUM_VOLUMES.</div>
   {:else}
     <ul class="list">
       {#each volumes as v (v.path)}
