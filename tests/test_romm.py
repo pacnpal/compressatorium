@@ -5499,3 +5499,31 @@ def test_heartbeat_version_reads_nested_and_flat_shapes(heartbeat, expected) -> 
     from services.romm import heartbeat_version
 
     assert heartbeat_version(heartbeat) == expected
+
+
+
+class _Stop(Exception):
+    pass
+
+
+def test_an_anonymous_client_sends_no_token_even_with_one_saved(monkeypatch) -> None:
+    """Discovery and pairing ask RomM before it has a token of ours: an
+    anonymous client never falls back to the saved one (#532)."""
+    import services.romm.client as client_module
+
+    monkeypatch.setattr(client_module, "_token", lambda: "rmm_saved")
+    seen: list[dict] = []
+
+    def recording_request(url, headers=None, **_kwargs):
+        seen.append(dict(headers or {}))
+        raise _Stop
+
+    monkeypatch.setattr(client_module.urllib.request, "Request", recording_request)
+
+    for client, sent in (
+        (RommClient(base_url="http://romm:8080", anonymous=True), None),
+        (RommClient(base_url="http://romm:8080"), "Bearer rmm_saved"),
+    ):
+        with pytest.raises(_Stop):
+            client.platforms()
+        assert seen[-1].get("Authorization") == sent

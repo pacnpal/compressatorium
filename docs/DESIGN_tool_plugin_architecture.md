@@ -3094,7 +3094,9 @@ API and the Rules view; the engine never reads those three), and:
 
 **Hooks for steps only one Library performs.**
 
-RomM's connection helpers live in `services/romm/connect.py` (#532):
+RomM's connection helpers live in `services/romm/connect.py` (#532). Discovery and pairing ask RomM before it has a token
+of ours through `RommClient(base_url, anonymous=True)`, which sends no token
+and never falls back to the saved one:
 `discover()` (the heartbeat at RomM's usual addresses, bounded, no token
 sent), `find_library_root(FS_PLATFORMS)` (a bounded breadth-first look through
 the Volumes), and the layout cache (`refresh_layout()`; `structure()` and

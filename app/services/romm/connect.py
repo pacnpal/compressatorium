@@ -73,7 +73,7 @@ async def discover(
     can stall in the resolver, past any socket timeout, so the thread is
     detached and abandoned)."""
     async def probe(url: str) -> dict | None:
-        client = RommClient(base_url=url, token="")
+        client = RommClient(base_url=url, anonymous=True)
         try:
             beat = await asyncio.wait_for(
                 run_detached(client.heartbeat, timeout=timeout), timeout,

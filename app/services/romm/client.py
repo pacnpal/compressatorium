@@ -195,9 +195,15 @@ class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
 class RommClient:
     """Thin synchronous client over RomM's REST API."""
 
-    def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
+    def __init__(
+        self, base_url: str | None = None, token: str | None = None, *,
+        anonymous: bool = False,
+    ) -> None:
+        """*token* overrides the saved one; *anonymous* sends none at all and
+        never falls back to the saved one (discovery and pairing, #532)."""
         self._explicit_base = base_url
         self._explicit_token = token
+        self._anonymous = anonymous
 
     # ------------------------------------------------------------------
     # configuration
@@ -269,7 +275,10 @@ class RommClient:
         headers = {"Accept": "application/json", "User-Agent": _USER_AGENT}
         if content_type:
             headers["Content-Type"] = content_type
-        token = self._explicit_token if self._explicit_token is not None else _token()
+        if self._anonymous:
+            token = None
+        else:
+            token = self._explicit_token if self._explicit_token is not None else _token()
         if authenticated and token:
             # RomM client API tokens ("rmm_" + 64 hex) are sent as bearer
             # credentials. RomM's CSRF middleware short-circuits on a bearer or

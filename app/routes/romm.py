@@ -2224,7 +2224,7 @@ async def pair_romm(payload: PairRequest) -> dict:
     ).rstrip("/")
     if not url:
         raise HTTPException(status_code=400, detail="Fill in the RomM URL first.")
-    client = RommClient(base_url=url, token="")
+    client = RommClient(base_url=url, anonymous=True)
     try:
         token = await run_in_threadpool(client.exchange_pair_code, payload.code)
     except RommError as exc:
