@@ -26,7 +26,6 @@ from .test_platform_detect import _gamecube
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 _SUMMARY = _SRC / "lib" / "rules" / "sweepSummary.js"
-_EDITOR = _SRC / "lib" / "components" / "views" / "RuleEditor.svelte"
 
 
 # --------------------------------------------------------------------------- #
@@ -147,10 +146,10 @@ def _summary(script: str):
 
 
 @pytest.mark.parametrize(("result", "says"), [
-    ({"stopped_reason": "no_rules"}, "no Rules are set"),
-    ({"skipped_paused": 2, "considered": 0}, "2 Rules are off"),
-    ({"skipped_paused": 1, "considered": 0}, "1 Rule is off"),
-    ({"considered": 0}, "no files match"),
+    ({"stopped_reason": "no_rules"}, "no console is set"),
+    ({"skipped_paused": 2, "considered": 0}, "2 consoles are off"),
+    ({"skipped_paused": 1, "considered": 0}, "1 console is off"),
+    ({"considered": 0}, "no games match"),
     ({"considered": 2, "skipped_existing": 2}, "all 2 are already converted"),
     ({"considered": 3, "skipped_active": 3}, "all 3 are already in the queue"),
     ({"considered": 0, "errors": [{"platform_id": "ps2", "error": "tool_not_ready"}]},
@@ -165,16 +164,19 @@ def test_an_empty_run_says_why(result, says) -> None:
 
 def test_a_run_that_queued_says_how_many() -> None:
     assert _summary("() => sweepToast({ queued: 3, checks: 1 }, 'Queued', 'Checking')") == (
-        "Queued 3 conversions, checking 1 Image"
+        "Queued 3 conversions, checking 1 game"
     )
 
 
 def test_picking_a_target_turns_the_rule_on() -> None:
-    src = _EDITOR.read_text(encoding="utf-8")
-    body = src[src.index("function update(platformId, patch)"):]
-    body = body[: body.index("\n  }\n")]
+    # The console table (#541): a picked format turns the console on, and the
+    # run card says why nothing ran.
+    table = (_SRC / "lib" / "rules" / "ruleTable.js").read_text(encoding="utf-8")
+    body = table[table.index("export function ruleUpdate("):]
+    body = body[: body.index("\n}\n")]
     assert "enabled: true" in body, "a newly picked target must enable the Rule"
-    assert "sweepSummary.js" in src
+    automation = (_SRC / "lib" / "components" / "library" / "LibraryAutomation.svelte")
+    assert "sweepSummary.js" in automation.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio

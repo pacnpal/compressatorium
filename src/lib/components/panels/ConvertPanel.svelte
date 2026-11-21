@@ -171,7 +171,8 @@
         const planInputs = selectedPaths.filter((p) => !skippedConflicts.has(p));
         if (planInputs.length > 0) {
           try {
-            await conversion.fetchDeletePlan(planInputs, duplicateAction);
+            // null: a newer ask took over, and its flow shows the plan.
+            if (!(await conversion.fetchDeletePlan(planInputs, duplicateAction))) return;
           } catch (_e) {
             // toast already raised in fetchDeletePlan
             return;

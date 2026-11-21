@@ -62,9 +62,11 @@ class RommStore extends RulesSource {
     super({
       getRules: () => api.getLibraryRules('romm'),
       saveRules: (rules, checkRules) => api.saveLibraryRules('romm', rules, checkRules),
-      forgetConverted: (platformIds) => api.forgetLibraryConverted('romm', platformIds),
+      forgetConverted: (platformIds, failedOnly) =>
+        api.forgetLibraryConverted('romm', platformIds, failedOnly),
       preview: (body) => api.previewLibrary('romm', body),
       run: (body) => api.runLibrary('romm', body),
+      recommended: () => api.getRecommendedRules('romm'),
       loadError: 'Failed to load automation rules',
     });
   }

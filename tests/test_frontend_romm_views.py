@@ -29,7 +29,10 @@ import pytest
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 _SETTINGS = _SRC / "lib" / "components" / "views" / "RommSettings.svelte"
-_AUTOMATION = _SRC / "lib" / "components" / "views" / "RuleEditor.svelte"
+_LIBRARY = _SRC / "lib" / "components" / "library"
+_AUTOMATION = _LIBRARY / "LibraryAutomation.svelte"
+_TABLE = _LIBRARY / "RuleTable.svelte"
+_RULES_SOURCE = _SRC / "lib" / "rules" / "rulesSource.svelte.js"
 
 
 def _find_node() -> str | None:
@@ -257,26 +260,19 @@ def test_the_one_save_button_waits_for_the_settings_to_load():
 
 
 def test_enabling_automation_commits_pending_rule_edits():
-    """The scheduler reads the server's rules, not the editor's.
+    """The scheduler reads the server's rules, not the table's.
 
-    Preview and Run now both save first. The master switch did not, so turning
-    it on with unsaved edits started unattended runs against the previous
-    configuration — which may still have the platform enabled, or
-    delete-on-verify on, while the editor showed the safer one just typed.
+    Preview and Run now both save first. Turning automation on with an edit
+    still waiting would start unattended runs against the previous
+    configuration — which may still have delete-on-verify on.
     """
     src = _AUTOMATION.read_text(encoding="utf-8")
-    body = re.search(
-        r"async function toggleAuto\(enabled\) \{(.*?)\n  \}", src, re.DOTALL,
-    )
-    assert body, "toggleAuto is no longer where this guard can find it"
-    assert "commitPendingEdits()" in body.group(1), (
-        "toggleAuto enables the scheduler without saving pending rule edits; "
-        "Preview and Run now both commit first"
-    )
-    # Guarded on `enabled`: switching automation OFF must stay immediate, and
-    # must not commit edits the operator never saved.
-    assert re.search(r"if \(enabled && !\(await commitPendingEdits\(\)\)\) return;",
-                     body.group(1)), body.group(1)
+    body = re.search(r"async function setAuto\(enabled\) \{(.*?)\n  \}", src, re.DOTALL)
+    assert body, "setAuto is no longer where this guard can find it"
+    # Guarded on `enabled`: switching automation OFF stays immediate.
+    assert "if (enabled && !(await committed())) return;" in body.group(1), body.group(1)
+    committed = re.search(r"async function committed\(\) \{(.*?)\n  \}", src, re.DOTALL)
+    assert "await source.flush()" in committed.group(1)
 
 
 def test_navigating_into_a_catalog_folder_leaves_the_romm_view():
@@ -301,38 +297,30 @@ def test_navigating_into_a_catalog_folder_leaves_the_romm_view():
 
 
 def test_an_action_refuses_when_its_rule_save_was_superseded():
-    """The editor stays live while Preview / Run now / the toggle are saving.
+    """The table stays live while Preview / Run now / the switch are saving.
 
     `saveRules()` deliberately keeps an edit that landed mid-save and leaves it
-    dirty. Returning success anyway ran the action against the *older*
-    server-side snapshot while the editor showed the newer rule — including a
-    platform just switched off, or a delete-after-verify just cleared.
+    dirty. `flush()` reports success only once the server holds what the
+    table shows, so an action never runs on an older snapshot.
     """
-    src = _AUTOMATION.read_text(encoding="utf-8")
-    body = re.search(
-        r"async function commitPendingEdits\(\) \{(.*?)\n  \}\n", src, re.DOTALL,
-    )
-    assert body, "commitPendingEdits is no longer where this guard looks"
-    assert "source.rulesDirty" in body.group(1), (
-        "commitPendingEdits reports success without checking whether the save "
-        "was superseded by an edit made while it was in flight"
-    )
-    # ...and it does not simply proceed: the failure path returns false.
-    assert re.search(r"if \(source\.rulesDirty\)", body.group(1)), body.group(1)
-    assert "return false;" in body.group(1)
+    src = _RULES_SOURCE.read_text(encoding="utf-8")
+    body = re.search(r"async flush\(\) \{(.*?)\n  \}\n", src, re.DOTALL)
+    assert body, "flush is no longer where this guard looks"
+    assert "this.rulesDirty" in body.group(1)
+    assert "return !this.rulesDirty;" in body.group(1)
 
 
 def test_automation_offers_neither_unpacking_nor_self_multiplying_modes():
     """Two exclusions, from two places, and both have to stay.
 
-    `kind === 'extract'` is the editor's own choice (automation converts, it
-    does not unpack). Whether a mode multiplies its own output is the
-    *backend's* answer, because deriving it needs the tool's `output_path`.
+    Unpacking is the table's own choice (automation converts, it does not
+    unpack). Whether a mode multiplies its own output is the *backend's*
+    answer, because deriving it needs the tool's `output_path`.
     """
-    src = _AUTOMATION.read_text(encoding="utf-8")
-    assert "m.kind === 'extract'" in src
-    assert "source.modeIsAutomatable(m.mode)" in src, (
-        "the editor offers modes the backend refuses to run unattended"
+    src = _TABLE.read_text(encoding="utf-8")
+    assert "g.group !== 'Unpack'" in src
+    assert "source.modeIsAutomatable(o.value)" in src, (
+        "the table offers modes the backend refuses to run unattended"
     )
 
 
@@ -340,45 +328,22 @@ def test_the_repin_promise_is_qualified_for_split_builds():
     """A split build has no single file for RomM to hash.
 
     Past 4 GB the tool writes `Game.iso.0`, `.1`, … and the backend retires the
-    re-pin row saying exactly that. The warning promised the metadata would be
-    restored regardless, so an unattended conversion finished with no recovery
-    and no warning that there would not be one.
+    re-pin row saying exactly that, so the promise must say so.
     """
-    src = _AUTOMATION.read_text(encoding="utf-8")
+    src = _TABLE.read_text(encoding="utf-8")
     block = re.search(
-        r"\{#if source\.losesDatMatch\(spec\)\}(.*?)\{/if\}", src, re.DOTALL,
+        r"if \(source\.losesDatMatch\(spec\)\) \{(.*?)\n    \}", src, re.DOTALL,
     )
-    assert block, "the lost-DAT-match warning is no longer where this guard can find it"
+    assert block, "the lost-match note is no longer where this guard can find it"
     warning = block.group(1)
-    assert "restores it for you" in warning, warning
-    assert "rule.split" in warning, (
-        "the warning promises metadata restoration unconditionally; a split "
-        "build's numbered parts cannot be hash-matched at all"
-    )
+    assert "puts them back" in warning, warning
+    assert "rule.split" in warning, warning
 
+def test_using_romms_choices_reads_its_plan():
+    """The converter banner's import (#385) lives on the Automation tab now."""
+    src = _AUTOMATION.read_text(encoding="utf-8")
+    body = re.search(r"async function useRommChoices\(\) \{(.*?)\n  \}", src, re.DOTALL)
+    assert body, "useRommChoices moved"
+    assert "source.importConverterTargets()" in body.group(1)
+    assert "Use RomM's choices" in src
 
-_IMPORT_TARGETS = """
-const said = [];
-toast.success = (m) => said.push(['success', m]);
-toast.info = (m) => said.push(['info', m]);
-romm.importConverterTargets = async () => ({
-  created: 2,
-  skipped: [{ platform_id: '9', name: 'Xbox 360', slug: 'xbox360', target: 'zar' }],
-});
-await handleImport();
-romm.importConverterTargets = async () => ({ created: 0, skipped: [] });
-await handleImport();
-process.stdout.write(JSON.stringify({ said, importing }));
-"""
-
-
-def test_importing_romms_targets_says_how_many_rules_it_made(tmp_path):
-    """The banner's import names the count, and the Platforms it had to skip (#385)."""
-    data = _run(tmp_path, _SETTINGS, _IMPORT_TARGETS)
-
-    (tone, first), (tone2, second) = data["said"]
-    assert tone == "success", data
-    assert "Imported 2 Rules" in first, first
-    assert "Xbox 360 (ZAR)" in first, first
-    assert tone2 == "info" and "No Rules to import" in second, second
-    assert data["importing"] is False, data

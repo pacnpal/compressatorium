@@ -109,6 +109,20 @@ export const api = {
 
   getLedgerSavings: () =>
     fetchJson(`${API_BASE}/ledger/savings`, undefined, 'Failed to fetch savings'),
+  // How long History keeps its rows: `{ retention_days }`, null for forever.
+  getLedgerSettings: () =>
+    fetchJson(`${API_BASE}/ledger/settings`, undefined, "Couldn't load the History setting"),
+  putLedgerSettings(body) {
+    return fetchJson(
+      `${API_BASE}/ledger/settings`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      "Couldn't save the History setting",
+    );
+  },
 
   // ─── Volumes ──────────────────────────────────────────────────────────
   getVolumes: () => fetchJson(`${API_BASE}/volumes`, undefined, 'Failed to fetch volumes'),
@@ -859,11 +873,12 @@ export const api = {
       'Failed to load the Rules',
     ),
 
+  // The consoles changed (#541): `{id: rule | null}`, merged by the server.
   saveLibraryRules: (id, rules, checkRules) =>
     fetchJson(
       `${API_BASE}/libraries/${encodeURIComponent(id)}/rules`,
       {
-        method: 'PUT',
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
           checkRules === undefined ? { rules } : { rules, check_rules: checkRules },
@@ -872,10 +887,10 @@ export const api = {
       'Failed to save the Rules',
     ),
 
-  forgetLibraryConverted: (id, platformIds = null) =>
+  forgetLibraryConverted: (id, platformIds = null, failedOnly = false) =>
     jsonPost(
       `${API_BASE}/libraries/${encodeURIComponent(id)}/rules/forget-converted`,
-      platformIds ? { platform_ids: platformIds } : {},
+      { ...(platformIds ? { platform_ids: platformIds } : {}), ...(failedOnly ? { failed_only: true } : {}) },
       {},
       'Failed to clear the conversion history',
     ),
@@ -887,6 +902,19 @@ export const api = {
 
   runLibrary: (id, body = {}) =>
     jsonPost(`${API_BASE}/libraries/${encodeURIComponent(id)}/run`, body, {}, 'Run failed'),
+
+  // Whether a name filter can be saved (#541): `{ ok, error }`, from the
+  // same compile a Rule save runs.
+  checkRulePattern: (pattern) =>
+    jsonPost(`${API_BASE}/rules/check-pattern`, { pattern }, {}, "Couldn't check the pattern"),
+
+  // Apply recommended (#541): `{ rules: {platform_id: {mode, enabled}}, skipped }`
+  // for the consoles with games and no target. Read-only; the caller saves.
+  getRecommendedRules: (id) =>
+    fetchJson(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/recommended-rules`, undefined,
+      "Couldn't work out the best formats",
+    ),
 
   // A Library's find-duplicates run (#388): a background job whose groups
   // land in Findings. `{ job_id }`; 409 while the previous run still runs.

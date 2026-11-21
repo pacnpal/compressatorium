@@ -85,24 +85,24 @@ def test_files_hosts_the_old_workspace_without_the_jobs_panel():
 
 def test_the_shells_host_the_existing_screens():
     libs = _read("views/LibrariesView.svelte")
-    assert "{#if id === ROMM_LIBRARY_ID}\n  <RommView />" in libs
+    assert "{#if id}\n  <LibraryView />" in libs
     assert "<AddLibraryModal" in libs
     activity = _read("views/ActivityView.svelte")
     for part in ("<FindingsView />", "<JobsPanel />", "<LedgerView />",
                  "<SavingsCard />", "<QueueSummaryCard />"):
         assert part in activity, part
     settings = _read("views/SettingsView.svelte")
-    for section in ("connections", "identification", "notifications", "converters"):
-        assert f'id="settings-{section}"' in settings, section
-    assert "<DATView />" in settings and "<Converters />" in settings
-    romm = _read("views/RommView.svelte")
-    assert "ui.navigate('libraries', { id: 'romm', tab: ROUTE_OF_TAB[id] })" in romm
+    for section in ("connections", "identification", "notifications", "defaults", "converters"):
+        assert f"id: '{section}'" in settings, section
+    assert "<Identification />" in settings and "<Converters />" in settings
+    page = _read("views/LibraryView.svelte")
+    assert "ui.navigate('libraries', { id, tab: next })" in page
 
 
 def test_help_is_short_and_links_to_the_readme():
     src = _read("views/HelpView.svelte")
     assert len(src.splitlines()) < 130
-    for anchor in ("#supported-conversions", "#romm-integration", "#inboxes",
+    for anchor in ("#supported-conversions", "#romm-integration", "#watch-folders",
                    "#verifying-and-deleting-safely", "#dat-matching", "#troubleshooting"):
         assert anchor in src, anchor
     assert "DOCKER-COMPOSE.md" in src
@@ -155,9 +155,9 @@ def test_findings_refresh_without_the_needs_attention_tab():
 def test_one_url_shows_one_tab():
     """Codex 4651470868: Back to a bare `#/libraries/romm` shows Browse again.
     The tab is derived from the route, never kept from an earlier one."""
-    romm = _read("views/RommView.svelte")
-    assert "const tab = $derived(TAB_OF_ROUTE[ui.libraryTab] ?? defaultTab);" in romm
-    assert "let tab = $state(" not in romm and "tab = routed" not in romm
+    page = _read("views/LibraryView.svelte")
+    assert "const tab = $derived(\n    tabs.some(([t]) => t === ui.libraryTab)" in page
+    assert not re.search(r"\blet tab\b|\btab = (?!\$derived)", page), "the tab is kept, not derived"
     activity = _read("views/ActivityView.svelte")
     assert "ui.activityTab ??" in activity
 
@@ -173,8 +173,8 @@ def test_the_chd_badge_scan_has_a_home_in_settings():
     assert "Scan CHDs" in scan
     assert "Force rescan" in scan
     settings = _read("views/SettingsView.svelte")
-    converters = settings.split('id="settings-converters"', 1)[1]
-    assert "<ChdMetadataScan />" in converters
+    # The sections are drawn from one list; the scan rides in the Converters one.
+    assert "<Converters />\n              <ChdMetadataScan />" in settings
 
 
 def test_converters_read_the_stores_not_ready_list():

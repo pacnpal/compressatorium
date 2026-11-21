@@ -7,6 +7,7 @@ exist once.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from services.rules import rules as schema
@@ -49,6 +50,12 @@ async def save_rules(library: Library, payload: Any) -> dict[str, Any]:
     submission without it (an older editor, a bare map) leaves them as they are,
     and one with only ``check_rules`` leaves the conversion Rules.
     """
+    async with _save_lock:
+        return await _save_rules_locked(library, payload)
+
+
+async def _save_rules_locked(library: Library, payload: Any) -> dict[str, Any]:
+    """:func:`save_rules`, with ``_save_lock`` held."""
     as_dict = isinstance(payload, dict)
     has_checks = as_dict and "check_rules" in payload
     only_checks = has_checks and "rules" not in payload
@@ -65,14 +72,60 @@ async def save_rules(library: Library, payload: Any) -> dict[str, Any]:
     return out
 
 
-async def forget_converted(library: Library, platform_ids: list | None) -> dict[str, Any]:
+# One Rules save at a time: two patches each reading the stored Rules before
+# the other wrote would each write back without the other's console, and a
+# whole-map save landing inside a patch would be undone by its stale map
+# (CodeRabbit 4653612408).
+# ponytail: one lock for every Library; per-Library locks if saves contend.
+_save_lock = asyncio.Lock()
+
+
+def _merged(stored: dict, patch: Any) -> dict:
+    """*stored* with each console *patch* names replaced (``None`` removes it)."""
+    out = dict(stored)
+    for platform_id, rule in (patch or {}).items():
+        if rule is None:
+            out.pop(str(platform_id), None)
+        else:
+            out[str(platform_id)] = rule
+    return out
+
+
+async def patch_rules(library: Library, payload: Any) -> dict[str, Any]:
+    """Merge the consoles a submission names into *library*'s stored Rules
+    (``{"rules": {id: rule | null}, "check_rules": {id: rule | null}}``) and
+    save the result through :func:`save_rules`, with all its checks.
+
+    What the console table sends (#541, Codex 4653298940): one console's
+    change, never the whole map, so a table holding none or some of the
+    Rules (one that saved before they loaded) can't delete the others.
+    """
+    if not isinstance(payload, dict):
+        payload = {}
+    async with _save_lock:
+        merged: dict[str, Any] = {
+            "rules": _merged(await rules_sweep.get_rules(library), payload.get("rules")),
+        }
+        if "check_rules" in payload:
+            merged["check_rules"] = _merged(
+                await rules_sweep.get_rules(library, CHECK), payload.get("check_rules"),
+            )
+        return await _save_rules_locked(library, merged)
+
+
+async def forget_converted(
+    library: Library, platform_ids: list | None, *, failed_only: bool = False,
+) -> dict[str, Any]:
     """Clear the converted history (and failed holds) for *platform_ids*, or all.
 
-    ``None`` means every Platform; an empty list means none.
+    ``None`` means every Platform; an empty list means none. *failed_only*
+    releases the failed holds alone and keeps the converted history (#541).
     """
-    cleared = await rules_sweep.forget_converted(
-        library, [str(p) for p in platform_ids] if platform_ids is not None else None,
-    )
+    ids = [str(p) for p in platform_ids] if platform_ids is not None else None
+    if failed_only:
+        cleared = await rules_sweep.release_failed(library, ids)
+    else:
+        cleared = await rules_sweep.forget_converted(library, ids)
     return {"cleared": cleared, "state": await rules_sweep.get_state(library)}
 
 

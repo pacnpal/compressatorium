@@ -190,7 +190,7 @@ def test_a_listing_orders_against_the_store_per_path_like_a_lookup():
 
 def test_the_views_read_the_store_and_not_the_listing_snapshot():
     row = (_SRC / "components" / "panels" / "FileRow.svelte").read_text(encoding="utf-8")
-    view = (_SRC / "components" / "views" / "RommView.svelte").read_text(encoding="utf-8")
+    view = (_SRC / "components" / "library" / "RommBrowse.svelte").read_text(encoding="utf-8")
     browser = (_SRC / "stores" / "fileBrowser.svelte.js").read_text(encoding="utf-8")
     assert "dat_match ??" not in row and "dat_match ??" not in view
     assert "datMatching.seedListing(" in browser
@@ -236,7 +236,7 @@ console.log(JSON.stringify({
 
 def test_the_file_list_and_the_romm_view_share_that_rule():
     file_list = (_SRC / "components" / "panels" / "FileList.svelte").read_text(encoding="utf-8")
-    view = (_SRC / "components" / "views" / "RommView.svelte").read_text(encoding="utf-8")
+    view = (_SRC / "components" / "library" / "RommBrowse.svelte").read_text(encoding="utf-8")
     for source in (file_list, view):
         assert "isDatMatchable(" in source
     # No second copy of the check in the file list.
@@ -386,7 +386,7 @@ def test_a_job_whose_reads_all_fail_is_read_on_the_next_trigger():
 def test_a_job_that_ended_before_it_was_tracked_is_read_back():
     """CodeRabbit on PR #442: the jobs list may already show the job ended
     when "Recognize these" learns its id, and nothing re-runs the effect."""
-    view = (_SRC / "components" / "views" / "RommView.svelte").read_text(encoding="utf-8")
+    view = (_SRC / "components" / "library" / "RommBrowse.svelte").read_text(encoding="utf-8")
     start = view.index("async function handleRecognize()")
     body = view[start:view.index("\n  }\n", start)]
     assert "datMatching.hydrateFinishedJobs(jobs.jobs)" in body

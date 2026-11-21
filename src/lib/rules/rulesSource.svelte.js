@@ -5,7 +5,12 @@
 // and they come in through the constructor:
 //
 //   { getRules(), saveRules(rules, checkRules), forgetConverted(platformIds),
-//     preview(body), run(body), loadError }
+//     preview(body), run(body), recommended(), loadError }
+//
+// Every edit saves on its own (#541): the table calls `scheduleSave(delay)`
+// after it changes a Rule, and `saveState` says how that went. Preview, Run
+// now and turning automation on `flush()` first, so they never act on a
+// configuration the server hasn't got.
 //
 // A subclass adds its Platforms and the members the editor reads beside the
 // Rules: platforms, imageCount(platform), platformName(id), emptyTitle,
@@ -44,6 +49,11 @@ function withoutWindowFlags(rules) {
   }));
 }
 
+/** The consoles *keys* as they are in *from*, null for one removed (#541). */
+function rulePatch(keys, from) {
+  return withoutWindowFlags(Object.fromEntries(keys.map((k) => [k, from[k] ?? null])));
+}
+
 export class RulesSource {
   rules = $state({});
   checkRules = $state({});
@@ -54,6 +64,9 @@ export class RulesSource {
   rulesLoading = $state(false);
   rulesSaving = $state(false);
   rulesError = $state(null);
+  // True once the Rules have been read: until then the table holds none of
+  // them, and saving it would replace the Library's with that.
+  rulesLoaded = $state(false);
   // Unsaved edits live here, next to the rules they describe, not in the
   // editor component: the editor unmounts every time the operator looks
   // elsewhere, and a component-local flag came back false while `rules` still
@@ -62,6 +75,9 @@ export class RulesSource {
   rulesDirty = $state(false);
   sweepResult = $state(null);
   sweeping = $state(false);
+  // The autosave: 'idle', 'saving', 'saved' or 'error' (with `saveError`).
+  saveState = $state('idle');
+  saveError = $state(null);
 
   // [one, many]: what an Image is called in this Library's counts.
   imageNouns = ['Image', 'Images'];
@@ -77,6 +93,20 @@ export class RulesSource {
   // Saves run one at a time, in the order they were asked for; see `saveRules`.
   #saveChain = Promise.resolve();
   #savesPending = 0;
+  // The pending autosave's timer; see `scheduleSave`.
+  #saveTimer = null;
+  // The consoles changed since the last save, conversion and check Rules
+  // apart. A save sends only these (null for one removed) and the server
+  // merges them (#541, Codex 4653298940): a table holding none or some of
+  // the Rules can never wipe the others.
+  #changedRules = {};
+  #changedChecks = {};
+  // Edits still being checked before they can be saved (a name filter the
+  // server is compiling), and those it refused, by field: Preview, Run now
+  // and the automation switch wait for the first and refuse on the second
+  // (Codex 4653298945), so they never run with a filter the screen doesn't show.
+  #holds = [];
+  #unsaved = {};
 
   constructor(endpoints) {
     this.#endpoints = endpoints;
@@ -138,6 +168,7 @@ export class RulesSource {
         this.rules = data?.rules ?? {};
         this.checkRules = data?.check_rules ?? {};
       }
+      this.rulesLoaded = true;
       this.ruleDefaults = data?.defaults ?? null;
       this.ruleOptions = data?.options ?? this.ruleOptions;
       this.ruleState = data?.state ?? {};
@@ -178,6 +209,7 @@ export class RulesSource {
   setCheckRule(platformId, rule) {
     const key = String(platformId);
     this.checkRules = { ...this.checkRules, [key]: withoutStaleWindowFlag(this.checkRules[key], rule) };
+    this.#changedChecks[key] = true;
     this.rulesDirty = true;
     this.#rulesRevision += 1;
   }
@@ -186,6 +218,7 @@ export class RulesSource {
     const next = { ...this.checkRules };
     delete next[String(platformId)];
     this.checkRules = next;
+    this.#changedChecks[String(platformId)] = true;
     this.rulesDirty = true;
     this.#rulesRevision += 1;
   }
@@ -193,6 +226,7 @@ export class RulesSource {
   setRule(platformId, rule) {
     const key = String(platformId);
     this.rules = { ...this.rules, [key]: withoutStaleWindowFlag(this.rules[key], rule) };
+    this.#changedRules[key] = true;
     this.rulesDirty = true;
     this.#rulesRevision += 1;
   }
@@ -218,6 +252,7 @@ export class RulesSource {
     const next = { ...this.rules };
     delete next[String(platformId)];
     this.rules = next;
+    this.#changedRules[String(platformId)] = true;
     this.rulesDirty = true;
     this.#rulesRevision += 1;
   }
@@ -244,9 +279,23 @@ export class RulesSource {
     // The editor stays live while this is in flight, so anything typed after
     // this point is NOT in what we just submitted.
     const revision = this.#rulesRevision;
-    const data = await this.#endpoints.saveRules(
-      withoutWindowFlags(this.rules), withoutWindowFlags(this.checkRules),
-    );
+    // Only what changed: each console's Rule as it is now, null when removed.
+    const changed = Object.keys(this.#changedRules);
+    const changedChecks = Object.keys(this.#changedChecks);
+    this.#changedRules = {};
+    this.#changedChecks = {};
+    let data;
+    try {
+      data = await this.#endpoints.saveRules(
+        rulePatch(changed, this.rules),
+        changedChecks.length ? rulePatch(changedChecks, this.checkRules) : undefined,
+      );
+    } catch (e) {
+      // Not saved: they go with the next save.
+      for (const k of changed) this.#changedRules[k] = true;
+      for (const k of changedChecks) this.#changedChecks[k] = true;
+      throw e;
+    }
     this.#saveGeneration += 1;
     if (revision !== this.#rulesRevision) {
       // Edited mid-save. Adopting the server's copy would replace those
@@ -261,6 +310,109 @@ export class RulesSource {
     this.checkRules = data?.check_rules ?? this.checkRules;
     this.rulesDirty = false;
     return this.rules;
+  }
+
+  /**
+   * Save the Rules after *delay* ms, restarting the wait on every call: a
+   * text field passes 600 so a save goes out once typing stops, a switch 0.
+   */
+  scheduleSave(delay = 0) {
+    clearTimeout(this.#saveTimer);
+    this.saveState = 'saving';
+    this.#saveTimer = setTimeout(() => {
+      this.#saveTimer = null;
+      this.#autosave();
+    }, delay);
+  }
+
+  async #autosave() {
+    this.saveState = 'saving';
+    try {
+      await this.saveRules();
+      // A later edit has its own save coming; that one reports.
+      if (!this.#saveTimer && this.#savesPending === 0) {
+        this.saveState = this.rulesDirty ? 'saving' : 'saved';
+      }
+      this.saveError = null;
+    } catch (e) {
+      this.saveState = 'error';
+      this.saveError = e?.message ?? "Couldn't save";
+    }
+  }
+
+  /**
+   * Send any edit still waiting, now. True once the server holds what the
+   * table shows. An edit made while a save was out leaves the Rules dirty
+   * (see `#saveNow`), so it saves once more before giving up.
+   */
+  /** Make `flush()` wait for *promise*: an edit that is still being checked. */
+  hold(promise) {
+    const held = Promise.resolve(promise).catch(() => {});
+    this.#holds.push(held);
+    held.finally(() => {
+      this.#holds = this.#holds.filter((h) => h !== held);
+    });
+  }
+
+  /** Mark field *key* as typed but not saveable (*reason*), or clear it (null). */
+  markUnsaved(key, reason) {
+    if (reason) this.#unsaved[key] = reason;
+    else delete this.#unsaved[key];
+  }
+
+  async flush() {
+    while (this.#holds.length) await Promise.all(this.#holds);
+    const refused = Object.values(this.#unsaved)[0];
+    if (refused) {
+      this.saveError = refused;
+      return false;
+    }
+    if (this.#saveTimer) {
+      clearTimeout(this.#saveTimer);
+      this.#saveTimer = null;
+    }
+    for (let attempt = 0; attempt < 2 && this.rulesDirty; attempt += 1) {
+      await this.#autosave();
+      if (this.saveState === 'error') return false;
+    }
+    return !this.rulesDirty;
+  }
+
+  /**
+   * Apply recommended: give each console with games and no target the format
+   * the backend picks for it, on, with *fieldsFor(mode)* (the saved safety
+   * defaults) on top. A console that has a target keeps it. Saves, and
+   * returns `{ added: [platform ids], skipped: [{platform_id, name, reason}] }`.
+   */
+  async applyRecommended(fieldsFor = () => ({})) {
+    // Merged into Rules never read, a save would replace the Library's own
+    // with these few (CodeRabbit 4652729322).
+    if (!this.rulesLoaded || this.rulesError) {
+      throw new Error("This Library's settings haven't loaded yet");
+    }
+    const plan = await this.#endpoints.recommended();
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    const added = [];
+    for (const [platformId, entry] of Object.entries(plan?.rules ?? {})) {
+      if (!entry?.mode || this.rules[String(platformId)]?.mode) continue;
+      this.setRule(platformId, {
+        ...this.ruleFor(platformId),
+        compression: null,
+        compression_level: null,
+        split: false,
+        timezone: zone,
+        ...fieldsFor(entry.mode),
+        mode: entry.mode,
+        enabled: true,
+      });
+      added.push(String(platformId));
+    }
+    // A save that fails is no set-up (CodeRabbit 4652729388): the draft
+    // stays, dirty, for the table's Try again.
+    if (added.length && !(await this.flush())) {
+      throw new Error(this.saveError ?? "Couldn't save");
+    }
+    return { added, skipped: plan?.skipped ?? [] };
   }
 
   /** How many sources this rule remembers having produced an output for. */
@@ -289,8 +441,8 @@ export class RulesSource {
    * from a backup, or move outputs aside by hand, and that memory is the only
    * thing standing between the operator and a rerun.
    */
-  async forgetConverted(platformIds = null) {
-    const data = await this.#endpoints.forgetConverted(platformIds);
+  async forgetConverted(platformIds = null, { failedOnly = false } = {}) {
+    const data = await this.#endpoints.forgetConverted(platformIds, failedOnly);
     this.ruleState = data?.state ?? this.ruleState;
     return data?.cleared ?? 0;
   }

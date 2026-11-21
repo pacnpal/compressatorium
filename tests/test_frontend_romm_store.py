@@ -530,7 +530,7 @@ process.stdout.write(JSON.stringify({ result, saved, rules: store.rules }));
 
 
 def test_import_saves_new_rules_through_the_rules_api_only_where_none_exists(tmp_path):
-    """Imported Rules go out through PUT /api/libraries/romm/rules, and a Rule is never replaced."""
+    """Imported Rules go out through the Rules API, and a Rule is never replaced."""
     data = _run(tmp_path, _IMPORT)
 
     assert data["result"]["created"] == 2, data
@@ -541,8 +541,9 @@ def test_import_saves_new_rules_through_the_rules_api_only_where_none_exists(tmp
     assert sent["8"]["mode"] == "createcd", sent
     # Off until the operator turns it on.
     assert sent["7"]["enabled"] is False, sent
-    # The Wii Rule the operator already had is left exactly as it was.
-    assert sent["10"] == {"mode": "dolphin_wia", "enabled": True}, sent
+    # The Wii Rule the operator already had isn't sent at all (#541): only
+    # the consoles a save changes are, and the server keeps the rest.
+    assert "10" not in sent, sent
 
 
 _SETTINGS_SAVES = """
