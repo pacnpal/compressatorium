@@ -92,9 +92,9 @@ def test_the_shells_host_the_existing_screens():
                  "<SavingsCard />", "<QueueSummaryCard />"):
         assert part in activity, part
     settings = _read("views/SettingsView.svelte")
-    for section in ("connections", "identification", "notifications", "converters"):
-        assert f'id="settings-{section}"' in settings, section
-    assert "<DATView />" in settings and "<Converters />" in settings
+    for section in ("connections", "identification", "notifications", "defaults", "converters"):
+        assert f"id: '{section}'" in settings, section
+    assert "<Identification />" in settings and "<Converters />" in settings
     page = _read("views/LibraryView.svelte")
     assert "ui.navigate('libraries', { id, tab: next })" in page
 
@@ -173,8 +173,8 @@ def test_the_chd_badge_scan_has_a_home_in_settings():
     assert "Scan CHDs" in scan
     assert "Force rescan" in scan
     settings = _read("views/SettingsView.svelte")
-    converters = settings.split('id="settings-converters"', 1)[1]
-    assert "<ChdMetadataScan />" in converters
+    # The sections are drawn from one list; the scan rides in the Converters one.
+    assert "<Converters />\n              <ChdMetadataScan />" in settings
 
 
 def test_converters_read_the_stores_not_ready_list():

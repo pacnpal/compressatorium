@@ -244,7 +244,10 @@
   }
   /* <main> takes focus on every route change so a screen reader starts there.
      It isn't a control (tabindex -1), so it draws no ring. */
-  .main { flex: 1; overflow-y: auto; outline: none; }
+  /* The page (not <main>) scrolls: the shell's row grows with its content. So
+     <main> clips sideways without being a scroll box, or a sticky child (the
+     Settings section list) would stick to a box that never scrolls. */
+  .main { flex: 1; overflow-x: clip; outline: none; }
   .main:focus, .main:focus-visible { box-shadow: none; }
 
   .skip-link {
