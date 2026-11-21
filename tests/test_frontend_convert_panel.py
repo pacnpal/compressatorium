@@ -143,3 +143,13 @@ def test_the_big_plan_dialog_offers_pick_console_too():
     for prop in ("onoverride={(list, slug) => conversion.setOverride(list, slug)}",
                  "{mapFolder}", "onmap={openMapping}"):
         assert prop in plan, prop
+
+
+def test_a_big_plan_confirm_takes_the_picks_made_in_its_dialog():
+    """Codex 4655058120: Convert to and Pick console are re-read with the
+    folder and safety choices once the dialog is confirmed."""
+    run = _PANEL.split("async function run() {", 1)[1]
+    confirmed = run.split("if (!(await waiting) || controller.signal.aborted) return;", 1)[1]
+    confirmed = confirmed.split("const rows = ", 1)[0]
+    assert "target: conversion.target || null," in confirmed
+    assert "platformOverrides: conversion.overridesFor(snapshot)," in confirmed

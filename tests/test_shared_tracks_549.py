@@ -417,3 +417,82 @@ async def test_removing_a_link_to_a_sheet_never_frees_its_tracks(vol):
     by_path = {r["path"]: r for r in response["results"]}
     assert by_path[str(track)]["success"] is False
     assert track.exists() and cue.exists()
+
+
+# --- Containment before any ownership scan (Codex 4655058131) -----------------
+
+@pytest.fixture(name="split_roots")
+def _split_roots(tmp_path, monkeypatch):
+    """A Volume and a folder beside it that is outside every Volume."""
+    from config import settings
+
+    volume = tmp_path / "vol"
+    outside = tmp_path / "private"
+    volume.mkdir()
+    outside.mkdir()
+    monkeypatch.setattr(settings, "chd_volumes", str(volume))
+    monkeypatch.setattr(settings, "data_mount_root", str(volume))
+    return volume, outside
+
+
+@pytest.mark.asyncio
+async def test_an_outside_path_is_refused_before_anything_beside_it_is_read(
+    split_roots, monkeypatch,
+):
+    from services import image_sets
+
+    _volume, outside = split_roots
+    secret = _write(outside / "Secret.chd")
+    _write(outside / "Private collection.m3u", b"Secret.chd\n")
+    asked = []
+    real = image_sets.owners_naming
+    monkeypatch.setattr(image_sets, "owners_naming", lambda p, **kw: asked.append(p) or real(p, **kw))
+
+    response = await files_routes.delete_files_batch(
+        _confirmed(), files_routes.BulkDeleteRequest(paths=[str(secret)]),
+    )
+
+    [result] = response["results"]
+    assert result == {
+        "path": str(secret), "success": False,
+        "error": "Access denied: path outside configured volumes",
+    }
+    assert asked == []
+    assert secret.exists()
+
+
+def test_the_ownership_walk_never_opens_a_sheet_outside_the_volume(split_roots, monkeypatch):
+    from services import image_sets
+    from utils import sheet_text
+
+    volume, outside = split_roots
+    track = _write(volume / "psx" / "Track.bin")
+    out_sheet = _write(outside / "Out.cue", b'FILE "Track.bin" BINARY\n')
+    (volume / "psx" / "Link.cue").symlink_to(out_sheet)
+    opened = []
+    real_readable = sheet_text.sheet_is_readable
+    monkeypatch.setattr(
+        sheet_text, "sheet_is_readable", lambda p: opened.append(str(p)) or real_readable(p),
+    )
+
+    with pytest.raises(image_sets.SheetOwnerUnknown) as err:
+        image_sets.owners_naming(str(track), stop_at=str(volume))
+
+    assert "Out.cue" not in str(err.value)
+    assert not any("private" in p for p in opened), opened
+
+
+def test_a_delete_plan_never_scans_outside_the_volumes(split_roots, monkeypatch):
+    from services import image_sets
+    from utils.delete_plan import build_delete_plan
+
+    _volume, outside = split_roots
+    _write(outside / "Track.bin")
+    cue = _write(outside / "Game.cue", b'FILE "Track.bin" BINARY\n  TRACK 01 MODE2/2352\n')
+    asked = []
+    monkeypatch.setattr(image_sets, "owners_naming", lambda p, **kw: asked.append(p) or [])
+
+    plan = build_delete_plan(str(cue), confine_to_volumes=True)
+
+    assert asked == []
+    assert plan["unsafe_paths"], plan

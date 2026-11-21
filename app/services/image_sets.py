@@ -169,7 +169,7 @@ def owners_naming(
     """
     owners = list(_sheets_naming(path, stop_at, progress))
     owners += _playlists_naming(path, stop_at, progress)
-    owners += _companion_owners(path, progress, companions_of)
+    owners += _companion_owners(path, stop_at, progress, companions_of)
     return list(dict.fromkeys(owners))
 
 
@@ -228,8 +228,13 @@ def _playlists_naming(path: str, stop_at: str, progress: Callable[..., None] | N
                 yield playlist
 
 
+def _inside(path: str, boundary: str) -> bool:
+    real = os.path.normpath(os.path.realpath(path))
+    return real == boundary or real.startswith(boundary.rstrip(os.sep) + os.sep)
+
+
 def _companion_owners(
-    path: str, progress: Callable[..., None] | None,
+    path: str, stop_at: str, progress: Callable[..., None] | None,
     companions_of: dict[str, list[str]] | None,
 ) -> list[str]:
     """The files beside *path* whose tools read it as part of their set."""
@@ -238,6 +243,7 @@ def _companion_owners(
     tick = progress or (lambda *_args: None)
     real, own = _own_stat(path)
     folder = os.path.dirname(real)
+    boundary = os.path.normpath(os.path.realpath(stop_at))
     cache = companions_of if companions_of is not None else {}
     owners = []
     for name in _listdir(folder):
@@ -245,6 +251,10 @@ def _companion_owners(
         if sibling == real or os.path.isdir(sibling):
             continue
         tick(sibling)
+        # A link out of the Volume is never opened (its tools would read
+        # whatever it points at); whether it owns *path* is unknown.
+        if not _inside(sibling, boundary):
+            raise SheetOwnerUnknown(f"{name} points outside the Volume, so it isn't read")
         members = cache.get(sibling)
         if members is None:
             try:
@@ -288,6 +298,9 @@ def _sheets_naming(path: str, stop_at: str, progress: Callable[..., None] | None
             tick(sheet)
             if os.path.isdir(sheet):
                 continue
+            # A sheet linked from outside the Volume is never opened.
+            if not _inside(sheet, boundary):
+                raise SheetOwnerUnknown(f"{name} points outside the Volume, so it isn't read")
             if not sheet_is_readable(sheet):
                 raise SheetOwnerUnknown(f"{name} could not be read (unreadable or too large)")
             tracks = sheet_track_list(sheet)

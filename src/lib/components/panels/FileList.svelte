@@ -172,9 +172,10 @@
   let searchInput = $state('');
   // A new folder starts with no name filter (the store drops it on
   // navigate); a scope change keeps what was typed.
-  let typedIn = fileBrowser.currentPath;
+  let typedIn = `${fileBrowser.currentPath}::${fileBrowser.currentArchivePath}`;
   $effect(() => {
-    const path = fileBrowser.currentPath;
+    // A folder or an archive opened: its own listing, with no filter.
+    const path = `${fileBrowser.currentPath}::${fileBrowser.currentArchivePath}`;
     if (path !== typedIn) {
       typedIn = path;
       searchInput = '';

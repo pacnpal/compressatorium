@@ -1188,7 +1188,10 @@ def owners_of(
     """
     name = os.path.basename(path)
     boundary = lock_boundary_root(path)
-    stop = str(boundary) if boundary is not None else os.path.dirname(os.path.realpath(path))
+    if boundary is None:
+        # The batch checks containment first; never walk outside the Volumes.
+        return None, "Access denied: path outside configured volumes"
+    stop = str(boundary)
     try:
         owners = image_sets.owners_naming(path, stop_at=stop, companions_of=companions_of)
     except (image_sets.SheetOwnerUnknown, OSError, ValueError) as exc:
@@ -1233,9 +1236,22 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
     # to come waits for a later round, whatever order the request lists them
     # in; one whose owner stays (outside the request, or its delete failed) is
     # kept.
-    requested = await off_loop_bounded(real_path_set, payload.paths)
-    real_of = dict(zip(payload.paths, await off_loop_bounded(
-        lambda paths: [removed_path(p) for p in paths], payload.paths,
+    # Containment first (Codex 4655058131): a path outside every Volume gets
+    # the plain access-denied answer and nothing beside it is listed, stat'ed
+    # or read; only the contained paths take part in the ownership checks.
+    by_path: dict[str, dict] = {}
+    contained: list[str] = []
+    for path in dict.fromkeys(payload.paths):
+        if await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
+            contained.append(path)
+        else:
+            by_path[path] = {
+                "path": path, "success": False,
+                "error": "Access denied: path outside configured volumes",
+            }
+    requested = await off_loop_bounded(real_path_set, contained)
+    real_of = dict(zip(contained, await off_loop_bounded(
+        lambda paths: [removed_path(p) for p in paths], contained,
     ), strict=True))
     companions_of: dict[str, list[str]] = {}
     owners_cache: dict[str, tuple[dict[str, str] | None, str | None]] = {}
@@ -1342,8 +1358,7 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
 
     # Process the files in rounds: a file named by another file of the request
     # waits until that one has gone.
-    by_path: dict[str, dict] = {}
-    pending = list(dict.fromkeys(payload.paths))
+    pending = contained
     while pending:
         later = []
         for path in pending:

@@ -483,6 +483,8 @@ class FileBrowserStore {
       // reset paging, swap entries, then flip into archive mode.
       this.clearSelection();
       this.page = 1;
+      // The folder's name filter would hide the archive's members.
+      this.folderQuery = '';
       this.entries = next;
       this.currentArchivePath = archivePath;
       this.entriesError = null;
@@ -498,6 +500,7 @@ class FileBrowserStore {
     // on the next submission.
     this.clearSelection();
     this.currentArchivePath = null;
+    this.folderQuery = '';
     this.page = 1;
     return this.refresh({ force: true });
   }

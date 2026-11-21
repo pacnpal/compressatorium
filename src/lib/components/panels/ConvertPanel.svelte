@@ -240,7 +240,7 @@
     const controller = new AbortController();
     submitAbort = controller;
     // The plan's own inputs, so the server replans what was shown.
-    const planned = {
+    let planned = {
       target: conversion.target || null,
       platformOverrides: conversion.overridesFor(snapshot),
     };
@@ -261,6 +261,11 @@
       if (!confirmed) return;
       outputDir = conversion.outputDir || null;
       choice = { ...safety, split: conversion.split };
+      // A Convert to or a console picked in the dialog is part of this plan.
+      planned = {
+        target: conversion.target || null,
+        platformOverrides: conversion.overridesFor(snapshot),
+      };
     }
     const rows = confirmed.filter((row) => row.mode);
     const options = {

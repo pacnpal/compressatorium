@@ -317,7 +317,12 @@ def _other_owner(part: str, source: Path) -> str | None:
     if not os.path.exists(part):
         return None  # reported as missing already
     boundary = lock_boundary_root(part)
-    stop = str(boundary) if boundary is not None else os.path.dirname(os.path.realpath(part))
+    if boundary is None:
+        # Outside every Volume: never walked (Codex 4655058131). The plan
+        # already refuses such a path (unsafe_paths), and the job's delete
+        # step checks the Volumes again.
+        return None
+    stop = str(boundary)
     name = os.path.basename(part)
     try:
         owners = image_sets.owners_naming(part, stop_at=stop)

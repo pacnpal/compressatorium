@@ -227,3 +227,21 @@ process.stdout.write(JSON.stringify(fileBrowser.filesToDelete().map((e) => e.pat
 """)
 
     assert data == ["/v/A.cue", "/v/New.bin"], data
+
+
+def test_an_archive_opens_without_the_folders_name_filter(tmp_path):
+    """Codex 4655058125: the folder's name filter would hide the archive's
+    members; it is dropped on entering the archive and on leaving it."""
+    data = _run(tmp_path, _LISTING + """
+fileBrowser.currentPath = '/v';
+await fileBrowser.search('saga');
+api.listArchive = async () => ({ files: [{ name: 'Game.gba', internal_path: 'Game.gba' }] });
+await fileBrowser.browseArchive('/v/a.zip');
+const inside = { query: fileBrowser.folderQuery, shown: fileBrowser.visibleEntries.map((e) => e.name) };
+await fileBrowser.search('game');
+api.listFiles = async () => ({ entries: [] });
+await fileBrowser.leaveArchive();
+process.stdout.write(JSON.stringify({ inside, after: fileBrowser.folderQuery }));
+""")
+
+    assert data == {"inside": {"query": "", "shown": ["Game.gba"]}, "after": ""}, data
