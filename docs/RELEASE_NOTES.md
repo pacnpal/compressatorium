@@ -116,6 +116,34 @@
 
 ### Fixed
 
+- **Quick wins, contrast and plain details** (#521).
+  - The RomM page's hints point to its own Settings tab, with a **Connect
+    RomM** button, instead of a "Settings → Metadata" page that doesn't exist.
+  - The RomM, Rules and Findings pages have a title in the top bar.
+  - Opening a Library from a toast keeps it in the address, so a reload stays
+    on it.
+  - The main area no longer draws a blue outline after every page change.
+  - The file list's breadcrumb has a row of its own and no longer draws over
+    the search box.
+  - **Set Platform** is offered only on folders inside a folder Library, the
+    only place it works.
+  - The sidebar shows no empty **Tool** heading when no tool can run.
+  - RomM's **Automation** tab shows RomM's Rules only, with no Library picker.
+  - The Rules page opens on the first folder Library when RomM isn't set up,
+    and shows a **Connect RomM** button when RomM is picked but not connected.
+  - Light mode: muted text and status text (warnings, successes) pass WCAG AA
+    contrast.
+  - Library pickers and the row menu show a clear keyboard focus ring.
+  - With reduced motion on, spinners and progress bars fade gently instead of
+    stopping, so busy work still looks busy.
+  - Dashboard cards and Help callouts drop their coloured stripe.
+  - The **Info** window shows readable labels ("Hunk size", "Game ID"),
+    hides empty fields and the repeated path, and puts a tool's raw output
+    behind **Details**.
+  - Checking a CHD no longer marks its `.cue` and `.bin` "Intact": a source
+    row shows a tick on its output's badge instead.
+  - Job toasts and job rows name the new file, not its full path.
+
 - muOS is no longer listed as reading `gamelist.xml`. It keeps its artwork in
   its own catalogue (`MUOS/info/catalogue`), by game name.
 

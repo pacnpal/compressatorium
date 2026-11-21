@@ -325,7 +325,7 @@
   .hint, .muted { color: var(--text-2); font-size: var(--text-sm); }
   .actions { display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: center; }
   .outcome { color: var(--danger-text, var(--text-1)); font-size: var(--text-sm); overflow-wrap: anywhere; }
-  .outcome.ok { color: var(--success, var(--text-1)); }
+  .outcome.ok { color: var(--success-text, var(--text-1)); }
   .error { color: var(--danger-text, var(--text-1)); margin: 0; font-size: var(--text-sm); }
   .events { border: 0; margin: 0; padding: 0; gap: var(--space-2); }
   .events legend { padding: 0; margin-bottom: var(--space-1); }

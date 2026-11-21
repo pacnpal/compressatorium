@@ -658,7 +658,7 @@
   .mode-table thead th, .codec-table thead th { text-align: left; color: var(--text-3); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.05em; font-weight: var(--weight-medium); padding-bottom: var(--space-1); }
   .codec-table { margin: var(--space-2) 0 var(--space-3); }
 
-  .callout { color: var(--text-1); background: var(--surface-2); border-left: 3px solid var(--accent); padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); margin: var(--space-2) 0; }
+  .callout { color: var(--text-1); background: var(--accent-muted); border: 1px solid var(--border-subtle); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); margin: var(--space-2) 0; }
 
   .trouble, .qa { margin: 0; }
   .trouble dt, .qa dt { color: var(--text-1); font-size: var(--text-sm); font-weight: var(--weight-semibold); margin-top: var(--space-3); }

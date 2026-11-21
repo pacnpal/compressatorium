@@ -7,8 +7,10 @@
    * every Library and reads what the Library allows from the backend, so a
    * folder Library's Rules offer the skip policy only.
    *
-   * `embedded` is the RomM view's Automation tab: it opens on RomM, and the
-   * RomM view loads RomM's platforms and Rules itself.
+   * `embedded` is the RomM view's Automation tab: it shows RomM's Rules only
+   * (no Library picker), and the RomM view loads RomM's platforms and Rules
+   * itself. Opened on its own with RomM not set up, the view opens on the
+   * first folder Library instead.
    */
   import { onMount, untrack } from 'svelte';
   import { toast } from 'svelte-sonner';
@@ -24,6 +26,7 @@
   import Button from '$lib/components/ui/Button.svelte';
   import Select from '$lib/components/ui/Select.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
+  import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import FolderCog from '@lucide/svelte/icons/folder-cog';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import Copy from '@lucide/svelte/icons/copy';
@@ -55,9 +58,20 @@
   // browser into RomM mode after the operator has left.
   let alive = true;
 
+  // The first list load, while the view is still choosing where to open. Set
+  // on mount only when no Library was asked for; cleared once used.
+  let opening = null;
+
   async function loadRomm() {
     await Promise.all([romm.loadStatus(), romm.loadSettings()]);
     if (!alive) return;
+    const listed = opening;
+    opening = null;
+    if (listed && !romm.configured) {
+      await listed;
+      if (alive) libraries.openOnConfigured(romm.configured);
+      return;
+    }
     if (!romm.usable) return;
     enteredRomm = true;
     await Promise.allSettled([romm.loadPlatforms(), romm.loadRules()]);
@@ -74,7 +88,8 @@
 
   onMount(() => {
     if (embedded) libraries.select(ROMM_LIBRARY_ID);
-    libraries.load();
+    const listed = libraries.load();
+    if (!embedded && !ui.rulesTarget) opening = listed;
     return () => {
       alive = false;
       if (!enteredRomm) return;
@@ -94,17 +109,14 @@
         if (!embedded) loadRomm();
         return;
       }
+      opening = null;
       src.loadPlatforms();
       src.loadRules().catch(() => {});
     });
   });
 
-  // Inside the RomM view, picking another Library opens the Rules view on it
-  // rather than showing a folder's Rules under the RomM header.
-  function pick(id) {
-    if (embedded && id !== ROMM_LIBRARY_ID) libraries.open(id);
-    else libraries.select(id);
-  }
+  // RomM is picked but not set up: nothing below could run.
+  const rommMissing = $derived(selectedId === ROMM_LIBRARY_ID && !!romm.status && !romm.configured);
 
   // Find duplicates (#388): a background job per Library. Its groups land in
   // Findings when it ends; nothing is deleted.
@@ -146,8 +158,8 @@
 </script>
 
 <div class="rules-view" class:embedded>
-  <header class="head">
-    {#if !embedded}
+  {#if !embedded}
+    <header class="head">
       <div class="title">
         <h1>Rules</h1>
         <p class="muted">
@@ -155,16 +167,16 @@
           schedule or when you press Run now.
         </p>
       </div>
-    {/if}
-    <div class="picker">
-      <Select
-        label="Library"
-        value={selectedId}
-        {options}
-        onchange={pick}
-      />
-    </div>
-  </header>
+      <div class="picker">
+        <Select
+          label="Library"
+          value={selectedId}
+          {options}
+          onchange={(id) => libraries.select(id)}
+        />
+      </div>
+    </header>
+  {/if}
 
   {#if libraries.error}
     <div class="notice error" role="alert">Could not list the Libraries: {libraries.error}</div>
@@ -247,7 +259,18 @@
     <ArrHook />
   {/if}
 
-  {#if source}
+  {#if rommMissing}
+    <EmptyState
+      title="RomM is not connected yet"
+      description="Connect RomM and its platforms get Rules here."
+    >
+      {#snippet actions()}
+        {#if !embedded}
+          <Button onclick={() => ui.navigate('romm')}>Connect RomM</Button>
+        {/if}
+      {/snippet}
+    </EmptyState>
+  {:else if source}
     {#key selectedId}
       <RuleEditor {source} />
     {/key}

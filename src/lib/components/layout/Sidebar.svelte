@@ -61,24 +61,27 @@
     </SidebarItem>
   </nav>
 
-  <nav class="section tools">
-    {#if !collapsed}<h2 class="section-title">Tool</h2>{/if}
-    {#each tools as t (t.id)}
-      <SidebarItem
-        label={t.label}
-        title={t.hint}
-        {collapsed}
-        active={view === 'workspace' && tool === t.id}
-        onclick={() => go('workspace', t.id)}
-      >
-        {#snippet icon()}
-          <span class="tool-glyph" style:color={t.accent ?? 'var(--accent)'} aria-hidden="true">
-            {t.glyph ?? t.label[0]}
-          </span>
-        {/snippet}
-      </SidebarItem>
-    {/each}
-  </nav>
+  <!-- No heading over an empty list: nothing shows until a tool can run. -->
+  {#if tools.length > 0}
+    <nav class="section tools">
+      {#if !collapsed}<h2 class="section-title">Tool</h2>{/if}
+      {#each tools as t (t.id)}
+        <SidebarItem
+          label={t.label}
+          title={t.hint}
+          {collapsed}
+          active={view === 'workspace' && tool === t.id}
+          onclick={() => go('workspace', t.id)}
+        >
+          {#snippet icon()}
+            <span class="tool-glyph" style:color={t.accent ?? 'var(--accent)'} aria-hidden="true">
+              {t.glyph ?? t.label[0]}
+            </span>
+          {/snippet}
+        </SidebarItem>
+      {/each}
+    </nav>
+  {/if}
 
   <nav class="section view">
     <SidebarItem

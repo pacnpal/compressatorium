@@ -228,7 +228,7 @@
     gap: var(--space-2);
     align-items: center;
     background: var(--warning-muted);
-    color: var(--warning);
+    color: var(--warning-text);
     padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-md);
     font-size: var(--text-sm);
@@ -241,7 +241,7 @@
     gap: var(--space-1);
     background: transparent;
     border: 1px solid var(--warning);
-    color: var(--warning);
+    color: var(--warning-text);
     padding: 4px 8px;
     border-radius: var(--radius-sm);
     cursor: pointer;
