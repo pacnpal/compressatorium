@@ -2439,6 +2439,15 @@ and the dashboard's Done / Failed tiles read it (`ledger.totals`). The Jobs
 panel's tab badges count the rows the list holds, and its Completed and
 Failed tabs link to the Ledger for the rest.
 
+Since the list is a window, its counts can stay flat while jobs finish (at
+the cap a new finished job replaces an evicted one), so nothing keys a
+refresh on them. The file listing (`App.svelte`) and the dashboard's Ledger
+cards (`Dashboard.svelte`) both key on `terminalJobIds(jobs.jobs)`
+(`stores/jobConstants.js`): the file listing refreshes when an id it has not
+refreshed for appears. `ledger._load` reads recent, savings and totals with
+`Promise.allSettled`, so a read that fails keeps its card's last good value
+without dropping the others.
+
 The jobs store still tombstones a finished job the backend stops listing
 (`refresh()` reconciles against `/api/jobs`, and Clear names what it deleted),
 so a late copy of it (an SSE frame, a REST snapshot, an Auto response) never

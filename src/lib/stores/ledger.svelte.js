@@ -22,19 +22,17 @@ class LedgerStore {
 
   async _load() {
     const seq = ++this._seq;
-    try {
-      const [recent, savings, totals] = await Promise.all([
-        api.getLedgerRecent(5),
-        api.getLedgerSavings(),
-        api.getLedgerTotals(),
-      ]);
-      if (seq !== this._seq) return;
-      this.recent = recent;
-      this.savings = savings;
-      this.totals = totals?.jobs ?? null;
-    } catch {
-      // Keep the last good values; the next refresh retries.
-    }
+    // Each read stands alone: one that fails keeps its card's last good value
+    // (the next refresh retries) without dropping the others.
+    const [recent, savings, totals] = await Promise.allSettled([
+      api.getLedgerRecent(5),
+      api.getLedgerSavings(),
+      api.getLedgerTotals(),
+    ]);
+    if (seq !== this._seq) return;
+    if (recent.status === 'fulfilled') this.recent = recent.value;
+    if (savings.status === 'fulfilled') this.savings = savings.value;
+    if (totals.status === 'fulfilled') this.totals = totals.value?.jobs ?? null;
   }
 
   refresh() {

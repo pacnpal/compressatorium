@@ -78,8 +78,10 @@
 - **Job totals come from the Ledger** (#533). The dashboard's Done and Failed
   numbers count every finished job, from the Ledger
   (`GET /api/ledger/totals`). The Jobs panel's Completed and Failed tabs
-  count the jobs they list, and link to the Ledger for the older ones.
-  `GET /api/jobs/history-overflow` and the job stream's `history` event are
+  count the jobs they list, and link to the Ledger for the older ones. The
+  file list still refreshes as each job finishes once the history is full,
+  and one Ledger read that fails no longer blanks the dashboard's other
+  cards. `GET /api/jobs/history-overflow` and the job stream's `history` event are
   removed; `DELETE /api/jobs/completed` answers `{deleted, count}`.
 - **A Rule turns on when you pick its target, and an empty run says why**
   (#520). Picking "Convert to" for a console now enables that Rule, so Preview
