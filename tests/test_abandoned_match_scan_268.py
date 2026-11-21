@@ -531,8 +531,10 @@ async def test_abandoned_disc_id_read_stays_retryable(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
+    # The CHD info read (the chdman plugin's describe) asks the extractor.
+    import services.tools.chdman as chdman_tool
     monkeypatch.setattr(
-        info_routes, "disc_id_extract_from_chd",
+        chdman_tool, "disc_id_extract_from_chd",
         AsyncMock(side_effect=DiscIdStorageAbandoned("pid 5 still running")),
     )
 

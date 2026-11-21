@@ -59,6 +59,10 @@ def mock_dolphin_service(monkeypatch):
     mock_service.verify_stream = fake_verify_stream
 
     monkeypatch.setattr(info_routes, "dolphin_tool_service", mock_service)
+    # File info reads through the plugin, whose readiness probe reads the path.
+    plugin = info_routes.registry.get("dolphin")
+    mock_service.dolphin_tool_path = plugin._service.dolphin_tool_path
+    monkeypatch.setattr(plugin, "_service", mock_service)
     return mock_service
 
 
@@ -126,7 +130,7 @@ async def test_dolphin_info_unsupported_extension(dolphin_test_env, mock_dolphin
         await info_routes.get_dolphin_info(path=str(txt_path))
 
     assert exc_info.value.status_code == 400
-    assert "Not a supported disc image format" in exc_info.value.detail
+    assert "Not a file Dolphin describes" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
@@ -305,7 +309,10 @@ async def test_dolphin_info_service_error(dolphin_test_env, monkeypatch):
         raise RuntimeError("Failed to read disc header")
 
     mock_service.header = fake_header_error
+    mock_service.dolphin_tool_path = info_routes.registry.get("dolphin")._service.dolphin_tool_path
     monkeypatch.setattr(info_routes, "dolphin_tool_service", mock_service)
+    # File info reads through the plugin.
+    monkeypatch.setattr(info_routes.registry.get("dolphin"), "_service", mock_service)
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(dolphin_test_env["tmp_path"]))
     monkeypatch.setattr(
         info_routes.settings, "data_mount_root", str(dolphin_test_env["tmp_path"])
@@ -315,7 +322,7 @@ async def test_dolphin_info_service_error(dolphin_test_env, monkeypatch):
         await info_routes.get_dolphin_info(path=dolphin_test_env["iso_path"])
 
     assert exc_info.value.status_code == 500
-    assert "Failed to read disc info" in exc_info.value.detail
+    assert "Failed to read Dolphin info" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
@@ -333,6 +340,8 @@ async def test_dolphin_verify_service_error(
 
     mock_service.verify = fake_verify_error
     monkeypatch.setattr(info_routes, "dolphin_tool_service", mock_service)
+    # File info reads through the plugin.
+    monkeypatch.setattr(info_routes.registry.get("dolphin"), "_service", mock_service)
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(dolphin_test_env["tmp_path"]))
     monkeypatch.setattr(
         info_routes.settings, "data_mount_root", str(dolphin_test_env["tmp_path"])

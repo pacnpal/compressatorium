@@ -400,6 +400,20 @@ class ConversionStore {
     return taken.join(',');
   }
 
+  /**
+   * Seed the tool, mode and compression from the registry once
+   * `registry.load()` has filled it (App, at start). The store is built at
+   * import, when the registry is still empty, so its first values are only
+   * placeholders; this replaces them with the remembered tool's defaults.
+   */
+  adoptRegistry() {
+    const toolId = loadPrimaryTool();
+    this.primaryTool = toolId;
+    this.mode = defaultModeFor(toolId);
+    this.compressionSelection = defaultCompressionFor(toolId);
+    this.compressionLevel = defaultLevelFor(toolId);
+  }
+
   // ─── Setters ──────────────────────────────────────────────────────────
   setPrimaryTool(toolId) {
     const tool = registry.forTool(toolId);

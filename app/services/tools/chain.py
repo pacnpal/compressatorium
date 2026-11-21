@@ -134,6 +134,8 @@ class ChainTool(BaseTool):
     # double-register .chd in verify_extensions / output_extensions.
     output_extensions = frozenset()
     verify_extensions = frozenset()
+    # No File info of its own: each step's tool describes its own files.
+    info_extensions = frozenset()
 
     def __init__(self, registry: "ToolRegistry") -> None:
         # No binary of its own; it drives the component tools via the registry,
