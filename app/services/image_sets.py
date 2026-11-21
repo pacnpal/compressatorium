@@ -223,7 +223,7 @@ def _playlists_naming(path: str, stop_at: str, progress: Callable[..., None] | N
                 data = read_beneath(folder, name, max_bytes=PLAYLIST_READ_BYTES)
             except (OSError, ValueError) as exc:
                 raise SheetOwnerUnknown(f"{name} could not be read ({exc})") from exc
-            entries = m3u.entries(data)
+            entries = m3u.every_entry(data)
             if any(_is_track(own, real, os.path.join(folder, entry)) for entry in entries):
                 yield playlist
 
@@ -545,8 +545,10 @@ def _is_track(own: os.stat_result, real: str, track: str) -> bool:
         st = os.stat(track)
     except FileNotFoundError:
         return os.path.realpath(track).casefold() == real.casefold()
-    except OSError as exc:
-        raise SheetOwnerUnknown(f"{track} could not be read ({exc.strerror or exc})") from exc
+    except (OSError, ValueError) as exc:
+        # A name the filesystem can't even look up (an embedded NUL) is a
+        # reference that can't be told, never "not this file".
+        raise SheetOwnerUnknown(f"{track!r} could not be read ({exc})") from exc
     return (st.st_dev, st.st_ino) == (own.st_dev, own.st_ino)
 
 

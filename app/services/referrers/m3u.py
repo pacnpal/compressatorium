@@ -165,6 +165,38 @@ def entries(data: bytes) -> list[str]:
     return found
 
 
+def every_entry(data: bytes) -> list[str]:
+    """Every entry any reader could see in playlist *data*, as posix paths.
+
+    :func:`entries` for plain 8-bit text. A playlist that isn't (UTF-16, or any
+    NUL byte) is read every way :func:`_wide_text_check` reads it: UTF-16 by
+    its BOM or NUL parity (strictly, else with replacements), both byte orders,
+    and with NULs dropped as UTF-8 and cp1252. The union is what a check that
+    must not miss a disc (who else needs this file?) compares against; a
+    reading that leaves a NUL in a name is no path and is dropped.
+    """
+    encoding = _utf16_encoding(data)
+    if encoding is None and b"\x00" not in data:
+        return entries(data)
+    texts: list[str] = []
+    if encoding is not None:
+        texts.append(data.decode(encoding, errors="replace"))
+    stripped = data.replace(b"\x00", b"")
+    texts += [
+        stripped.decode("utf-8", errors="replace"),
+        stripped.decode("cp1252", errors="replace"),
+        data.decode("utf-16-le", errors="replace"),
+        data.decode("utf-16-be", errors="replace"),
+    ]
+    found: list[str] = []
+    for text in texts:
+        for line in text.lstrip("\ufeff").splitlines():
+            parsed = _parse_line(line)
+            if parsed is not None and "\x00" not in parsed.posix:
+                found.append(parsed.posix)
+    return list(dict.fromkeys(found))
+
+
 def _variants(candidate: str, backslashed: bool) -> list[str]:
     """Ways to write *candidate*, preferred first: in the entry's own style,
     then protected by "./" (against a leading "#", whitespace, a BOM

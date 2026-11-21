@@ -464,6 +464,9 @@
       planning={conversion.planning}
       error={conversion.planError}
       onretry={() => conversion.requestPlan(paths, { delay: 0 })}
+      onoverride={(list, slug) => conversion.setOverride(list, slug)}
+      {mapFolder}
+      onmap={openMapping}
     />
     {#if conversion.plan?.some((row) => row.mode)}
       <!-- The options this plan offers (the 4 GB split for PS3 folders),

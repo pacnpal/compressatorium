@@ -314,3 +314,65 @@ async def test_a_batch_keeps_an_old_style_rar_volume_without_its_first(vol):
     assert result["success"] is False
     assert first.name in result["error"]
     assert r00.exists()
+
+
+# --- A UTF-16 playlist (Codex 4654858505) ------------------------------------
+
+def _utf16(text: str) -> bytes:
+    return "\ufeff".encode("utf-16-le") + text.encode("utf-16-le")
+
+
+@pytest.mark.asyncio
+async def test_a_utf16_playlist_beside_an_unrelated_file_never_fails_the_batch(vol, monkeypatch):
+    async def forget(_path):
+        return None
+
+    monkeypatch.setattr(files_routes.verification_store, "clear", forget)
+    folder = vol / "psx"
+    _write(folder / "Game (Disc 1).chd")
+    _write(folder / "Game.m3u", _utf16("Game (Disc 1).chd\r\n"))
+    other = _write(folder / "Other.iso")
+
+    response = await files_routes.delete_files_batch(
+        _confirmed(), files_routes.BulkDeleteRequest(paths=[str(other)]),
+    )
+
+    assert response["results"][0]["success"] is True, response
+    assert not other.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_utf16_playlist_still_owns_its_disc(vol):
+    folder = vol / "psx"
+    disc = _write(folder / "Game (Disc 1).chd")
+    _write(folder / "Game.m3u", _utf16("Game (Disc 1).chd\r\n"))
+
+    response = await files_routes.delete_files_batch(
+        _confirmed(), files_routes.BulkDeleteRequest(paths=[str(disc)]),
+    )
+
+    assert response["results"][0]["success"] is False
+    assert "Game.m3u" in response["results"][0]["error"]
+    assert disc.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_utf16_playlist_folds_its_discs(vol):
+    folder = vol / "psx"
+    disc = _write(folder / "Game (Disc 1).chd")
+    playlist = _write(folder / "Game.m3u", _utf16("Game (Disc 1).chd\r\n"))
+
+    listing = await files_routes.list_files(
+        path=str(folder), show_archives=True, summarize_archives=False,
+    )
+
+    assert {e.name: e.disc_of for e in listing.entries}[disc.name] == str(playlist)
+
+
+def test_a_path_that_cannot_be_stated_is_unknown_ownership(tmp_path):
+    from services import image_sets
+
+    own = tmp_path / "a.bin"
+    own.write_bytes(b"x")
+    with pytest.raises(image_sets.SheetOwnerUnknown):
+        image_sets._is_track(own.stat(), str(own), str(tmp_path / "bad\x00name"))

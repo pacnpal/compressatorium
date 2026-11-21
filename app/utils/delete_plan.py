@@ -321,7 +321,7 @@ def _other_owner(part: str, source: Path) -> str | None:
     name = os.path.basename(part)
     try:
         owners = image_sets.owners_naming(part, stop_at=stop)
-    except image_sets.SheetOwnerUnknown as exc:
+    except (image_sets.SheetOwnerUnknown, OSError, ValueError) as exc:
         return f"{exc}, so whether another game needs {name} is unknown; it is kept"
     own = os.path.normcase(os.path.realpath(source))
     others = [o for o in owners if os.path.normcase(os.path.realpath(o)) != own]

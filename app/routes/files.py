@@ -475,7 +475,7 @@ def disc_marks(
             )
         except (OSError, ValueError):
             continue
-        for entry in m3u.entries(data):
+        for entry in m3u.every_entry(data):
             disc = listed.get(os.path.normpath(os.path.join(folder, entry)))
             # A playlist is never another playlist's disc: two that name each
             # other would otherwise both fold away.
@@ -1167,7 +1167,7 @@ def owners_of(
     stop = str(boundary) if boundary is not None else os.path.dirname(os.path.realpath(path))
     try:
         owners = image_sets.owners_naming(path, stop_at=stop, companions_of=companions_of)
-    except image_sets.SheetOwnerUnknown as exc:
+    except (image_sets.SheetOwnerUnknown, OSError, ValueError) as exc:
         return None, f"{exc}, so whether another game still needs {name} is unknown; it is kept"
     return {os.path.normcase(os.path.realpath(o)): o for o in owners}, None
 
@@ -1182,7 +1182,7 @@ def set_members(path: str) -> tuple[list[str] | None, str | None]:
         members = [
             *registry.split_members(path), *registry.source_companions(path, strict=True),
         ]
-    except CompanionsUnknown as exc:
+    except (CompanionsUnknown, OSError, ValueError) as exc:
         name = os.path.basename(path)
         return None, f"the files {name} is made of can't be told ({exc}); it is kept"
     return [os.path.normcase(os.path.realpath(m)) for m in dict.fromkeys(members)], None

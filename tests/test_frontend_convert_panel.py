@@ -133,3 +133,13 @@ def test_a_big_plan_dialog_plans_again_when_its_options_change():
     confirmed = run.split("if (!(await waiting) || controller.signal.aborted) return;", 1)[1]
     assert "conversion.hasPlanFor(snapshot) ? conversion.plan : null" in confirmed
     assert "outputDir = conversion.outputDir || null;" in confirmed
+
+
+def test_the_big_plan_dialog_offers_pick_console_too():
+    """Codex 4654858500: the dialog's plan gets the same Pick console
+    callbacks as the inline plan; a pick re-plans through the live effect."""
+    dialog = _PANEL.split("<BaseModal", 1)[1].split("</BaseModal>", 1)[0]
+    plan = dialog.split("<ConvertPlan", 1)[1].split("/>", 1)[0]
+    for prop in ("onoverride={(list, slug) => conversion.setOverride(list, slug)}",
+                 "{mapFolder}", "onmap={openMapping}"):
+        assert prop in plan, prop
