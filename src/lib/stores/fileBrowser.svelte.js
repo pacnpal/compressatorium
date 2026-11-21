@@ -73,6 +73,16 @@ function gameRow(e, folds) {
   return { ...e, size, own_size: e.size ?? 0, parts, part_kind: discs ? 'discs' : 'files' };
 }
 
+/** Add *entry* and its folded parts to *found*, skipping any part of a set. */
+function addDeletable(entry, found) {
+  if (!entry?.path || entry.path.includes('::') || entry.split_parts != null) return;
+  if (!found.seen[entry.path]) {
+    found.seen[entry.path] = true;
+    found.out.push(entry);
+  }
+  for (const part of entry.parts ?? []) addDeletable(part, found);
+}
+
 class FileBrowserStore {
   // Volumes
   volumes = $state([]);
@@ -1044,6 +1054,19 @@ class FileBrowserStore {
     // shift-click would silently re-select the range up to it even though the UI
     // showed nothing selected.
     this.lastSelectedIndex = -1;
+  }
+
+  /**
+   * The files Delete takes for the selection: every file of each ticked game
+   * (its tracks, its discs and theirs) and each ticked playlist. Never part of
+   * a set: a folded split output (`split_parts`) and an archive member are
+   * left out, with everything under them.
+   */
+  filesToDelete() {
+    const found = { out: [], seen: {} };
+    for (const entry of this.selectedFiles.values()) addDeletable(entry, found);
+    for (const entry of this.selectedPlaylists.values()) addDeletable(entry, found);
+    return found.out;
   }
 
   /**

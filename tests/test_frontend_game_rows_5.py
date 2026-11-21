@@ -117,8 +117,10 @@ process.stdout.write(JSON.stringify({ selected: [...fileBrowser.selectedFiles.ke
 def test_delete_takes_the_playlist_and_every_file_of_each_game():
     file_list = (_LIB / "components" / "panels" / "FileList.svelte").read_text(encoding="utf-8")
 
-    assert "fileBrowser.selectedPlaylists" in file_list
-    assert "gameFiles(" in file_list
+    assert "ui.bulkDeleteEntries = fileBrowser.filesToDelete();" in file_list
+    store = (_LIB / "stores" / "fileBrowser.svelte.js").read_text(encoding="utf-8")
+    body = store.split("  filesToDelete() {", 1)[1].split("\n  }\n", 1)[0]
+    assert "this.selectedPlaylists.values()" in body
 
 
 def test_the_folder_search_filters_games_by_name(tmp_path):
@@ -190,3 +192,21 @@ process.stdout.write(JSON.stringify({ query: fileBrowser.searchQuery }));
 """)
 
     assert data == {"query": "beta"}, data
+
+
+def test_delete_never_takes_part_of_a_split_disc(tmp_path):
+    """Codex 4654710759: a playlist whose disc is a folded split set
+    (`Game.iso.0`, `split_parts: 2`) is deleted without that disc; a partial
+    set is never sent."""
+    data = _run(tmp_path, """
+const m3u = { name: 'Game.m3u', path: '/v/Game.m3u', type: 'file', size: 20 };
+const split = { name: 'Game.iso', path: '/v/Game.iso.0', type: 'file', size: 9,
+  split_parts: 2, disc_of: '/v/Game.m3u' };
+const cue = { name: 'B.cue', path: '/v/B.cue', type: 'file', size: 1 };
+const bin = { name: 'B.bin', path: '/v/B.bin', type: 'file', size: 1, companion_of: '/v/B.cue' };
+fileBrowser.entries = [m3u, split, cue, bin];
+for (const row of fileBrowser.rows) fileBrowser.toggleSelect(row);
+process.stdout.write(JSON.stringify(fileBrowser.filesToDelete().map((e) => e.path).sort()));
+""")
+
+    assert data == ["/v/B.bin", "/v/B.cue", "/v/Game.m3u"], data

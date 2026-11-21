@@ -445,7 +445,13 @@ def build_delete_plan(
         # Strict: a set whose members can't be told now (a RAR set whose
         # headers can't be read) blocks the plan rather than deleting the
         # named file alone.
-        for companion in registry.source_companions(str(source), strict=True):
+        # A split output's later parts too (Game.iso.0 leads .1, .2): the set
+        # goes whole or not at all.
+        companions = [
+            *registry.source_companions(str(source), strict=True),
+            *registry.split_members(str(source)),
+        ]
+        for companion in dict.fromkeys(companions):
             _add_path(Path(companion))
             shared = _other_owner(companion, source)
             if shared:

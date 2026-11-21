@@ -234,3 +234,53 @@ async def test_a_track_listed_before_its_sheet_is_deleted_with_it(vol):
 
     assert response["failed"] == 0, response
     assert not track.exists() and not cue.exists()
+
+
+# --- A set goes whole or not at all (Codex 4654710759) ------------------------
+
+def _split_disc_in_a_playlist(folder: Path) -> tuple[Path, Path, Path]:
+    first = _write(folder / "Game.iso.0")
+    second = _write(folder / "Game.iso.1")
+    playlist = _write(folder / "Game.m3u", b"Game.iso.0\n")
+    return playlist, first, second
+
+
+@pytest.mark.asyncio
+async def test_a_batch_never_deletes_part_of_a_split_set(vol):
+    playlist, first, second = _split_disc_in_a_playlist(vol / "ps3")
+
+    response = await files_routes.delete_files_batch(
+        _confirmed(), files_routes.BulkDeleteRequest(paths=[str(playlist), str(first)]),
+    )
+
+    by_path = {r["path"]: r for r in response["results"]}
+    assert by_path[str(first)]["success"] is False
+    assert "Game.iso.1" in by_path[str(first)]["error"]
+    assert first.exists() and second.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_batch_deletes_a_whole_split_set(vol, monkeypatch):
+    async def forget(_path):
+        return None
+
+    monkeypatch.setattr(files_routes.verification_store, "clear", forget)
+    playlist, first, second = _split_disc_in_a_playlist(vol / "ps3")
+
+    response = await files_routes.delete_files_batch(
+        _confirmed(),
+        files_routes.BulkDeleteRequest(paths=[str(second), str(first), str(playlist)]),
+    )
+
+    assert response["failed"] == 0, response
+    assert not any(p.exists() for p in (playlist, first, second))
+
+
+def test_a_delete_on_verify_plan_takes_a_split_set_whole(vol):
+    from utils.delete_plan import build_delete_plan
+
+    _playlist, first, second = _split_disc_in_a_playlist(vol / "ps3")
+
+    plan = build_delete_plan(str(first), confine_to_volumes=True)
+
+    assert str(second.resolve()) in plan["delete_paths"], plan

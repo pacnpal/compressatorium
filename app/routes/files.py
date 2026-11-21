@@ -1172,6 +1172,22 @@ def owners_of(
     return {os.path.normcase(os.path.realpath(o)): o for o in owners}, None
 
 
+def set_members(path: str) -> tuple[list[str] | None, str | None]:
+    """``(members, None)``: the other files of the set *path* leads (a split
+    output's later parts, any tool's ``source_companions``), as normcased
+    real paths; or ``(None, why)`` when they can't be told. Blocking."""
+    from services.tools.base import CompanionsUnknown
+
+    try:
+        members = [
+            *registry.split_members(path), *registry.source_companions(path, strict=True),
+        ]
+    except CompanionsUnknown as exc:
+        name = os.path.basename(path)
+        return None, f"the files {name} is made of can't be told ({exc}); it is kept"
+    return [os.path.normcase(os.path.realpath(m)) for m in dict.fromkeys(members)], None
+
+
 def _still_needed_by(owner: str, name: str) -> str:
     return f"{os.path.basename(owner)} still needs {name} and isn't being deleted; {name} is kept"
 
@@ -1198,6 +1214,7 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
     ), strict=True))
     companions_of: dict[str, list[str]] = {}
     owners_cache: dict[str, tuple[dict[str, str] | None, str | None]] = {}
+    members_cache: dict[str, tuple[list[str] | None, str | None]] = {}
     deleted: set[str] = set()
     settled: set[str] = set()
 
@@ -1213,6 +1230,22 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
         if owners is None:
             return why, False
         name = os.path.basename(path)
+        # A set goes whole or not at all: never its first part without the rest.
+        if path not in members_cache:
+            try:
+                members_cache[path] = await off_loop_bounded(set_members, path)
+            except HTTPException as exc:
+                members_cache[path] = (None, str(exc.detail))
+        members, why = members_cache[path]
+        if members is None:
+            return why, False
+        left = [m for m in members if m not in requested]
+        if left:
+            part = os.path.basename(left[0])
+            return (
+                f"{name} and {part} are one set, and {part} isn't being deleted; "
+                "the set is kept"
+            ), False
         waiting = False
         for real, owner in owners.items():
             if real in deleted:

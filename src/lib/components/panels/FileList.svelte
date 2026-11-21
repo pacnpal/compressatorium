@@ -289,11 +289,6 @@
       .filter((e) => e?.path && !e.path.includes('::') && e.split_parts == null);
   }
 
-  // Every file of a game row: the row, then each folded part's files.
-  function gameFiles(entry) {
-    return [entry, ...(entry?.parts ?? []).flatMap(gameFiles)];
-  }
-
   function openBulkDelete() {
     // Same filter as Verify, /files/delete-batch fails on archive
     // members for the same treat_archives=false reason. Folded makeps3iso
@@ -302,11 +297,7 @@
     // single-row Delete action). A game is one row, so deleting it deletes
     // every file it is made of (a sheet's tracks), and a ticked playlist goes
     // with its discs.
-    const rows = [
-      ...fileBrowser.selectedFiles.values(), ...fileBrowser.selectedPlaylists.values(),
-    ].filter((e) => e?.path && !e.path.includes('::') && e.split_parts == null);
-    const files = rows.flatMap(gameFiles);
-    ui.bulkDeleteEntries = files.filter((e, i) => files.findIndex((f) => f.path === e.path) === i);
+    ui.bulkDeleteEntries = fileBrowser.filesToDelete();
   }
 
   function openDatRename() {
