@@ -1457,7 +1457,6 @@ async def test_a_conversion_that_finishes_during_a_check_keeps_its_source(
     from routes import libraries as routes
     from services import image_checks
     from services import job_manager as job_manager_module
-    from services.concurrency_manager import concurrency_manager
     from services.job_manager import SOURCE_KEPT_FOR_READERS, job_manager
     from services.rules import check
     from utils.delete_plan import build_delete_snapshot
@@ -1494,10 +1493,7 @@ async def test_a_conversion_that_finishes_during_a_check_keeps_its_source(
                 delete_on_verify=True, container_only=True,
                 delete_snapshot=build_delete_snapshot(str(iso)),
             )
-            try:
-                await job_manager._process_job(job.id)
-            finally:
-                concurrency_manager.release(job.id)
+            await job_manager._process_job(job.id)
             conversion["job"] = job
         return await real_verify(path, cancel_event=cancel_event)
 

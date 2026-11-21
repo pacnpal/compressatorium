@@ -1,8 +1,6 @@
 <script>
-  import { onMount } from 'svelte';
   import { jobs } from '$lib/stores/jobs.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
-  import { toast } from 'svelte-sonner';
   import JobRow from './JobRow.svelte';
   import Pager from '$lib/components/ui/Pager.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
@@ -10,8 +8,6 @@
   import ListTodo from '@lucide/svelte/icons/list-todo';
   import CircleX from '@lucide/svelte/icons/circle-x';
   import Trash2 from '@lucide/svelte/icons/trash-2';
-  import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
-  import LifeBuoy from '@lucide/svelte/icons/life-buoy';
 
   // Each $derived pulls from the rune-tracked store fields, so they
   // re-evaluate whenever jobs.jobs / .tab / .page mutate.
@@ -27,28 +23,6 @@
   const queuedCount = $derived(jobs.visibleQueuedCount);
   const completedCount = $derived(jobs.visibleCompletedCount);
   const failedCount = $derived(jobs.visibleFailedCount);
-  const stuck = $derived(jobs.stuckState);
-  // Past MAX_JOB_HISTORY the backend evicts the oldest finished jobs, so the
-  // tab badge (a true total) outruns what the pager can list. Say so rather
-  // than let the two silently disagree.
-  const retainedCount = $derived(jobs.retainedCount);
-  const trimmedCount = $derived(jobs.trimmedCount);
-
-  // Stuck-state probe. The backend exposes /api/jobs/stuck-status as
-  // a snapshot, not a stream, so we have to poll. Fire once on mount
-  // for the initial state and then every 60 s so a queue that
-  // becomes stuck mid-session surfaces the banner without requiring
-  // a remount.
-  let stuckTimer = null;
-  onMount(() => {
-    jobs.checkStuck().catch(() => {});
-    stuckTimer = setInterval(() => {
-      jobs.checkStuck().catch(() => {});
-    }, 60000);
-    return () => {
-      if (stuckTimer) { clearInterval(stuckTimer); stuckTimer = null; }
-    };
-  });
 
   function handleCancelAll() {
     // Delegate to the modal, it owns the confirmation dance + the
@@ -58,15 +32,6 @@
 
   function handleClearCompleted() {
     ui.showClearDone = true;
-  }
-
-  async function handleRecover() {
-    try {
-      const r = await jobs.recoverStuck();
-      toast.success(r?.message ?? 'Stuck jobs recovered');
-    } catch (e) {
-      toast.error(e?.message ?? 'Recovery failed');
-    }
   }
 </script>
 
@@ -80,26 +45,6 @@
       label="Show metadata jobs"
     />
   </div>
-
-  {#if stuck?.is_stuck}
-    {@const stuckCount = (stuck.queued_count ?? 0) + (stuck.processing_count ?? 0)}
-    <div class="stuck" role="alert">
-      <TriangleAlert size={14} aria-hidden="true" />
-      <div class="stuck-body">
-        <strong>{stuckCount} job{stuckCount === 1 ? '' : 's'} look stuck.</strong>
-        {stuck.message ?? 'No worker activity detected for this job.'}
-      </div>
-      <button
-        type="button"
-        class="link"
-        onclick={handleRecover}
-        disabled={jobs.recoveringStuck}
-      >
-        <LifeBuoy size={12} aria-hidden="true" />
-        {jobs.recoveringStuck ? 'Recovering…' : 'Recover'}
-      </button>
-    </div>
-  {/if}
 
   <div class="tabs" role="tablist">
     <button
@@ -149,12 +94,14 @@
     {/if}
   </div>
 
-  {#if trimmedCount > 0 && retainedCount > 0}
+  {#if tab !== 'queue'}
+    <!-- The list keeps the newest MAX_JOB_HISTORY finished jobs; the Ledger
+         keeps every one (#533). -->
     <p class="trimmed">
-      Showing the {retainedCount.toLocaleString()} most recent of
-      {(retainedCount + trimmedCount).toLocaleString()}. Older finished jobs are
-      dropped once history passes {jobs.historyLimit.toLocaleString()} (raise
-      <code>MAX_JOB_HISTORY</code> to keep more).
+      Older finished jobs leave this list.
+      <button type="button" class="ledger-link" onclick={() => ui.navigate('ledger')}>
+        Every job is in the Ledger
+      </button>
     </p>
   {/if}
 
@@ -164,17 +111,6 @@
         title="Queue is idle"
         description="Submit a conversion from the Convert panel to see jobs here."
         glyph="∅"
-      />
-    {:else if retainedCount === 0 && trimmedCount > 0}
-      <!-- Every job this tab counts has aged out: newer finished jobs took all
-           {jobs.historyLimit} history slots. Saying "none yet" here would flatly
-           contradict the badge, which is the true total. -->
-      <EmptyState
-        title={tab === 'completed'
-          ? 'Completed jobs aged out of history'
-          : 'Failed jobs aged out of history'}
-        description={`These ${trimmedCount.toLocaleString()} finished, but history keeps only the ${jobs.historyLimit.toLocaleString()} most recent finished jobs and newer ones took every slot. Raise MAX_JOB_HISTORY to keep more listed.`}
-        glyph="⧗"
       />
     {:else if tab === 'completed'}
       <EmptyState
@@ -222,32 +158,6 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
-
-  .stuck {
-    display: flex;
-    gap: var(--space-2);
-    align-items: center;
-    background: var(--warning-muted);
-    color: var(--warning-text);
-    padding: var(--space-2) var(--space-3);
-    border-radius: var(--radius-md);
-    font-size: var(--text-sm);
-  }
-  .stuck-body { flex: 1; min-width: 0; }
-  .stuck-body strong { font-weight: var(--weight-semibold); }
-  .link {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    background: transparent;
-    border: 1px solid var(--warning);
-    color: var(--warning-text);
-    padding: 4px 8px;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: var(--text-xs);
-  }
-  .link:disabled { opacity: 0.6; cursor: not-allowed; }
 
   .tabs {
     display: flex;
@@ -311,9 +221,14 @@
     color: var(--text-3);
     font-size: var(--text-xs);
   }
-  .trimmed code {
-    font-family: var(--font-mono);
-    font-size: 11px;
+  .ledger-link {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: var(--accent);
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline;
   }
 
   .rows {

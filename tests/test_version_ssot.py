@@ -53,7 +53,11 @@ def test_health_endpoint_reports_real_version(monkeypatch):
     """/health surfaces the package.json version in a plain pytest/local run."""
     monkeypatch.delenv("APP_VERSION", raising=False)
 
-    payload = asyncio.run(health_check())
+    from main import app
+    from starlette.requests import Request
+
+    request = Request({"type": "http", "app": app, "server": ("127.0.0.1", 8080)})
+    payload = asyncio.run(health_check(request))
 
     assert payload["status"] == "healthy"
     assert payload["version"] == _package_json_version()

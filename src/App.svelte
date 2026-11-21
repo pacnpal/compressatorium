@@ -17,6 +17,7 @@
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { terminalJobIds } from '$lib/stores/jobConstants.js';
   import { jobToasts } from '$lib/stores/jobToasts.svelte.js';
   import { conversion } from '$lib/stores/conversion.svelte.js';
   import { api } from '$lib/api/endpoints.js';
@@ -62,7 +63,7 @@
   //
   // Refresh interferes with whatever the user was doing if we don't
   // gate it carefully. Skip while any of the following hold; the
-  // counter advances only after refresh actually fires so the gates
+  // ids it refreshed for advance only once refresh fires, so the gates
   // clearing (modal closes, batch finishes, etc.) immediately re-runs
   // the effect and lets the deferred refresh through.
   //   - User toggled auto-refresh off explicitly.
@@ -71,25 +72,24 @@
   //   - A verify batch is running.
   //   - fileBrowser is already loading.
   //   - We're in search mode (refresh() short-circuits anyway).
-  let _lastTerminal = $state(0);
+  //
+  // Keyed on which jobs finished, not how many, as the dashboard is: at the
+  // history cap a newly finished job replaces an evicted one and the counts
+  // stay flat. Clearing history only drops ids, so nothing refreshes then.
+  let _refreshedFor = new Set();
   $effect(() => {
-    const total = jobs.completedCount + jobs.failedCount + jobs.cancelledCount;
-    // The count can drop when the user clears terminal history
-    // (jobs.clearCompleted). Track the watermark down too, otherwise a
-    // post-clear conversion whose new total is still below the old
-    // high-water mark would never trigger a refresh.
-    if (total < _lastTerminal) {
-      _lastTerminal = total;
+    const finished = terminalJobIds(jobs.jobs);
+    if (finished.every((id) => _refreshedFor.has(id))) {
+      _refreshedFor = new Set(finished);
       return;
     }
-    if (total <= _lastTerminal) return;
     if (!fileBrowser.autoRefresh) return;
     if (fileBrowser.loading) return;
     if (fileBrowser.searchMode) return;
     if (ui.anyEntryModalOpen) return;
     if (conversion.converting) return;
     if (verification.batchRun) return;
-    _lastTerminal = total;
+    _refreshedFor = new Set(finished);
     fileBrowser.refresh().catch(() => {});
   });
 

@@ -30,7 +30,6 @@ from app.routes import info as info_routes
 from app.services import z3ds_compress as z3ds_module
 from app.services import job_manager as job_manager_module
 from app.services.chdman import ChdmanService
-from app.services.concurrency_manager import ConcurrencyManager
 from app.services.job_manager import JobManager
 from app.services.lock_manager import LockManager
 from app.services.subprocess_runner import collect_verify
@@ -225,11 +224,6 @@ async def _run_delete_on_verify_job(tmp_path: Path, monkeypatch, fake_verify):
     lock_dir = tmp_path / "locks"
     monkeypatch.setattr(
         job_manager_module.settings, "concurrency_lock_dir", str(lock_dir),
-    )
-    monkeypatch.setattr(
-        job_manager_module,
-        "concurrency_manager",
-        ConcurrencyManager(1, str(lock_dir / "conc")),
     )
     monkeypatch.setattr(job_manager_module, "lock_manager", LockManager())
 

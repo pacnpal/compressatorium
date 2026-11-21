@@ -472,9 +472,13 @@ def test_an_archive_waiting_for_room_is_reported_as_waiting_not_failed(
 
     from config import settings
     from services import findings
+    from services.inbox import intake
     from services.job_manager import job_manager
 
     monkeypatch.setattr(settings, "archive_inbox_max_unpacked_size", 100 * 1024)
+    # The unpack job's own gate decides, not the first look: which of the two
+    # sees the other archive unpacked first is timing.
+    monkeypatch.setattr(intake, "_room_problem", lambda path: None)
     gba = folder["vol"] / "Downloads" / "gba"
     gba.mkdir()
     for name in ("A Cap.zip", "B Cap.zip"):

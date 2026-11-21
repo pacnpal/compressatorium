@@ -8,6 +8,13 @@
 // or prefer the incoming copy during reconciliation.
 export const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
+// The ids of the finished jobs in a list, in its order. What a refresh keys on
+// (the file listing, the Ledger cards): once history hits its cap a newly
+// finished job replaces an evicted one and every count stays flat.
+export function terminalJobIds(list) {
+  return list.filter((j) => TERMINAL_STATUSES.has(j?.status)).map((j) => j.id);
+}
+
 // Statuses a job is still working through.
 export const ACTIVE_STATUSES = new Set(['queued', 'processing']);
 

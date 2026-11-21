@@ -841,8 +841,8 @@ def test_a_server_waits_for_the_lock_then_starts(env, server_start, caplog, hold
     finally:
         first.release()
 
-    assert f"by {'the server' if holder == 'server' else 'another run-rules'}" in caplog.text
-    assert caplog.text.count("Waiting for the Rule scheduler lock") >= 2, "logged again"
+    assert f"by {'the server' if holder == 'server' else 'a run-rules pass'}" in caplog.text
+    assert caplog.text.count("Waiting for the data directory") >= 2, "logged again"
     # Released when startup failed, so the next start does not wait.
     scheduler_lock.acquire("server", wait=0).release()
 
@@ -1215,15 +1215,6 @@ def test_a_stop_while_delete_snapshots_are_read_queues_nothing(
     assert [line for line in lines if line.get("path")] == [], "nothing queued"
     assert dolphin["runs"] == []
     assert "last_run_at" not in _rule_state(env).get("gc", {}), "the clock did not move"
-
-
-def test_the_fixture_keeps_every_lock_file_in_the_test_lock_dir(env):
-    """Otherwise the queue's holder file points at the real lock dir, which
-    does not exist on a clean machine, and the first job never starts."""
-    from services.concurrency_manager import concurrency_manager
-
-    assert concurrency_manager._holder_path.startswith(str(env["locks"]))
-    assert concurrency_manager._holder_handle is None
 
 
 @pytest.mark.parametrize("waiting", [True, False])

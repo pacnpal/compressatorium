@@ -2426,61 +2426,32 @@ compression-*level* difference on an otherwise-correct, verified artifact of the
 exact source — not a content mismatch — and is accepted rather than have every
 tool persist its resolved defaults.
 
-### 3.3.7 Finished-job history overflow (`JobManager.get_history_overflow`)
+### 3.3.7 Finished-job history and the Ledger's totals (#533)
 
 `MAX_JOB_HISTORY` (default 500) caps how many **terminal** jobs `JobManager`
-retains; `_prune_jobs` deletes the oldest past the cap. That makes the retained
-job list a bounded window, not a record of the run — so **no count may be
-derived from the job list alone**. Doing so is what froze every finished-job
-count at the cap: the Jobs panel read *"Completed 500"* while a 1,153-file batch
-kept draining, and the dashboard's Done / Failed tiles did the same.
+retains; `_prune_jobs` deletes the oldest past the cap. The job list is a
+bounded window, not a record of the run, so no all-time count comes from it.
+The Ledger is the record: every finished job lands in it (`ledger.record`, a
+terminal listener) and its `ledger_totals` counters only ever grow, whatever
+the cap, a Clear or a retention prune removes. `GET /api/ledger/totals`
+answers `{"jobs": {"completed": N, "failed": N, "cancelled": N}}` from them,
+and the dashboard's Done / Failed tiles read it (`ledger.totals`). The Jobs
+panel's tab badges count the rows the list holds, and its Completed and
+Failed tabs link to the Ledger for the rest.
 
-The contract, tool-agnostic and owned by `JobManager`:
+Since the list is a window, its counts can stay flat while jobs finish (at
+the cap a new finished job replaces an evicted one), so nothing keys a
+refresh on them. The file listing (`App.svelte`) and the dashboard's Ledger
+cards (`Dashboard.svelte`) both key on `terminalJobIds(jobs.jobs)`
+(`stores/jobConstants.js`): the file listing refreshes when an id it has not
+refreshed for appears. `ledger._load` reads recent, savings and totals with
+`Promise.allSettled`, so a read that fails keeps its card's last good value
+without dropping the others.
 
-- **`_record_history_eviction(job)`** tallies each automatically evicted job
-  under `status → mode → count`, and appends its id to a bounded log stamped
-  with a monotonic `seq`. **Only automatic eviction is tallied.** A job deleted
-  by the user (single row, or Clear) is history *they* dropped; counting it
-  would make a badge outlive every list that could show it.
-- **`get_history_overflow(since=None, generation=None)`** returns
-  `{generation, max_job_history, evicted, total_evicted, seq, evicted_ids,
-  cursor_expired}` — absolute totals, never deltas, so a dropped frame or a
-  reconnect self-heals. Pass a previously returned `seq` as `since` to also
-  receive the ids evicted after that point, **and the `generation` that cursor
-  came from**: a cursor minted by an earlier process is meaningless here, and
-  reading it literally would return no ids at all, so it is rewound to the
-  start of this log instead. `cursor_expired` says the cursor fell off the end
-  of the bounded id log (sized to `max(2000, 4 × max_job_history)`), so the ids
-  cannot be complete and the client must re-sync against the job list rather
-  than trust the rows it holds — that includes a cursor from before a Clear,
-  which throws the log away and deletes every finished job with it.
-  `history_eviction_seq()` opens a cursor without reading counts.
-- **`reset_history_overflow()`** clears the tally and the id log, and returns
-  the *advanced* `seq`. Never rewind it: it is a cursor clients hold, so
-  rewinding would make a stale cursor look current, while advancing makes every
-  read taken before the reset recognizably older. `DELETE /api/jobs/completed`
-  calls it and reports `history_forgotten` / `total_cleared` / `history_seq` /
-  `history_generation` alongside the deleted row count — feed those back through
-  the same apply path as any other payload, so the Clear result obeys the same
-  staleness and generation rules instead of a hand-rolled copy of them.
-
-**Every change to the tally advances `seq`** — evictions and resets alike. That
-is what makes an out-of-order payload detectable: equal sequences carry equal
-counts, so a client can reject anything older and re-apply an equal one as a
-no-op. The sequence is in-memory, so every payload also carries a
-**`generation`** for the process that produced it: a restart rewinds `seq` to 0,
-and a client comparing across that boundary would reject everything the new
-process sends. A changed generation means *drop the cursor*, not *reject*.
-
-Transport: `GET /api/jobs/history-overflow` for hydration and the polling
-fallback, plus a `history` event on `/api/jobs/events`, emitted on connect and
-whenever the totals change. Additive — clients that don't listen for it drop it
-silently, as with `snapshot`.
-
-The stream opens its cursor **before** emitting the snapshot, not after:
-snapshot emission suspends the generator between jobs, so a row already handed
-to the client can be evicted moments later, and the first `history` frame has to
-be able to retract it.
+The jobs store still tombstones a finished job the backend stops listing
+(`refresh()` reconciles against `/api/jobs`, and Clear names what it deleted),
+so a late copy of it (an SSE frame, a REST snapshot, an Auto response) never
+brings it back.
 
 **The stream follows every job from its registration** (#456). It opens a
 `JobFeed` (`JobManager.watch_jobs()`) before anything else, and
@@ -5830,7 +5801,7 @@ caller of the same seams the routes use, not a second conversion path:
 | `--to <format>` | `platform_detect.format_route` / `format_candidates` (below) |
 | `--auto` | `routes.convert.plan_auto_targets` (`plan_auto` plus `checked_compression`), the Auto route's planner |
 | Plan | `routes.convert.prepare_batch`: `plan_job` per file; each skip a `BatchSkip` (#504) |
-| Queue and run | `routes.convert.queue_prepared` into the `job_manager` singleton, started with `process_queue()`, emptied with `JobManager.drain()` and stopped with `JobManager.shutdown()`. Fed in chunks below `max_queue_depth` when it is set. A group the planner refuses is re-planned one Image at a time, so only the Image at fault fails |
+| Queue and run | With a server running: `POST /api/jobs/batch?report_skipped=true` on it, each job followed with `GET /api/jobs/{id}` (`cli._run_remote`, `services.server_client`). Alone: `routes.convert.queue_prepared` into the `job_manager` singleton, started with `process_queue()`, emptied with `JobManager.drain()` and stopped with `JobManager.shutdown()`. Fed in chunks below `max_queue_depth` when it is set. A group the planner refuses is re-planned one Image at a time, so only the Image at fault fails |
 | Delete | `JobManager._delete_check`, so `--delete-source` gets the Round-trip check where the mode has one and `--container-only` is the job's `container_only` |
 | Ledger | `ledger.record` as a terminal listener, as in `main.py` |
 | Verify | `ToolPlugin.verify` bounded by `verify_timeout`, then `verification_store.mark_verified`, or `clear` on a conclusive failure only |
@@ -5857,21 +5828,83 @@ the romz mode for its ROM. `_can_read` asks a tool's `converts_path` only about 
 `input_extensions` cover, so chdman's `.chd` readers are not refused by a tool
 that leaves `.chd` out of its tool-wide inputs.
 
-**Locks beside a server.** Output locks were already `flock` files in
-`CHD_CONCURRENCY_LOCK_DIR`, and the conversion slots and FIFO tickets live
-there too, so a CLI process and the server contend for the same outputs and
-slots. The default is now `<data dir>/locks` (`config._default_lock_dir`), so a
-separate container that mounts the same `/config` shares them. The choice is a
-pure function of configuration, never of whether a folder exists yet: with a
-data dir configured (`CHD_DATA_DIR` or the constructor; the image sets
-`CHD_DATA_DIR=/config`) it is always `<data dir>/locks`, created when chosen
-(parents included, `0o700`), and one that can't be created raises at startup
-instead of moving the locks. Only with no data dir configured at all is it the
-fixed `/tmp/chd-locks`, the same for every process whatever `TMPDIR` says.
-Before, a data dir that did not exist yet sent the first process to
-`$TMPDIR/chd-locks` and, once database init had made the folder, the next one to
-`<data dir>/locks`. Two rules keep a lock file meaningful across processes
-(`LockManager`):
+**One process works a data directory (#533).** The server, `run-rules` and a
+`convert` that runs its jobs itself never work one data directory at once. Each
+holds the worker lock (`services.scheduler_lock`, §3.3.17's Rule scheduler
+lock, `scheduler.lock` in the lock dir) while it works: the server for its
+life, `run-rules` for its pass, `convert` while its jobs run. `convert`
+decides where its jobs go before it routes and plans them (`cli._worker`),
+so the tools ready where they will run (the server's `GET /api/tools`, or
+this process's) decide which Images are converted:
+
+* `--server URL` names a server: the jobs go there.
+* The lock held by a server: the jobs go to it. The server names its host in
+  the lock's holder note when it takes it, and its port at once, from
+  uvicorn's launch (`main._launch_port`: `--port N`, `--port=N` or
+  `UVICORN_PORT`; uvicorn binds only after the lifespan starts and tells the
+  app nothing), so a server on `PORT=9090` (`run_dev.sh`) is found before any
+  request. Each `/health` request also names the port it arrived on
+  (`SchedulerLock.note_port`), for a launch that named none, and writes the
+  note again when its last write failed (`_write_record` answers False), in
+  place: the lock file is never replaced, since the flock is on it. It also writes a random `id` and its own non-loopback IPv4
+  addresses (`scheduler_lock.own_addresses`, stdlib only: the hostname's
+  entry and the address a UDP socket would send from; none readable, none
+  written), because a container's hostname resolves for its siblings on a
+  user-defined network (Compose) but not on Docker's default bridge
+  (`docker run`, Unraid). `Server.of_holder` lists `127.0.0.1` when the host
+  is this one, else the host by name, then each address, at that port (8080
+  until one is named). `Server.find_holder` asks each `/health` in turn, 3 s
+  apiece and without the auth token, and takes the first that answers the
+  note's `id` as `worker`, so another server on a stale address is never
+  taken. None does: exit 3, before anything is queued, saying to pass
+  `--server`.
+* The lock free: `convert` takes it (`acquire("convert")`) and runs its jobs
+  in-process as before. A server started meanwhile waits for it
+  (`acquire_waiting`, logging who holds it), so it never starts work beside
+  the CLI.
+* The lock held by `run-rules` or another `convert`: this run waits its turn,
+  logging who holds it every 30 s.
+
+On a server, `cli._run_remote` queues each chunk with the server's batch
+route (the CLI's own plan names the files; the server plans them again with
+the same planner, and its `report_skipped` list marks what it left out),
+follows each job with `GET /api/jobs/{id}` once a second, and prints each
+line from the job it reads back (`_finish`, as in-process). A chunk the
+server turns away with 429 (its queue full: its own `MAX_QUEUE_DEPTH`, which
+may be below the CLI's window, or other clients' jobs) is never failed: it is
+split in half until it fits, and a single job waits a poll, following this
+run's jobs, and is offered again. A stop cancels
+this run's jobs there (`DELETE /api/jobs/{id}`) and waits for them to end.
+`Server.cancel` answers whether that is settled: cancelled, or already ended
+or gone (404, the 400 for a job past cancelling). No answer, a 429 or a 5xx
+leaves it pending, and `_run_remote` asks again each turn, for every job, so
+one lost connection never abandons the others. A
+server that stops answering fails the jobs still followed. The auth token,
+when the server has one, comes from the same place the server reads it
+(`COMPRESSATORIUM_AUTH_TOKEN` or `<data dir>/auth_token`).
+
+So a CLI and a server never both work on one file: either the server runs
+the job, or the CLI does while no server can start. The same holds for the
+`MAX_CONCURRENT_JOBS` limit, which is now one process's semaphore. The
+cross-process ticket queue that used to share slots between the two
+(`ConcurrencyManager`: `convert_slot_<i>.lock`, `holder_<id>.lock`,
+`queue_*.ticket`, `queue_counter`) is gone. The job manager orders its own
+queue with an in-memory counter (`JobManager._tickets`). `verify` only reads:
+it runs beside a server, under the same shared input lock a job takes, so it
+never checks a file a job is writing, and a job never replaces one it is
+checking.
+
+Output, input, folder and Referrer locks are still `flock` files in
+`CHD_CONCURRENCY_LOCK_DIR`, kept as the second wall. The default is
+`<data dir>/locks` (`config._default_lock_dir`), so a separate container that
+mounts the same `/config` shares them. The choice is a pure function of
+configuration, never of whether a folder exists yet: with a data dir configured
+(`CHD_DATA_DIR` or the constructor; the image sets `CHD_DATA_DIR=/config`) it is
+always `<data dir>/locks`, created when chosen (parents included, `0o700`), and
+one that can't be created raises at startup instead of moving the locks. Only
+with no data dir configured at all is it the fixed `/tmp/chd-locks`, the same
+for every process whatever `TMPDIR` says. Two rules keep a lock file meaningful
+across processes (`LockManager`):
 
 1. A lock file is unlinked only by a process holding its flock, while it holds
    it, and only when the path still names the held file (`_unlink_held`).
@@ -5881,49 +5914,11 @@ Before, a data dir that did not exist yet sent the first process to
    path (`_still_linked`: device and inode, ENOENT counts as a mismatch) and
    retries on a mismatch.
 
-Unlinking after the unlock let a second process lock the doomed file and a
-third create and lock a new one at the same path. `lock_manager.still_linked`
-and `unlink_held` are module functions, shared with the concurrency manager.
-
-**Slots and tickets (`ConcurrencyManager`).** Slot files
-(`convert_slot_<i>.lock`) are a fixed set held by `flock` and are never
-unlinked. Each process creates one `holder_<id>.lock` on first use (temp name,
-flock, rename, so it is never visible unlocked) and holds its flock for its
-whole life: one open file per process, whatever it queues. A ticket is a plain
-file naming its holder, `queue_<ticket>_<seq>_<holder>_<key>.ticket`, and
-`release_ticket` removes it while the holder lock is held. Liveness is the
-holder's flock, not a PID (PIDs mean nothing across containers): a holder file
-another process can lock, or one that is gone, belongs to a process that died
-without cleanup, and `_prune_dead_tickets` removes its tickets and leftover
-temp files while holding that lock, then the holder file (`unlink_held`). It
-runs at construction and at most once a second from `_wait_for_turn`, so a CLI
-killed by SIGKILL, SIGHUP or the OOM killer stops blocking the server's queue as
-soon as the server's next job waits. Tickets and temp files from older versions
-(no holder in the name) go when they can be locked.
-
-A holder file deleted from outside while its process runs (a tmp cleaner, a
-user) would make that process look dead. `_ensure_holder`, called on every wait
-poll, checks the held handle against the path (`still_linked`); when they
-differ it makes the holder again under the same id and writes back every
-ticket the process holds. Slot files have no such repair: a cleaner that
-deletes `convert_slot_<i>.lock` on the `/tmp/chd-locks` fallback lets two
-processes lock different files for one slot. Keep the lock dir out of reach of
-age-based cleaners; `/config/locks`, the default, is.
-
-The directory is made again (`_ensure_dir`, owner only) whenever a holder,
-ticket or slot file is created, not only on first use, so a lock directory
-deleted while a process runs (a tmp cleaner on the `/tmp/chd-locks` default, someone
-clearing `/config/locks`) no longer leaves every later job waiting forever.
-
-A queue that cannot be listed (EMFILE, an I/O error) is never read as empty:
-`_list_tickets` raises, and `_wait_for_turn` logs it (at most every 30 s) and
-retries. The shared counter is retried before the in-process fallback, whose
-collisions `_list_tickets` breaks by `(seq, key)` identically in every process.
 The server and the CLI raise the soft open-file limit to the hard limit at
-start (`utils.process_limits.raise_open_file_limit`). The CLI still keeps at
-most twice `MAX_CONCURRENT_JOBS` of its jobs queued (never more than
-`MAX_QUEUE_DEPTH`), so a cron run does not put a whole library ahead of the web
-UI.
+start (`utils.process_limits.raise_open_file_limit`). The CLI keeps at most
+twice `MAX_CONCURRENT_JOBS` of its jobs queued (never more than
+`MAX_QUEUE_DEPTH`), in-process and on a server alike, so a cron run does not
+put a whole library ahead of the web UI.
 
 **What a `--to` walk lists.** A folder walk lists what the web search lists
 (`scan_tree`, tool-wide inputs). With `--to`, the same single walk also lists
@@ -6000,13 +5995,11 @@ writes one already taken ("Same output as X"). The planner's own collapse
 works within one batch only.
 
 **Lazy, and read-only for a dry run.** Choosing the lock dir creates the
-directory and nothing in it (`config._default_lock_dir`). The
-module singletons `lock_manager` and `concurrency_manager` are built
-`lazy=True`: the directory, `queue_counter`, the stale sweep and the ticket
-prune happen on first use. A dry run wraps the run in `lock_manager.read_only()`,
-in which no lock is taken or probed and no lock file removed; a lock file that
-is present counts as held. A dry run queues nothing, so tickets and slots are
-never touched.
+directory and nothing in it (`config._default_lock_dir`). The module singleton
+`lock_manager` is built `lazy=True`: the directory and the stale sweep happen
+on first use. A dry run wraps the run in `lock_manager.read_only()`, in which
+no lock is taken or probed and no lock file removed; a lock file that is
+present counts as held. A dry run queues nothing and takes no worker lock.
 
 **Folder locks across processes.** A directory lock (folder_to_iso packing a
 PS3 folder) protects its subtree only in the process that took it
@@ -6885,8 +6878,9 @@ holder writes a note into it (`by`, `pid`, `host`, `since`) that
   probes with a shared non-blocking `flock`, creating nothing.
 
 The stale-lock sweeps leave the file alone (`LockManager` only touches
-`filelock-*`, `ConcurrencyManager` only holders and tickets). `convert` and
-`verify` do not take it: they run beside a server.
+`filelock-*` and `referrer-*`). `convert` takes it while it runs its jobs
+itself and hands them to the server that holds it (#533, §3.3.17);
+`verify` does not take it: it only reads, under shared input locks.
 
 ### 3.3.18 Check Rules (`services/rules/check.py`, `services/image_checks.py`)
 
@@ -8365,11 +8359,9 @@ that isn't ready gives its own reason, `not_ready_message(tool)` read after
 started_by_hand=False, takes_slot=True)`: it converts nothing). One background
 task per Image, each an external job. Its file work runs in one of the same
 `max_concurrent` slots conversions take: `job_manager.hold_slot(job_id,
-cancel_event)` acquires the dispatcher's own semaphore and then the
-cross-process slot `_process_job` takes (`concurrency_manager.acquire`), so a
-CLI process converting holds a copy back too. With the dispatcher running a copy
-joins the conversions' FIFO (Codex 4606061259): it reserves its ticket when it
-asks, its id goes on the dispatcher's queue under that ticket, and the
+cancel_event)` acquires the dispatcher's own semaphore. With the dispatcher
+running a copy joins the conversions' FIFO (Codex 4606061259): it takes the
+next ticket when it asks, its id goes on the dispatcher's queue under that ticket, and the
 dispatcher hands it the local slot when the ticket comes up (`_hand_slot`), so
 nothing holds the local slot while waiting behind someone else and one slot
 can't deadlock; a cancel drops the ticket and gives back a slot already handed
@@ -9295,7 +9287,12 @@ every other planning skip. A chain mode is refused when any step tool is not
 ready, since `ChainTool.is_ready` asks each. The CLI, the Rules sweeps and the
 Inbox already skip a not-ready tool before they plan, so they never reach this
 check and nothing is reported twice. Per-route or per-tool checks are not
-needed.
+needed. `plan_job` and `prepare_batch` take `ready_tool_ids` (as `plan_auto`
+does) to answer for the process that will run the job instead of probing
+here: a `convert` that hands its jobs to a server routes and plans with the
+server's `GET /api/tools` list (`Server.ready_tool_ids`, #533), so an NSZ
+Image converts on a server that has the keys even when the CLI's container
+lacks them, and the server's own planning has the last word.
 
 **File info routes (#488).** Every `GET /api/*info` route in `routes/info.py`
 (`/info` for chdman, `/dolphin-info`, `/z3ds-info`, `/nkit-info`, `/xiso-info`,

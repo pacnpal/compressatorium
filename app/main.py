@@ -2,13 +2,14 @@ import json
 import logging
 from logging_setup import get_logger
 import os
+import sys
 import threading
 from contextlib import asynccontextmanager, contextmanager, suppress
 from pathlib import Path
 
 from auth import ensure_auth_token, require_auth_middleware
 from config import settings
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from routes import convert, dat, files, info, preferences, romm
@@ -220,22 +221,43 @@ def startup_volume_work() -> None:
         get_logger().info("Removed %d temp file(s) left by interrupted repacks", removed)
 
 
+def _launch_port(argv: list[str], environ) -> int | None:
+    """The port uvicorn was told to listen on, from its command line
+    (``--port N`` / ``--port=N``) or ``UVICORN_PORT``; ``None`` when neither
+    names one. uvicorn binds only after the lifespan starts and tells the app
+    nothing, so this is how a server names its port before any request (#533):
+    ``run_dev.sh`` passes ``--port "$PORT"``, the image ``--port 8080``.
+    """
+    raw = environ.get("UVICORN_PORT")
+    for i, arg in enumerate(argv):
+        if arg == "--port" and i + 1 < len(argv):
+            raw = argv[i + 1]
+        elif arg.startswith("--port="):
+            raw = arg.split("=", 1)[1]
+    try:
+        port = int(raw) if raw is not None else None
+    except ValueError:
+        return None
+    return port if port and 0 < port < 65536 else None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Wait for the Rule scheduler lock, then start the app (``_serve``).
 
-    One Rule scheduler per data directory (#307). The lock is held for the
-    server's whole life and taken before anything touches the data directory.
-    While a `run-rules` pass (or another server) holds it, startup waits and
-    says so every ``scheduler_lock._WAIT_LOG_EVERY`` seconds; a SIGTERM while
-    waiting stops startup.
+    One process works a data directory at a time (#307, #533). The lock is
+    held for the server's whole life and taken before anything touches the
+    data directory. While a `run-rules` pass, a CLI `convert` running its jobs
+    in-process, or another server holds it, startup waits and says so every
+    ``scheduler_lock._WAIT_LOG_EVERY`` seconds; a SIGTERM while waiting stops
+    startup. A CLI started while the server holds it hands its jobs here.
     """
     configure_logging()
     logger = get_logger()
     from services import scheduler_lock
 
     def waiting(held: scheduler_lock.SchedulerLockHeld) -> None:
-        logger.warning("Waiting for the Rule scheduler lock: %s", held)
+        logger.warning("Waiting for the data directory: %s", held)
 
     with _watch_stop_signals() as stopped:
         try:
@@ -244,10 +266,15 @@ async def lifespan(app: FastAPI):
             )
         except scheduler_lock.StoppedWaiting as exc:
             raise RuntimeError(str(exc)) from None
+    app.state.scheduler = scheduler
+    # Named now, for a CLI looking before anything has asked /health (which
+    # still names the port a request arrives on).
+    scheduler.note_port(_launch_port(sys.argv, os.environ))
     try:
         async with _serve(app):
             yield
     finally:
+        app.state.scheduler = None
         scheduler.release()
 
 
@@ -492,9 +519,16 @@ app.include_router(hooks_routes.router, prefix="/api", tags=["hooks"])
 
 
 @app.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy", "version": get_version()}
+async def health_check(request: Request):
+    """Health check endpoint. Also names the port this server answers on in
+    its worker lock, where a CLI looks for it (``services.server_client``)."""
+    held = getattr(request.app.state, "scheduler", None)
+    if held is None:
+        return {"status": "healthy", "version": get_version()}
+    held.note_port((request.scope.get("server") or (None, None))[1])
+    # The id in its holder note: a CLI that found this server by address
+    # checks it reached the holder.
+    return {"status": "healthy", "version": get_version(), "worker": held.worker_id}
 
 
 # Serve static files

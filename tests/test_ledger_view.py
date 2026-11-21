@@ -128,6 +128,7 @@ async def test_routes_call_the_same_query_layer():
 
 LEDGER_PATHS = [
     "/api/ledger", "/api/ledger/export.csv", "/api/ledger/savings", "/api/metrics",
+    "/api/ledger/totals",
 ]
 
 
@@ -184,6 +185,17 @@ async def test_prune_never_lowers_the_counters(monkeypatch):
     assert 'compressatorium_jobs_total{status="completed"} 4' in after
     assert "compressatorium_input_bytes_total 4000" in after
     assert "compressatorium_output_bytes_total 1600" in after
+
+
+@pytest.mark.asyncio
+async def test_totals_count_every_finished_job_by_status():
+    """The UI's job totals (#533): every status, a zero included."""
+    from routes import ledger as routes
+
+    await _seed()
+    assert await routes.ledger_totals() == {
+        "jobs": {"cancelled": 1, "completed": 1, "failed": 1},
+    }
 
 
 @pytest.mark.asyncio

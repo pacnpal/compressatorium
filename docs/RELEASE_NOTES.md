@@ -76,6 +76,39 @@
 
 ### Changed
 
+- **`compressatorium convert` uses the running server** (#533). When the
+  server is running on the same `/config`, the command finds it there and
+  hands it the jobs: they show in the web UI's queue, share its limit on
+  parallel jobs and land in its Ledger, and the command prints each line as
+  its job ends. A server whose queue is full (its own `MAX_QUEUE_DEPTH`, or
+  other clients' jobs) is fed smaller batches and waited for, so no input
+  fails for it. What the server can run decides what is converted, so NSZ
+  Images convert on a server that has the Switch keys even when the
+  command's container doesn't. Ctrl-C cancels the run's own jobs on the
+  server, asking again for any the server didn't take the first time. With
+  no server running, the command runs the jobs itself, and a server started
+  meanwhile waits until it is done, so a command and the server never work
+  on the same file. A server in another container is found
+  with nothing to set: by its host name on a Compose network, and by its own
+  address on Docker's default bridge (`docker run`, Unraid), checked to be
+  that server, on whatever port it was started with (`PORT=9090` too).
+  `--server URL` names one that still can't be found. The
+  cross-process job queue the two used to share in `/config/locks`
+  (`queue_*.ticket`, `holder_*.lock`, `convert_slot_*.lock`) is gone; old
+  files there are harmless and can be deleted.
+- **No more Recover button or "jobs look stuck" banner** (#533). Recovery
+  only ever removed lock files no process held, and such a file never blocks
+  a job; the app removes them on its own every 30 seconds. The
+  `CHD_DEBUG_HEARTBEAT` setting is gone: that cadence is fixed.
+  `GET /api/jobs/stuck-status` and `POST /api/jobs/recover` are removed.
+- **Job totals come from the Ledger** (#533). The dashboard's Done and Failed
+  numbers count every finished job, from the Ledger
+  (`GET /api/ledger/totals`). The Jobs panel's Completed and Failed tabs
+  count the jobs they list, and link to the Ledger for the older ones. The
+  file list still refreshes as each job finishes once the history is full,
+  and one Ledger read that fails no longer blanks the dashboard's other
+  cards. `GET /api/jobs/history-overflow` and the job stream's `history` event are
+  removed; `DELETE /api/jobs/completed` answers `{deleted, count}`.
 - **A Rule turns on when you pick its target, and an empty run says why**
   (#520). Picking "Convert to" for a console now enables that Rule, so Preview
   and Run now no longer answer "0 queued" for a Rule that was silently off.
