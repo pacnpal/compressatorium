@@ -364,7 +364,7 @@ export const api = {
         container_only: !!options.containerOnly,
         split: !!options.split,
       },
-      {},
+      options.signal ? { signal: options.signal } : {},
       'Failed to start converting',
     );
   },

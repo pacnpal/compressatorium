@@ -308,25 +308,26 @@ def _archive_verdict(source_path: str) -> tuple[str, List[str]] | None:
     return ("extra", extras) if extras else None
 
 
-def _other_sheet_naming(track: str, sheet: Path) -> str | None:
-    """Why *track* stays: another ``.cue``/``.gdi`` than *sheet* names it, or
-    that could not be told (fail closed). None when only *sheet* does."""
+def _other_owner(part: str, source: Path) -> str | None:
+    """Why *part* of *source* stays: another file names it too (a sheet, a
+    playlist, a set; ``image_sets.owners_naming``), or that could not be told
+    (fail closed). None when only *source* does."""
     from services import image_sets
 
-    if not os.path.exists(track):
+    if not os.path.exists(part):
         return None  # reported as missing already
-    boundary = lock_boundary_root(track)
-    stop = str(boundary) if boundary is not None else os.path.dirname(os.path.realpath(track))
-    name = os.path.basename(track)
+    boundary = lock_boundary_root(part)
+    stop = str(boundary) if boundary is not None else os.path.dirname(os.path.realpath(part))
+    name = os.path.basename(part)
     try:
-        sheets = image_sets.sheets_naming(track, stop_at=stop)
+        owners = image_sets.owners_naming(part, stop_at=stop)
     except image_sets.SheetOwnerUnknown as exc:
-        return f"{exc}, so whether another sheet needs {name} is unknown; it is kept"
-    own = os.path.normcase(os.path.realpath(sheet))
-    others = [s for s in sheets if os.path.normcase(os.path.realpath(s)) != own]
+        return f"{exc}, so whether another game needs {name} is unknown; it is kept"
+    own = os.path.normcase(os.path.realpath(source))
+    others = [o for o in owners if os.path.normcase(os.path.realpath(o)) != own]
     if not others:
         return None
-    return f"{name} is also a track of {os.path.basename(others[0])}; it is kept"
+    return f"{os.path.basename(others[0])} needs {name} too; it is kept"
 
 
 def build_delete_plan(
@@ -428,7 +429,7 @@ def build_delete_plan(
             _add_path(track_path)
             # A track another game's sheet names too is never deleted with
             # this one (#549 review): the plan is blocked instead.
-            shared = _other_sheet_naming(str(track_path), source)
+            shared = _other_owner(str(track_path), source)
             if shared:
                 errors.append(shared)
         unsafe_paths[:] = list(dict.fromkeys(unsafe_paths))
@@ -446,6 +447,9 @@ def build_delete_plan(
         # named file alone.
         for companion in registry.source_companions(str(source), strict=True):
             _add_path(Path(companion))
+            shared = _other_owner(companion, source)
+            if shared:
+                errors.append(shared)
     except Exception as exc:
         errors.append(str(exc))
 

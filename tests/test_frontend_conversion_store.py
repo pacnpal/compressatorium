@@ -904,3 +904,51 @@ process.stdout.write(JSON.stringify({
     assert data["failed"] is True and data["queued"] == 0, data
     assert data["kept"] == "lzma", data
     assert any("Couldn't save the compression" in m for m in data["errors"]), data
+
+
+def test_a_run_aborted_while_the_compression_saves_queues_nothing(tmp_path):
+    """Codex 4654538689: the panel closes while the debounced save is sent;
+    the run stops there, and the queue request carries the run's signal."""
+    data = _run_in_browser(tmp_path, """
+const store = conversion;
+let landed;
+api.putConversionPrefs = (body) => new Promise((r) => { landed = () => r(body); });
+let queued = 0;
+const signals = [];
+api.createAutoJobs = async (_i, _o, _d, opts) => { queued += 1; signals.push(opts.signal); return { jobs: [] }; };
+store.setCompressionFor('createcd', { codecs: ['lzma'] });
+const controller = new AbortController();
+const run = store.submitAuto(['/v/a.iso'], {
+  plan: [{ file_path: '/v/a.iso', mode: 'createcd' }], signal: controller.signal,
+}).catch((e) => ({ aborted: Boolean(e?.aborted) }));
+for (let i = 0; i < 20 && !landed; i += 1) await new Promise((r) => setTimeout(r, 0));
+controller.abort();
+landed();
+const result = await run;
+
+// A run that isn't aborted hands its signal to the queue request.
+api.putConversionPrefs = async (body) => body;
+const second = new AbortController();
+await store.submitAuto(['/v/b.iso'], {
+  plan: [{ file_path: '/v/b.iso', mode: 'createcd' }], signal: second.signal,
+});
+process.stdout.write(JSON.stringify({
+  result, queued, passed: signals[0] === second.signal,
+}));
+""")
+    assert data == {"result": {"aborted": True}, "queued": 1, "passed": True}, data
+
+
+def test_the_target_names_its_format_for_a_format_or_a_mode(tmp_path):
+    """Codex 4654538693: RomM's summary counts only outputs of the format the
+    panel would make, whether Convert to is a format or a mode."""
+    data = _run(tmp_path, """
+const store = new ConversionStore();
+registry.specFor = (mode) => (mode === 'dolphin_rvz' ? { outputExt: '.rvz' } : null);
+const best = store.targetExt;
+store.chooseTarget('.chd');
+const format = store.targetExt;
+store.chooseTarget('dolphin_rvz');
+process.stdout.write(JSON.stringify({ best, format, mode: store.targetExt }));
+""")
+    assert data == {"best": None, "format": ".chd", "mode": ".rvz"}, data

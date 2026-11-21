@@ -96,3 +96,101 @@ def test_a_delete_on_verify_plan_keeps_a_track_another_sheet_names(vol):
     plan = build_delete_plan(str(a), confine_to_volumes=True)
 
     assert any("B.cue" in error for error in plan["errors"]), plan
+
+
+# --- Every kind of companion reference (Codex 4654538677) ---------------------
+
+def _two_playlists_one_disc(folder: Path) -> tuple[Path, Path, Path]:
+    disc = _write(folder / "Game (Disc 1).chd")
+    a = _write(folder / "A.m3u", b"Game (Disc 1).chd\n")
+    b = _write(folder / "B.m3u", b"Game (Disc 1).chd\n")
+    return a, b, disc
+
+
+@pytest.mark.asyncio
+async def test_a_disc_two_playlists_name_is_folded_under_neither(vol):
+    _two_playlists_one_disc(vol / "psx")
+
+    listing = await files_routes.list_files(
+        path=str(vol / "psx"), show_archives=True, summarize_archives=False,
+    )
+
+    assert {e.name: e.disc_of for e in listing.entries}["Game (Disc 1).chd"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_batch_keeps_a_disc_another_playlist_still_names(vol):
+    a, b, disc = _two_playlists_one_disc(vol / "psx")
+
+    response = await files_routes.delete_files_batch(
+        _confirmed(), files_routes.BulkDeleteRequest(paths=[str(a), str(disc)]),
+    )
+
+    by_path = {r["path"]: r for r in response["results"]}
+    assert by_path[str(disc)]["success"] is False
+    assert "B.m3u" in by_path[str(disc)]["error"]
+    assert disc.exists() and b.exists() and not a.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_batch_deletes_a_disc_with_every_playlist_that_names_it(vol, monkeypatch):
+    async def forget(_path):
+        return None
+
+    monkeypatch.setattr(files_routes.verification_store, "clear", forget)
+    monkeypatch.setattr(files_routes.chd_metadata_store, "clear", forget)
+    a, b, disc = _two_playlists_one_disc(vol / "psx")
+
+    response = await files_routes.delete_files_batch(
+        _confirmed(), files_routes.BulkDeleteRequest(paths=[str(a), str(b), str(disc)]),
+    )
+
+    assert response["failed"] == 0, response
+    assert not any(p.exists() for p in (a, b, disc))
+
+
+@pytest.mark.asyncio
+async def test_a_batch_keeps_a_later_rar_volume_without_its_first(vol):
+    from .rar_fixtures import RAR5_SET, copy_set
+
+    first, second, _third = copy_set(RAR5_SET, vol / "usenet")
+
+    response = await files_routes.delete_files_batch(
+        _confirmed(), files_routes.BulkDeleteRequest(paths=[str(second)]),
+    )
+
+    [result] = response["results"]
+    assert result["success"] is False
+    assert first.name in result["error"]
+    assert second.exists()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_playlist_keeps_what_it_might_name(vol):
+    folder = vol / "psx"
+    disc = _write(folder / "Game.chd")
+    playlist = _write(folder / "Other.m3u", b"Game.chd\n")
+    playlist.chmod(0)
+    try:
+        response = await files_routes.delete_files_batch(
+            _confirmed(), files_routes.BulkDeleteRequest(paths=[str(disc)]),
+        )
+    finally:
+        playlist.chmod(0o644)
+
+    assert response["results"][0]["success"] is False
+    assert disc.exists()
+
+
+def test_a_delete_on_verify_plan_keeps_a_companion_another_owner_names(vol):
+    """The plan's own helper, for a track named by a playlist too."""
+    from utils.delete_plan import build_delete_plan
+
+    folder = vol / "psx"
+    _write(folder / "Game.bin")
+    cue = _write(folder / "Game.cue", b'FILE "Game.bin" BINARY\n  TRACK 01 MODE2/2352\n')
+    _write(folder / "Odd.m3u", b"Game.bin\n")
+
+    plan = build_delete_plan(str(cue), confine_to_volumes=True)
+
+    assert any("Odd.m3u" in error for error in plan["errors"]), plan

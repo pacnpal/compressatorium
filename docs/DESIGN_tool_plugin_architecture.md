@@ -1508,6 +1508,20 @@ alone. Ticking a playlist ticks its discs (`selectedFiles`) and keeps the
 `.m3u` in `selectedPlaylists`, which only Delete reads; Delete takes every
 file of each game. Folder rows are never asked.
 
+**A file another game still names is never deleted with this one (#549
+review).** A track two sheets name, or a disc two playlists list, folds under
+neither row. Every delete then asks one question, `image_sets.owners_naming(path,
+stop_at=...)`: every file that names *path* as part of itself, whether a
+`.cue`/`.gdi` (its track, from its folder up to the Volume boundary), a
+`.m3u`/`.m3u8` (its disc, the same walk) or a file beside it whose tools read it
+(`registry.source_companions` / `split_members`: a RAR set's later volume, a
+split dump's part). It fails closed, raising `SheetOwnerUnknown` when a folder,
+a sheet, a playlist or a set can't be read. `/files/delete-batch` keeps a file
+with an owner outside the request (`still_owned`). `build_delete_plan` blocks a
+delete-on-verify whose track or companion another file names (`_other_owner`).
+The next companion type only has to answer through the registry hook to be
+covered by both.
+
 **Every RAR header read is bounded and detached.** `archive_members` reads a
 RAR header in one way only, `_bounded_header_read`: the listing
 (`read_archive_members`), a later volume's flag (`later_volume_of`), a set's

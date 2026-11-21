@@ -65,7 +65,12 @@
     })),
   );
 
-  const activeMode = $derived(registry.specFor(conversion.mode) ?? null);
+  // The mode Convert to names, or for a format (`.rvz`) just its extension:
+  // enough for the "RomM can't match" note.
+  const activeMode = $derived(
+    registry.specFor(conversion.mode)
+      ?? (conversion.targetExt ? { outputExt: conversion.targetExt } : null),
+  );
   const losesMatch = $derived(romm.losesDatMatch(activeMode));
 
   /**
@@ -103,15 +108,22 @@
     // selected. Match the mode's own extension when the mode declares one, and
     // fall back to the tool for the modes that do not (z3ds and nsz derive
     // their suffix from the input).
+    // The format Convert to names (`.chd`, or a mode's own); with Best, each
+    // game's planned file, where the plan has it.
     const activeToolId = conversion.currentTool?.id ?? null;
-    const activeExt = (activeMode?.outputExt ?? null)?.toLowerCase() ?? null;
-    const forActiveTool = (o) => {
-      if (activeToolId && o.tool_id !== activeToolId) return false;
-      if (!activeExt) return true;
-      return (o.path ?? '').toLowerCase().endsWith(activeExt);
-    };
+    const activeExt = conversion.targetExt?.toLowerCase() ?? null;
+    const planned = Object.fromEntries(
+      (conversion.plan ?? []).filter((row) => row.output_name)
+        .map((row) => [row.file_path, row.output_name.toLowerCase()]),
+    );
     for (const e of entries) {
-      const outs = (e.outputs ?? []).filter(forActiveTool);
+      const outs = (e.outputs ?? []).filter((o) => {
+        if (activeToolId && o.tool_id !== activeToolId) return false;
+        const name = (o.path ?? '').toLowerCase();
+        if (activeExt) return name.endsWith(activeExt);
+        const wanted = planned[e.path];
+        return !wanted || name.split(/[\\/]/).pop() === wanted;
+      });
       const done = outs.some((o) => o.ready);
       // Any non-ready status means work is under way. A detector returns None
       // — and so contributes no status at all — when there is nothing there,

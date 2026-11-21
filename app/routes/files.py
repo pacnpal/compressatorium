@@ -461,7 +461,7 @@ def disc_marks(
     from services.referrers import m3u
 
     listed = {os.path.normpath(p): p for p in paths}
-    marks: dict[str, str] = {}
+    heads: dict[str, list[str]] = {}
     for path in paths:
         if not path.lower().endswith(PLAYLIST_EXTENSIONS):
             continue
@@ -481,9 +481,9 @@ def disc_marks(
             # other would otherwise both fold away.
             if disc is None or disc == path or disc.lower().endswith(PLAYLIST_EXTENSIONS):
                 continue
-            if disc not in marks:
-                marks[disc] = path
-    return marks
+            heads.setdefault(disc, []).append(path)
+    # A disc two playlists name folds under neither, as a shared track does.
+    return {disc: owners[0] for disc, owners in heads.items() if len(set(owners)) == 1}
 
 
 def game_row_marks(
@@ -1151,31 +1151,29 @@ def real_path_set(paths: list[str]) -> set[str]:
     return {os.path.normcase(os.path.realpath(p)) for p in paths}
 
 
-def sheet_still_needs(path: str, deleting: set[str]) -> str | None:
-    """Why *path* must stay, or None: a ``.cue``/``.gdi`` outside *deleting*
-    (normcased real paths) still names it as a track. Blocking.
+def still_owned(
+    path: str, deleting: set[str], companions_of: dict[str, list[str]] | None = None,
+) -> str | None:
+    """Why *path* must stay, or None: a file outside *deleting* (normcased real
+    paths) still names it as part of itself. Blocking.
 
-    Fails closed through ``image_sets.sheets_naming``: a folder on the way that
-    can't be listed, or a sheet that can't be read whole, leaves "is it still
-    needed?" unanswered, and the file is kept. A sheet itself is never a track.
+    Through ``image_sets.owners_naming``, the one ownership check: a sheet's
+    track, a playlist's disc, a set's later volume or part. Fails closed:
+    when the owners can't be told, the file is kept.
     """
     name = os.path.basename(path)
-    if name.lower().endswith(image_sets.SHEET_EXTENSIONS):
-        return None
     boundary = lock_boundary_root(path)
     stop = str(boundary) if boundary is not None else os.path.dirname(os.path.realpath(path))
     try:
-        sheets = image_sets.sheets_naming(path, stop_at=stop)
+        owners = image_sets.owners_naming(path, stop_at=stop, companions_of=companions_of)
     except image_sets.SheetOwnerUnknown as exc:
-        return f"{exc}, so whether a sheet still needs {name} is unknown; it is kept"
-    others = [
-        s for s in sheets if os.path.normcase(os.path.realpath(s)) not in deleting
-    ]
+        return f"{exc}, so whether another game still needs {name} is unknown; it is kept"
+    others = [o for o in owners if os.path.normcase(os.path.realpath(o)) not in deleting]
     if not others:
         return None
     return (
-        f"{name} is a track of {os.path.basename(others[0])}, which isn't being "
-        "deleted; it is kept"
+        f"{os.path.basename(others[0])} still needs {name} and isn't being deleted; "
+        f"{name} is kept"
     )
 
 
@@ -1192,9 +1190,11 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
     results = []
     success_count = 0
     failed_count = 0
-    # A track a sheet outside this request still names is kept (#549 review):
-    # deleting it with one game would break the other game.
+    # A file another game outside this request still names (a shared track, a
+    # disc two playlists list, a set's part) is kept (#549 review): deleting it
+    # with one game would break the other.
     requested = await off_loop_bounded(real_path_set, payload.paths)
+    companions_of: dict[str, list[str]] = {}
 
     async def delete_single_file(path: str) -> dict:
         """Delete a single file and return result."""
@@ -1220,7 +1220,7 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
             return {"path": path, "success": False, "error": exc.detail}
         if not is_dir:
             try:
-                kept = await off_loop_bounded(sheet_still_needs, path, requested)
+                kept = await off_loop_bounded(still_owned, path, requested, companions_of)
             except HTTPException as exc:
                 return {"path": path, "success": False, "error": exc.detail}
             if kept:

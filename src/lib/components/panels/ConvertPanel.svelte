@@ -88,7 +88,9 @@
     const now = paths;
     const key = conversion.keyFor(now);
     untrack(() => {
-      if (!now.length || now.length > PLAN_LIVE_LIMIT) {
+      // Above the live limit the plan is made on demand: it stays live, and
+      // follows its inputs, only while its dialog is open.
+      if (!now.length || (now.length > PLAN_LIVE_LIMIT && !planPrompt)) {
         conversion.clearPlan();
         return;
       }
@@ -229,7 +231,7 @@
   // queued is what was planned, whatever changes while a dialog is open.
   async function run() {
     const snapshot = [...paths];
-    const outputDir = conversion.outputDir || null;
+    let outputDir = conversion.outputDir || null;
     const platformId = fileBrowser.rommPlatformId;
     const fromRomm = platformId !== null;
     let choice = { ...safety, split: conversion.split };
@@ -253,7 +255,11 @@
         return;
       }
       if (!(await waiting) || controller.signal.aborted) return;
-      // The dialog showed the options for this plan: take them as confirmed.
+      // The dialog showed the options for this plan, and planned again when
+      // they changed: take the plan and the options as confirmed.
+      confirmed = conversion.hasPlanFor(snapshot) ? conversion.plan : null;
+      if (!confirmed) return;
+      outputDir = conversion.outputDir || null;
       choice = { ...safety, split: conversion.split };
     }
     const rows = confirmed.filter((row) => row.mode);

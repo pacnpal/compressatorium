@@ -79,7 +79,7 @@ def test_one_click_starts_one_run_and_queues_what_was_planned():
     assert "inFlight = true;" in _PANEL and "inFlight = false;" in _PANEL
     run = _PANEL.split("async function run() {", 1)[1]
     before_await = run.split("await ", 1)[0]
-    for read in ("const snapshot = [...paths];", "const outputDir = conversion.outputDir",
+    for read in ("const snapshot = [...paths];", "let outputDir = conversion.outputDir",
                  "const platformId = fileBrowser.rommPlatformId;",
                  "let choice = { ...safety", "platformOverrides: conversion.overridesFor(snapshot)",
                  "submitAbort = controller;"):
@@ -122,3 +122,14 @@ def test_leaving_the_view_answers_an_open_dialog():
     assert "if (deletePrompt) resolveDeletePlan(false);" in teardown
     assert "ui.planPromptOpen = false;" in _PANEL
     assert "ui.deletePlanPromptOpen = false;" in _PANEL
+
+
+def test_a_big_plan_dialog_plans_again_when_its_options_change():
+    """Codex 4654538684: above the live limit the plan stays live while its
+    dialog is open, and Convert takes the plan as it is when confirmed."""
+    effect = _PANEL.split("const key = conversion.keyFor(now);", 1)[1].split("});", 1)[0]
+    assert "now.length > PLAN_LIVE_LIMIT && !planPrompt" in effect
+    run = _PANEL.split("async function run() {", 1)[1]
+    confirmed = run.split("if (!(await waiting) || controller.signal.aborted) return;", 1)[1]
+    assert "conversion.hasPlanFor(snapshot) ? conversion.plan : null" in confirmed
+    assert "outputDir = conversion.outputDir || null;" in confirmed

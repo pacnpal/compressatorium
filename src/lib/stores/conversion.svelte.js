@@ -177,6 +177,12 @@ class ConversionStore {
     return this.mode ? registry.toolForMode(this.mode) ?? null : null;
   }
 
+  /** The format Convert to makes (`.chd`): the format itself, or the mode's; null for Best. */
+  get targetExt() {
+    if (this.target.startsWith('.')) return this.target;
+    return this.mode ? registry.specFor(this.mode)?.outputExt ?? null : null;
+  }
+
   chooseTarget(value) {
     const next = value ?? '';
     if (next === this.target) return;
@@ -562,10 +568,18 @@ class ConversionStore {
         // inside its debounce first, and stop if it didn't save (the choice
         // stays, with Try again in Settings).
         await this.flushCompressionPrefs();
+        // Aborted while the save went out (the panel closed): stop here too.
+        if (signal?.aborted) {
+          const stopped = new Error('Auto run aborted');
+          stopped.aborted = true;
+          throw stopped;
+        }
         if (this.compressionSaveError) {
           throw new Error(`Couldn't save the compression: ${this.compressionSaveError}`);
         }
-        const result = await api.createAutoJobs(items, outputDir, 'skip', sent);
+        const result = await api.createAutoJobs(
+          items, outputDir, 'skip', signal ? { ...sent, signal } : sent,
+        );
         const createdJobs = Array.isArray(result?.jobs) ? result.jobs : [];
         jobs.adopt(createdJobs);
         // Each game left out and why (a plan that changed, an output another
