@@ -675,7 +675,7 @@ export const api = {
   // The disc Platforms in your Libraries Redump has a DAT for: { running, systems }.
   getRedump: () => fetchJson(`${API_BASE}/dat/redump`, undefined, 'Failed to read Redump status'),
 
-  // Waits for the sync: { systems, imported, up_to_date, failed, message }.
+  // Waits for the sync: { systems, imported, up_to_date, failed, changed, message }.
   syncRedump: (force = false) =>
     jsonPost(`${API_BASE}/dat/redump/sync`, { force }, {}, 'Redump sync failed'),
 

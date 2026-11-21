@@ -3,8 +3,10 @@
 * :func:`import_files` takes loose ``.dat``/``.xml`` files and zips of them:
   No-Intro's daily pack (hundreds of DATs) or a Redump per-system zip. The
   upload route and ``compressatorium dat import`` both use it.
-* :func:`sync_redump` downloads ``http://redump.org/datfile/<system>/`` for the
-  disc Platforms the user's Libraries hold, one request at a time, cached.
+* :func:`sync_redump` downloads ``https://redump.org/datfile/<system>/`` for
+  the disc Platforms the user's Libraries hold, one request at a time, cached.
+  HTTPS only, with the certificate checked: a plaintext answer could be
+  swapped on the way and land in the DAT index (Codex PR #527).
 
 DATs are metadata only. Nothing here ever asks for a ROM, a key (``/keys/``,
 ``/dkeys/``) or a BIOS set (``-bios``). No-Intro is upload-only: its site is
@@ -25,6 +27,7 @@ import asyncio
 import hashlib
 import http.client
 import os
+import ssl
 import tempfile
 import threading
 import urllib.parse
@@ -46,10 +49,12 @@ DAT_SUFFIXES = (".dat", ".xml")
 MAX_DAT_SIZE = 100 * 1024 * 1024
 # An uploaded or downloaded zip of DATs. No-Intro's daily pack is tens of MB.
 MAX_ZIP_SIZE = 1024 * 1024 * 1024
+# One batch upload's whole body, held while it arrives (upload_stream).
+MAX_BATCH_SIZE = MAX_ZIP_SIZE
 
 # A generic client name: never the owner's name, email or host.
 USER_AGENT = "compressatorium-dat-sync/1.0"
-# http only: redump.org refuses https connections.
+# Asked over verified HTTPS only (_fetch); never plain HTTP.
 REDUMP_HOST = "redump.org"
 # A Platform slug (services.platform_detect) -> Redump's system slug. Redump
 # catalogues discs, so a cartridge Platform has no entry.
@@ -127,6 +132,11 @@ def extract_dats(zip_path: str, dest_dir: str) -> list[tuple[str, str]]:
     return out
 
 
+def too_large(cap: int) -> str:
+    """The per-file error for a file over *cap* bytes."""
+    return f"too large (max {cap // 2**20} MB)"
+
+
 def _expand(files: list[tuple[str, str]], work: str) -> tuple[list[tuple[str, str]], list[dict]]:
     """``(label, path)`` files -> the DATs to import and the files refused. Blocking."""
     sources: list[tuple[str, str]] = []
@@ -145,6 +155,14 @@ def _expand(files: list[tuple[str, str]], work: str) -> tuple[list[tuple[str, st
                 errors.append({"file": label, "error": "no .dat or .xml inside"})
             sources.extend((f"{label}/{member}", p) for member, p in members)
         elif lower.endswith(DAT_SUFFIXES):
+            try:
+                too_big = os.path.getsize(path) > MAX_DAT_SIZE
+            except OSError as exc:
+                errors.append({"file": label, "error": f"can't read it: {exc}"})
+                continue
+            if too_big:
+                errors.append({"file": label, "error": too_large(MAX_DAT_SIZE)})
+                continue
             sources.append((label, path))
         else:
             errors.append({"file": label, "error": "not a .dat, .xml or .zip file"})
@@ -174,7 +192,9 @@ async def _import_each(
     for label, path in sources:
         try:
             result = await _store().import_dat(path, invalidated=invalidated, replace=True)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
+            # An unreadable file (PermissionError) is that file's error, never
+            # the batch's (CodeRabbit PR #527).
             errors.append({"file": label, "error": str(exc)})
             continue
         imported.append({**result, "file": label})
@@ -223,7 +243,7 @@ def redump_path(system: str) -> str:
 
 
 def redump_url(system: str) -> str:
-    return f"http://{REDUMP_HOST}{redump_path(system)}"
+    return f"https://{REDUMP_HOST}{redump_path(system)}"
 
 
 def present_platforms() -> set[str]:
@@ -252,18 +272,24 @@ def _fetch(system: str, cached: dict, dest: str) -> tuple[str | None, dict]:
     """GET one Redump DAT into *dest*: its path (None on 304) and cache headers.
 
     Conditional on *cached*'s ``etag``/``last_modified`` when given. Talks to
-    the one fixed host and follows no redirect, so nothing but redump.org's
-    ``/datfile/`` is ever asked. Blocking.
+    the one fixed host over HTTPS with the certificate and host name checked,
+    and follows no redirect, so nothing but redump.org's ``/datfile/`` is ever
+    asked. Blocking.
     """
     headers = {"User-Agent": USER_AGENT}
     if cached.get("etag"):
         headers["If-None-Match"] = cached["etag"]
     if cached.get("last_modified"):
         headers["If-Modified-Since"] = cached["last_modified"]
-    conn = http.client.HTTPConnection(REDUMP_HOST, timeout=_HTTP_TIMEOUT)
+    conn = http.client.HTTPSConnection(
+        REDUMP_HOST, timeout=_HTTP_TIMEOUT, context=ssl.create_default_context(),
+    )
     try:
-        conn.request("GET", redump_path(system), headers=headers)
-        resp = conn.getresponse()
+        try:
+            conn.request("GET", redump_path(system), headers=headers)
+            resp = conn.getresponse()
+        except OSError as exc:  # refused, unreachable, or a bad certificate
+            raise ValueError(f"can't reach redump.org over HTTPS: {exc}") from None
         if resp.status == 304:
             return None, {}
         if resp.status != 200:
@@ -325,7 +351,9 @@ async def _sync_redump(platforms, *, force: bool, rematch: bool) -> dict:
     slugs = {canonical_slug(p) for p in platforms if p}
     systems = sorted({REDUMP_SYSTEMS[s] for s in slugs if s in REDUMP_SYSTEMS})
     cache: dict = dict(await preferences_store.get(CACHE_KEY) or {})
-    names = {d["name"] for d in await run_in_threadpool(_store().list_dats)}
+    # The DATs installed now, by id: a DAT of the same name imported by hand
+    # replaces the synced one under a new id (Codex + CodeRabbit PR #527).
+    installed = {d["id"] for d in await run_in_threadpool(_store().list_dats)}
     before = await _snapshot() if rematch else []
     invalidated: set[str] = set()
     results: list[dict] = []
@@ -335,7 +363,7 @@ async def _sync_redump(platforms, *, force: bool, rematch: bool) -> dict:
     with tempfile.TemporaryDirectory(prefix="redump-") as work:
         for system in systems:
             entry = dict(cache.get(system) or {})
-            present = bool(entry.get("dats")) and set(entry["dats"]) <= names
+            present = bool(entry.get("dat_ids")) and set(entry["dat_ids"]) <= installed
             if present and not force and _fresh(entry):
                 results.append({"system": system, "status": "up_to_date"})
                 continue
@@ -373,6 +401,7 @@ async def _sync_redump(platforms, *, force: bool, rematch: bool) -> dict:
             cache[system] = {
                 **meta, "sha256": digest, "synced_at": _now().isoformat(),
                 "dats": [d["name"] for d in imported],
+                "dat_ids": [d["id"] for d in imported],
             }
             results.append({
                 "system": system, "status": "imported", "dats": cache[system]["dats"],
@@ -388,7 +417,9 @@ async def _sync_redump(platforms, *, force: bool, rematch: bool) -> dict:
     else:
         message = (f"Redump: {counts['imported']} updated, {counts['up_to_date']} up to date"
                    + (f", {counts['failed']} failed" if counts["failed"] else ""))
-    return {"systems": results, **counts, "message": message}
+    # ``changed``: some DAT went in, even for a system that failed part-way,
+    # so the UI refreshes its DAT list and matches (CodeRabbit PR #527).
+    return {"systems": results, **counts, "changed": imported_any, "message": message}
 
 
 def status_blocking(cache: dict) -> dict:

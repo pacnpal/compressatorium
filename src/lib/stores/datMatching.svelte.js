@@ -747,7 +747,9 @@ class DATMatchingStore {
     this.redumpSyncing = true;
     try {
       const result = await api.syncRedump(force);
-      if (result?.imported) await this._afterDatChange();
+      // `changed`, not `imported`: a system that failed part-way may still
+      // have committed some of its DATs (CodeRabbit PR #527).
+      if (result?.changed) await this._afterDatChange();
       await this.loadRedump();
       return result;
     } finally {

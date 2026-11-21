@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, select, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -56,6 +56,17 @@ CANDIDATE_HASHES_KEY = "candidate_hashes"
 #: A match dict without the key makes no claim about the index and is written
 #: as before. Every match the routes compute carries it.
 INDEX_GENERATION_KEY = "index_generation"
+
+#: The ``preferences`` row holding the shared half of the generation: a counter
+#: every local-index change moves inside its own transaction, so a change that
+#: another process commits (the CLI's ``dat import``/``dat sync``) retires the
+#: server's stamps too (CodeRabbit PR #527).
+SHARED_GENERATION_KEY = "dat_index_generation"
+_BUMP_SHARED_GENERATION = text(
+    "INSERT INTO preferences (key, value, updated_at) VALUES (:key, '1', '') "
+    "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)"
+)
+_READ_SHARED_GENERATION = text("SELECT value FROM preferences WHERE key = :key")
 
 
 def recomputed_hash_in(match: dict, match_type: str) -> str | None:
@@ -178,9 +189,9 @@ class DATStore:
         # Lock serialises concurrent append (import_dat_no_persist) / read+clear
         # (_persist_sync) / clear (discard_pending) calls from different threads.
         self._pending_lock = threading.Lock()
-        # Local-index generation (see index_generation). In memory because the
-        # app is single-process (uvicorn --workers 1, like the match-job lock
-        # in routes.dat) and no match outlives the process.
+        # Local-index generation (see index_generation): this process's
+        # in-memory half, which also marks a change in flight. The shared
+        # half lives in the database (SHARED_GENERATION_KEY).
         self._index_lock = threading.Lock()
         self._index_generation = 0
         self._index_changes_in_flight = 0
@@ -189,7 +200,7 @@ class DATStore:
     # Local-index generation (issue #492)
     # ------------------------------------------------------------------
 
-    def index_generation(self) -> int | None:
+    def index_generation(self, session: Session | None = None) -> int | None:
         """Which version of the local DAT index is committed, or ``None``.
 
         ``None`` while a change to the index (an import, a sync's persist, a
@@ -197,11 +208,34 @@ class DATStore:
         it read the index before or after that change commits. A match stamps
         the value it reads before its first lookup (:data:`INDEX_GENERATION_KEY`)
         and the write boundary compares it with the current one.
+
+        The value is this process's counter plus the shared one in the
+        database (:data:`SHARED_GENERATION_KEY`). Both only grow, so the sum
+        moves whenever either does: a change committed by another process,
+        which this process's counter never sees, still retires every stamp
+        read before it. Reads the database (on *session* when given), so call
+        it off the event loop.
         """
         with self._index_lock:
             if self._index_changes_in_flight:
                 return None
-            return self._index_generation
+            local = self._index_generation
+        if session is not None:
+            return local + self._shared_generation(session)
+        with self._session() as own:
+            return local + self._shared_generation(own)
+
+    @staticmethod
+    def _shared_generation(session) -> int:
+        value = session.execute(
+            _READ_SHARED_GENERATION, {"key": SHARED_GENERATION_KEY},
+        ).scalar()
+        return int(value) if value is not None else 0
+
+    @staticmethod
+    def _bump_shared_generation(session) -> None:
+        """Move the shared generation, in the transaction changing the index."""
+        session.execute(_BUMP_SHARED_GENERATION, {"key": SHARED_GENERATION_KEY})
 
     @contextmanager
     def _changing_local_index(self) -> Iterator[None]:
@@ -273,6 +307,7 @@ class DATStore:
             # matched file may now match against a different DAT) -- except
             # for remote hits, which the local DATs did not produce.
             dropped = self._invalidate_dat_derived_matches(session)
+            self._bump_shared_generation(session)
             session.commit()
         return _import_result(dat_info, len(hash_rows)), [*replaced, *dropped]
 
@@ -377,6 +412,7 @@ class DATStore:
             for dat_info, hash_rows in pending:
                 self._insert_dat(session, dat_info, hash_rows)
             dropped = self._invalidate_dat_derived_matches(session)
+            self._bump_shared_generation(session)
             session.commit()
         return dropped
 
@@ -425,6 +461,7 @@ class DATStore:
             dropped = self._delete_matches_citing(session, [dat_id])
             # Hashes cascade via FK ON DELETE CASCADE.
             session.delete(row)
+            self._bump_shared_generation(session)
             session.commit()
         return True, dropped
 
@@ -455,6 +492,7 @@ class DATStore:
                 chunk = existing[i:i + chunk_size]
                 dropped.extend(self._delete_matches_citing(session, chunk))
                 session.execute(delete(_db.DAT).where(_db.DAT.id.in_(chunk)))
+            self._bump_shared_generation(session)
             session.commit()
             return len(existing), dropped
 
@@ -985,7 +1023,7 @@ class DATStore:
             # its own. Waits out an import under the 30 s busy timeout, as the
             # flush always did.
             session.connection().exec_driver_sql("BEGIN IMMEDIATE")
-            generation = self.index_generation()
+            generation = self.index_generation(session)
             # Guard against a dat_id naming a DAT that no longer exists (e.g.
             # deleted between match and persist): null it out rather than
             # violate the FK. One query, and existing rows prefetched in
