@@ -594,17 +594,29 @@ def test_the_sweep_summary_names_every_reason_a_library_gives():
 def test_the_deferred_romm_load_stops_once_the_view_is_gone():
     """Codex 4576551537: the Library view's lifecycle guard, after every await."""
     src = _LIBRARY_VIEW.read_text(encoding="utf-8")
-    body = re.search(r"async function loadRomm\(\) \{(.*?)\n  \}", src, re.DOTALL)
+    body = re.search(r"async function loadRomm\(gen\) \{(.*?)\n  \}", src, re.DOTALL)
     assert body, "loadRomm moved"
     load = body.group(1)
     first_await = load.index("await ")
-    guard = load.find("if (!alive || !romm.usable) return;", first_await)
+    guard = load.find("if (!current(gen) || !romm.usable) return;", first_await)
     enters = load.index("enteredRomm = true;")
     platforms = load.index("romm.loadPlatforms()")
     # Checked after the first await and before anything enters RomM mode.
     assert first_await < guard < enters < platforms, load
     assert "alive = false;" in src, "the view never marks itself gone"
     assert "fileBrowser.exitRomm();" in src
+
+
+def test_a_romm_load_stops_when_another_library_opens():
+    """Codex 4652664864: RomM to a folder Library while RomM's first requests
+    are out must not finish into RomM mode. Every Library change bumps a
+    generation the RomM load checks after each await."""
+    src = _LIBRARY_VIEW.read_text(encoding="utf-8")
+    assert "const current = (gen) => alive && gen === generation;" in src
+    effect = re.search(r"\$effect\(\(\) => \{\s*const src = source;(.*?)\n  \}\);", src, re.DOTALL)
+    assert effect and "const gen = ++generation;" in effect.group(1)
+    assert "void id;" in effect.group(1), "the generation must follow the id, not only the source"
+    assert "loadRomm(gen)" in effect.group(1)
 
 
 def test_folder_endpoints_read_the_librarys_own_id():

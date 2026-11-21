@@ -73,13 +73,18 @@
   // the file browser into RomM mode after the person has left.
   let alive = true;
   let enteredRomm = false;
+  // Bumped on every Library change (Codex 4652664864): a RomM load started
+  // for an earlier one stops at its next await, so it never puts the shared
+  // file browser back into RomM mode under a folder Library.
+  let generation = 0;
+  const current = (gen) => alive && gen === generation;
 
-  async function loadRomm() {
+  async function loadRomm(gen) {
     await Promise.all([romm.loadStatus(), romm.loadSettings()]);
-    if (!alive || !romm.usable) return;
+    if (!current(gen) || !romm.usable) return;
     enteredRomm = true;
     await Promise.allSettled([romm.loadPlatforms(), romm.loadRules()]);
-    if (!alive) return;
+    if (!current(gen)) return;
     if (romm.pendingRepins > 0 && romm.settings?.repin_on_load !== false) {
       // Surfaced by the pending badge on Browse when it fails.
       await romm.runRepin().catch(() => {});
@@ -104,10 +109,12 @@
   $effect(() => {
     const src = source;
     const romMode = isRomm;
+    void id;
+    const gen = ++generation;
     if (!src) return;
     untrack(() => {
       if (romMode) {
-        loadRomm();
+        loadRomm(gen);
         return;
       }
       if (enteredRomm) {
