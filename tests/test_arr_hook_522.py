@@ -526,3 +526,44 @@ async def test_an_import_a_rule_would_not_run_now_is_left_alone(
     assert why in body["skipped"][0]["problem"]
     await trigger.drain()
     assert queued == []
+
+
+@pytest.mark.asyncio
+async def test_an_import_into_a_folder_mapped_to_a_console_runs_its_rule(client, vol, queued):
+    """Codex 4652664855: a folder the person mapped to a console (`My discs`
+    -> ps2) is that console, as detection reads it, not a slug guess."""
+    from services import platform_detect, platform_mappings
+    from services.inbox import trigger
+
+    from .test_platform_detect import _ps2
+
+    library, _game = await _ps2_library(vol)
+    disc = Path(_ps2(vol / "ROMs" / "My discs" / "Other.iso"))
+    platform_mappings.set_mapping(str(vol / "ROMs" / "My discs"), "ps2")
+    platform_detect.clear_cache()
+
+    reply = await client.post("/api/scan", headers=CONFIRM, json={"path": str(disc)})
+
+    [taken] = reply.json()["accepted"]
+    assert taken["library_id"] == library.id and taken["platform_ids"] == ["ps2"]
+    await trigger.drain()
+    assert str(disc) in queued
+
+
+@pytest.mark.asyncio
+async def test_an_import_whose_console_is_unclear_is_left_alone(client, vol, queued):
+    """A GameCube disc filed under ps2 is neither console: nothing runs."""
+    from services.inbox import trigger
+
+    from .test_platform_detect import _gamecube
+
+    _library, _game = await _ps2_library(vol)
+    misfiled = Path(_gamecube(vol / "ROMs" / "ps2" / "Melee.iso"))
+
+    reply = await client.post("/api/scan", headers=CONFIRM, json={"path": str(misfiled)})
+
+    body = reply.json()
+    assert body["accepted"] == []
+    assert "console" in body["skipped"][0]["problem"]
+    await trigger.drain()
+    assert queued == []

@@ -197,21 +197,35 @@ def _library_for(local: str) -> tuple[Any, str | None]:
 
 
 def _platform_ids(library: Any, local: str) -> list[str]:
-    """The Library's console ids for the console folder *local* sits in:
-    its own id or folder name, or the same canonical slug. Blocking."""
+    """The Library's console ids for the game at *local*. Blocking.
+
+    Its console is what Platform detection says, the person's folder
+    mappings included (`My discs` mapped to ps2 is ps2, Codex 4652664859),
+    matched on the console's id or slug. A console detection can't name
+    at all (RomM's renamed folder) is RomM's own: the folder it sits in,
+    matched on the console's folder. One whose header and folder disagree
+    is neither, and nothing runs for it.
+    """
+    from services import platform_detect
     from services.rules.library import AmbiguousFolder
 
-    try:
-        folder = library.platform_folder(local)
-    except (AmbiguousFolder, OSError):
+    detection = platform_detect.detect_platform(local)
+    if detection.how == platform_detect.CONFLICT:
         return []
-    name = os.path.basename(folder) if folder else None
-    if not name:
-        return []
-    slug = canonical_slug(name)
+    slug = detection.platform if detection.decided else None
+    folder = None
+    if slug is None:
+        try:
+            held = library.platform_folder(local)
+        except (AmbiguousFolder, OSError):
+            return []
+        folder = os.path.basename(held) if held else None
+        if not folder:
+            return []
     return [
         str(p.id) for p in library.platforms()
-        if name in (str(p.id), p.folder) or (slug and canonical_slug(p.slug) == slug)
+        if (slug and (str(p.id) == slug or canonical_slug(p.slug) == slug))
+        or (folder and p.folder == folder)
     ]
 
 
