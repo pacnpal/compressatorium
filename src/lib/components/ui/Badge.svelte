@@ -67,11 +67,11 @@
   }
   .tone-success {
     background: var(--success-muted);
-    color: var(--success);
+    color: var(--success-text);
   }
   .tone-warning {
     background: var(--warning-muted);
-    color: var(--warning);
+    color: var(--warning-text);
   }
   .tone-error {
     background: var(--error-muted);
@@ -79,6 +79,6 @@
   }
   .tone-info {
     background: var(--info-muted);
-    color: var(--info);
+    color: var(--info-text);
   }
 </style>

@@ -45,17 +45,13 @@
 
   // The Library the open folder belongs to: the nearest root above it.
   const path = $derived(fileBrowser.currentPath);
-  const inLibrary = $derived.by(() => {
-    if (!path || fileBrowser.rommPlatformId !== null) return null;
-    const holders = libraries.folders.filter((lib) => {
-      const root = String(lib.root ?? '').replace(/\/+$/, '');
-      return !!root && (path === root || path.startsWith(`${root}/`));
-    });
-    return holders.sort((a, b) => b.root.length - a.root.length)[0] ?? null;
-  });
+  const inLibrary = $derived(
+    fileBrowser.rommPlatformId === null ? libraries.folderLibraryFor(path) : null,
+  );
   let making = $state(false);
 
   async function makeLibrary() {
+    if (making) return;
     making = true;
     try {
       const library = await libraries.register(path);

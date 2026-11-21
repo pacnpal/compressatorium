@@ -99,6 +99,20 @@ process.stdout.write(JSON.stringify({
     assert data["entries"] == 1, data
 
 
+def test_opening_a_folder_link_on_files_pushes_no_history_entry(tmp_path):
+    """Codex 4651687776: Files consumes `#/files/<path>` by opening the folder.
+    Navigating again there pushed `#/files` on top, so Back looped between the
+    two. Already on Files, the folder opens and the URL is left alone."""
+    data = _run(tmp_path, """
+ui.activeView = 'files';
+const outcome = await within(fileBrowser.openFolder('/target/roms'), 2000);
+process.stdout.write(JSON.stringify({
+  outcome, path: fileBrowser.currentPath, navigated: ui.navigated,
+}));
+""")
+    assert data == {"outcome": "done", "path": "/target/roms", "navigated": []}, data
+
+
 def test_the_workspace_start_still_selects_and_lists_the_first_volume(tmp_path):
     data = _run(tmp_path, """
 const outcome = await within(fileBrowser.loadVolumes(), 300);

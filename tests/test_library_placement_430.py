@@ -150,13 +150,7 @@ def test_a_folder_named_for_the_platform_but_mapped_away_is_not_used(vol, db):
     assert library.placement("ps2").folder == str(vol / "ROMs" / "psp")
 
 
-def test_two_folders_for_one_platform_refuse(vol, db):
-    library = _library(vol, "esde")
-    (vol / "ROMs" / "ps2").mkdir()
-    (vol / "ROMs" / "playstation2").mkdir()
-
-    with pytest.raises(PlacementUnknown, match="more than one"):
-        library.placement("ps2")
+# Two folders for one Platform: a best guess, tests/test_work_without_config_515.py.
 
 
 def test_a_file_where_the_folder_would_go_refuses(vol, db):

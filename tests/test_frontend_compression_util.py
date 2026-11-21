@@ -73,7 +73,8 @@ def test_format_and_parse_round_trip(tmp_path):
     ]
     got = _eval(tmp_path, f"""
 const cases = {json.dumps(cases)};
-process.stdout.write(JSON.stringify(cases.map(([m, w]) => formatCompression(m, parseCompression(m, w)))));
+const out = cases.map(([m, w]) => formatCompression(m, parseCompression(m, w)));
+process.stdout.write(JSON.stringify(out));
 """)
     assert got == [w for _, w in cases]
 

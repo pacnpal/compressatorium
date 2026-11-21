@@ -35,7 +35,14 @@
       ? [['browse', 'Browse'], ['automation', 'Automation'], ['connection', 'Connection']]
       : [['browse', 'Browse'], ['automation', 'Automation']],
   );
-  const tab = $derived(tabs.some(([t]) => t === ui.libraryTab) ? ui.libraryTab : 'browse');
+  // A bare `#/libraries/<id>` shows Browse, or RomM's Connection while RomM
+  // isn't set up. Derived from the route, never kept: Back to the bare URL
+  // shows that tab again.
+  const tab = $derived(
+    tabs.some(([t]) => t === ui.libraryTab)
+      ? ui.libraryTab
+      : (isRomm && romm.status && !romm.configured ? 'connection' : 'browse'),
+  );
   const name = $derived(isRomm ? 'RomM' : (library?.name ?? ''));
 
   function host(url) {

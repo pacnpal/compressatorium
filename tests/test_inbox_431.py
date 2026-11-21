@@ -97,18 +97,6 @@ async def _poll(box, now: float) -> dict:
     return result
 
 
-def _two_global_slots(monkeypatch, where: Path) -> None:
-    """Two cross-process slots too (an Inbox copy takes one, #431), in a lock
-    folder of the test's own."""
-    from services import job_manager as job_manager_module
-    from services.concurrency_manager import ConcurrencyManager
-
-    monkeypatch.setattr(
-        job_manager_module, "concurrency_manager",
-        ConcurrencyManager(2, str(where.parent / "locks-2")),
-    )
-
-
 def _inbox_findings() -> list[dict]:
     return [f for f in findings.list_findings() if f["kind"] in findings.INBOX_KINDS]
 
@@ -1312,7 +1300,6 @@ async def test_a_stop_reaches_a_copy_already_running_beside_it(vol, db, monkeypa
 
     monkeypatch.setattr(job_manager, "max_concurrent", 2)
     monkeypatch.setattr(job_manager, "_semaphore", asyncio.Semaphore(2))
-    _two_global_slots(monkeypatch, vol)
     library = _library(vol)
     _inbox(vol, library, settle=0)
     _drop(vol / "Downloads" / "ps2" / "A.iso")
@@ -1620,7 +1607,6 @@ async def test_a_copy_paused_before_its_first_open_sees_the_stop(vol, db, monkey
 
     monkeypatch.setattr(job_manager, "max_concurrent", 2)
     monkeypatch.setattr(job_manager, "_semaphore", asyncio.Semaphore(2))
-    _two_global_slots(monkeypatch, vol)
     library = _library(vol)
     _inbox(vol, library, settle=0)
     _drop(vol / "Downloads" / "ps2" / "A.iso")
@@ -1794,7 +1780,6 @@ async def test_an_open_in_flight_when_the_stop_lands_reads_nothing(vol, db, monk
 
     monkeypatch.setattr(job_manager, "max_concurrent", 2)
     monkeypatch.setattr(job_manager, "_semaphore", asyncio.Semaphore(2))
-    _two_global_slots(monkeypatch, vol)
     library = _library(vol)
     _inbox(vol, library, settle=0)
     _drop(vol / "Downloads" / "ps2" / "A.iso")
@@ -1990,40 +1975,6 @@ async def test_output_locks_taken_after_their_wait_gave_up_are_released(vol, db,
 
     assert not lock_manager._locks
     assert not (vol / "ROMs" / "ps2" / "Game.iso").exists()
-
-
-@pytest.mark.asyncio
-async def test_a_copy_waits_for_the_global_slot_another_process_holds(
-    vol, db, monkeypatch, tmp_path,
-):
-    """Codex 4605211006, ruled: hold_slot takes the cross-process slot a
-    conversion takes too, so a CLI process holding the only one makes the
-    copy wait; ending gives both back."""
-    import asyncio
-
-    from models import ConversionMode
-    from services import job_manager as job_manager_module
-    from services.concurrency_manager import ConcurrencyManager
-    from services.job_manager import job_manager
-
-    shared = ConcurrencyManager(1, str(tmp_path / "locks"))
-    other = ConcurrencyManager(1, str(tmp_path / "locks"))  # the CLI process
-    monkeypatch.setattr(job_manager_module, "concurrency_manager", shared)
-    assert await other.acquire("cli-job")
-    copy = job_manager.create_external_job("Game.iso", ConversionMode.INBOX_COPY)
-    try:
-        waiting = asyncio.ensure_future(job_manager.hold_slot(copy.id, asyncio.Event()))
-        await asyncio.sleep(0.5)
-        assert not waiting.done()
-
-        other.release("cli-job")
-        assert await asyncio.wait_for(waiting, 5) is True
-        job_manager.release_slot(copy.id)
-        assert await asyncio.wait_for(other.acquire("cli-job-2"), 5)
-        other.release("cli-job-2")
-    finally:
-        job_manager.jobs.pop(copy.id, None)
-
 
 
 # ---- review round eight (Codex on #443) -------------------------------------

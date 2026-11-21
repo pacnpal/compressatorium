@@ -14,6 +14,7 @@
   import { defaults } from '$lib/stores/defaults.svelte.js';
   import { newCheckRule } from '$lib/rules/checkRule.js';
   import { newRuleSafety, nightlyCheckState } from '$lib/rules/ruleTable.js';
+  import { nothingReason } from '$lib/rules/sweepSummary.js';
   import RuleTable from './RuleTable.svelte';
   import WatchFolders from './WatchFolders.svelte';
   import FrontendSelect from './FrontendSelect.svelte';
@@ -51,11 +52,9 @@
     queue_failed: 'the queue refused these games',
     destination_claimed: 'another job took one of the new file names; the next run picks it up',
     library_unresponsive: 'the Library stopped answering partway',
-  };
-  const STOPPED = {
-    no_rules: 'no console is set to convert yet',
-    not_configured: "this Library can't be read yet",
-    queue_full: 'the queue is full',
+    output_excluded: 'RomM ignores this format, so converted games would vanish from it',
+    romm_layout_unread: "RomM's folders couldn't be read yet; the next run asks again",
+    libraries_changed: 'a Library was added or removed inside this one; the next run lists it again',
   };
 
   /** One line for what a Preview or Run now did. */
@@ -70,11 +69,7 @@
     if (done) parts.push(`${done} already done`);
     if (r.skipped_unsafe) parts.push(`${r.skipped_unsafe} skipped: a track sheet names a file outside your Drives`);
     if (r.stopped_reason === 'limit') parts.push('stopped at the per-run limit');
-    if (!queued && !checks) {
-      const why = STOPPED[r.stopped_reason]
-        ?? (done ? `all ${done} already converted` : 'nothing new to convert');
-      return `Nothing to do: ${why}`;
-    }
+    if (!queued && !checks) return `Nothing to do: ${nothingReason(r)}`;
     return `${preview ? 'Preview' : 'Running'}: ${parts.join(' · ')}`;
   }
 

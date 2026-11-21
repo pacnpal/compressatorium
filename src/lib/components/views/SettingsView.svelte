@@ -10,6 +10,7 @@
   import DATView from './DATView.svelte';
   import NotificationSettings from './NotificationSettings.svelte';
   import Converters from '$lib/components/settings/Converters.svelte';
+  import ChdMetadataScan from '$lib/components/settings/ChdMetadataScan.svelte';
   import Badge from '$lib/components/ui/Badge.svelte';
 
   const SECTIONS = [
@@ -73,6 +74,7 @@
   <section class="card" id="settings-converters" aria-labelledby="settings-converters-title">
     <h2 id="settings-converters-title">Converters</h2>
     <Converters />
+    <ChdMetadataScan />
   </section>
 </section>
 

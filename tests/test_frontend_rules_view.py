@@ -85,7 +85,10 @@ const api = {
   listInboxes: __defer('listInboxes'),
 };
 const romm = { isRomm: true };
-const ui = { navigated: null, navigate(v) { this.navigated = v; } };
+const ui = {
+  navigated: null, navigatedOpts: null,
+  navigate(v, opts = {}) { this.navigated = v; this.navigatedOpts = opts; },
+};
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 """
 
@@ -582,7 +585,8 @@ def test_the_sweep_summary_names_every_reason_a_library_gives():
     for code in ("root_unavailable", "listing_in_progress"):
         assert f"{code}:" in labels.group(1), f"no label for {code}"
     assert "try again shortly" in labels.group(1)
-    assert "not_configured:" in src
+    summary = (_SRC / "lib" / "rules" / "sweepSummary.js").read_text(encoding="utf-8")
+    assert "nothingReason(r)" in src and "not_configured:" in summary
     # PR #320 (Codex security): a sheet whose tracks leave the volumes.
     assert "r.skipped_unsafe" in src
 
@@ -643,9 +647,11 @@ def test_both_libraries_share_one_rules_source():
 def test_opening_rules_on_a_library_navigates_there(tmp_path):
     data = _run(tmp_path, """
 libraries.open('folder:3');
-process.stdout.write(JSON.stringify({ selected: libraries.selectedId, view: ui.navigated }));
+process.stdout.write(JSON.stringify({
+  selected: libraries.selectedId, view: ui.navigated, id: ui.navigatedOpts.id,
+}));
 """)
-    assert data == {"selected": "folder:3", "view": "libraries"}, data
+    assert data == {"selected": "folder:3", "view": "libraries", "id": "folder:3"}, data
 
 
 # ----------------------------------------------------------------------
@@ -689,3 +695,22 @@ def test_a_folder_librarys_page_opens_from_its_route():
         encoding="utf-8",
     )
     assert "view: 'libraries'" in sidebar
+
+
+def test_a_catalogue_read_answering_after_a_newer_one_is_dropped(tmp_path):
+    """CodeRabbit PR #551: an older read finishing last must not put back
+    stale nesting over the newer catalogue."""
+    data = _run(tmp_path, f"""
+const first = libraries.load();
+await tick();
+const second = libraries.load();
+await tick();
+__calls[1].resolve([{{ ...{_FOLDER}, contains: [] }}]);
+await second;
+__calls[0].resolve([{{ ...{_FOLDER}, contains: [{{ id: 'folder:7', name: 'gone' }}] }}]);
+await first;
+process.stdout.write(JSON.stringify({{
+  contains: libraries.list.find((lib) => lib.id === 'folder:3').contains,
+}}));
+""")
+    assert data["contains"] == [], data

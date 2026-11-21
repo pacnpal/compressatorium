@@ -810,8 +810,8 @@
         const apply = await waitFor(() => [...document.querySelectorAll('button')]
           .find(b => b.textContent.trim() === 'Apply recommended'), 'Apply recommended');
         apply.click();
-        // The answer toasts either way: consoles set up, or why none could be.
-        await waitFor(() => document.querySelector('[data-sonner-toast]'), 'the Apply recommended answer');
+        await waitFor(() => document.querySelector('[data-platform-id="ps2"] select')?.value,
+          'the recommended formats');
         await sleep(400);
       } else if (shot === 'library-automation-advanced') {
         await send(`/api/libraries/${id}/rules`, 'PUT', {
@@ -858,6 +858,21 @@
         }
         if (!panel) throw new Error('the downloads watch folder status row not shown');
         panel.scrollIntoView({ block: 'center' });
+        await sleep(300);
+      } else if (shot === 'library-arr') {
+        // Only the dry-run check runs: nothing is taken in (CodeRabbit PR #526).
+        await send('/api/hooks/arr/rewrites', 'PUT', { rewrites: [] });
+        location.hash = automation;
+        const fold = await waitFor(() => document.querySelector('details.arr-fold'), 'the *arr fold');
+        fold.open = true;
+        const card = await waitFor(() => fold.querySelector('section.arr form.row input'), 'the *arr card');
+        card.value = '/downloads/ps2/shadow-colossus.iso';
+        card.dispatchEvent(new Event('input', { bubbles: true }));
+        // The Test button enables once the typed path renders.
+        await sleep(100);
+        fold.querySelector('section.arr form.row button[type="submit"]').click();
+        await waitFor(() => fold.querySelector('.result'), 'the tested path');
+        fold.scrollIntoView({ block: 'start' });
         await sleep(300);
       } else if (shot === 'library-placement') {
         const saved = await send(`/api/libraries/${id}`, 'PATCH', { layout: 'esde' });
@@ -945,6 +960,18 @@
   height: 760
   wait: 1800
   javascript: *js_folder_library
+- url: http://127.0.0.1:8099/?s=library-arr-light#/files
+  output: docs/screenshots/library-arr-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_folder_library
+- url: http://127.0.0.1:8099/?s=library-arr-dark#/files
+  output: docs/screenshots/library-arr-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_folder_library
 - url: http://127.0.0.1:8099/?s=library-placement-light#/files
   output: docs/screenshots/library-placement-light.png
   width: 1280
@@ -972,21 +999,58 @@
 
 # --- RomM (#541) -------------------------------------------------------------
 # The fixture has no RomM, so the first pair is what a new user meets: the
-# Connection tab. The others can RomM's answers in the page (fetch is wrapped,
+# Connection tab, with RomM "found" and a test that fails. The others can
+# RomM's answers in the page (fetch is wrapped,
 # the rest still comes from the real backend), then open the RomM page. The
 # shot's name says which surface; the theme comes from its suffix.
-- url: http://127.0.0.1:8099/?s=romm-connect-light#/libraries/romm/connection
+# --- Connecting RomM (#532) -------------------------------------------------
+# First run: RomM "found" at its usual address (canned, since no RomM runs
+# here), Use it, then a Save whose connection test fails on the token, so the
+# field marked, the "not checked" row, Retry and the open More section show.
+- url: http://127.0.0.1:8099/?s=romm-connect-light#/files
   output: docs/screenshots/romm-connect-light.png
   width: 1280
-  height: 900
+  height: 1500
   wait: 1800
-  javascript: *js_theme_light
-- url: http://127.0.0.1:8099/?s=romm-connect-dark#/libraries/romm/connection
+  javascript: &js_romm_connect |
+    (async () => {
+      const theme = location.search.includes('-dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      const real = window.fetch.bind(window);
+      const canned = {
+        '/api/romm/discover': { url: 'http://romm:8080', version: '5.4.1',
+          library_root: '/data/romm/library' },
+        '/api/romm/settings/test': { reachable: true, authorized: false,
+          library_root_mounted: null, version: '5.4.1', platform_count: null,
+          library_root_suggestion: null, field: 'token',
+          error: 'Add an API token: type the pairing code from RomM, or paste a token.' },
+      };
+      window.fetch = (input, init) => {
+        const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+        const body = canned[url.pathname];
+        if (body === undefined) return real(input, init);
+        return Promise.resolve(new Response(JSON.stringify(body),
+          { headers: { 'Content-Type': 'application/json' } }));
+      };
+      location.hash = '#/libraries/romm/connection';
+      await new Promise(r => setTimeout(r, 1000));
+      const use = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Use it');
+      if (!use) throw new Error('Found RomM banner not shown');
+      use.click();
+      await new Promise(r => setTimeout(r, 200));
+      const save = [...document.querySelectorAll('button[type="submit"]')].find(b => b.textContent.includes('Save'));
+      save.click();
+      await new Promise(r => setTimeout(r, 800));
+      document.querySelector('details.advanced')?.setAttribute('open', '');
+      if (!document.querySelector('#romm-problem')) throw new Error('connection problem not shown');
+    })()
+- url: http://127.0.0.1:8099/?s=romm-connect-dark#/files
   output: docs/screenshots/romm-connect-dark.png
   width: 1280
-  height: 900
+  height: 1500
   wait: 1800
-  javascript: *js_theme_dark
+  javascript: *js_romm_connect
 - url: http://127.0.0.1:8099/?s=romm-browse-light#/files
   output: docs/screenshots/romm-browse-light.png
   width: 1280
@@ -1398,6 +1462,8 @@
 
 # === PR 5: Settings ===
 # --- DAT Library ----------------------------------------------------------
+# The fixture has never answered the Hasheous question, so this shows the
+# first-run yes/no (#524) beside Import DATs and Sync Redump.
 - url: http://127.0.0.1:8099/?s=dat-light#/settings/identification
   output: docs/screenshots/dat-light.png
   width: 1280
@@ -1482,6 +1548,37 @@
   height: 900
   wait: 1800
   javascript: *js_theme_dark
+
+# --- Settings: a notification destination's form (#523) -------------------
+# "Add destination" opened on the generic webhook: its URL, label, signing
+# secret, and the messages it gets (all but the success message ticked).
+- url: http://127.0.0.1:8099/?s=settings-notification-form-light#/settings
+  output: docs/screenshots/settings-notification-form-light.png
+  width: 1280
+  height: 1000
+  wait: 1800
+  javascript: &js_settings_notification_form |
+    (async () => {
+      const theme = location.search.includes('-dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await new Promise(r => setTimeout(r, 800));
+      const card = document.querySelector('[aria-labelledby="notif-title"]');
+      if (!card) throw new Error('Notifications card not shown');
+      const add = [...card.querySelectorAll('button')].find(b => b.textContent.includes('Add destination'));
+      if (!add) throw new Error('Add destination button not shown');
+      add.click();
+      await new Promise(r => setTimeout(r, 300));
+      if (!card.querySelector('.events')) throw new Error('event choices not shown');
+      card.scrollIntoView({ block: 'start' });
+      await new Promise(r => setTimeout(r, 300));
+    })()
+- url: http://127.0.0.1:8099/?s=settings-notification-form-dark#/settings
+  output: docs/screenshots/settings-notification-form-dark.png
+  width: 1280
+  height: 1000
+  wait: 1800
+  javascript: *js_settings_notification_form
 
 # === PR 1: Help ===
 # --- Help -----------------------------------------------------------------
@@ -1694,3 +1791,41 @@
   height: 900
   wait: 1800
   javascript: *js_dat_rename_cue
+
+# --- Overlapping Libraries (#514) ---------------------------------------------
+# Last on purpose: it registers "roms/psx" as a Library inside the "roms" one
+# the earlier shots use, which takes the psx files out of that Library's Rules.
+# Its page says which Library it sits inside.
+- url: http://127.0.0.1:8099/?s=library-nested-light#/files
+  output: docs/screenshots/library-nested-light.png
+  width: 1280
+  height: 760
+  wait: 1800
+  javascript: &js_library_nested |
+    (async () => {
+      const theme = location.search.includes('-dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      const volumes = await (await fetch('/api/volumes')).json();
+      const volume = volumes.find(v => v.name === 'ROM Library');
+      if (!volume) throw new Error('ROM Library volume not found');
+      for (const path of [volume.path + '/roms', volume.path + '/roms/psx']) {
+        await fetch('/api/libraries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path }),
+        });
+      }
+      const libs = await (await fetch('/api/libraries')).json();
+      const lib = libs.find(l => l.kind === 'folder' && l.within);
+      if (!lib) throw new Error('nested folder Library not registered');
+      location.hash = `#/libraries/${encodeURIComponent(lib.id)}`;
+      await new Promise(r => setTimeout(r, 1500));
+      if (!document.querySelector('.title .note')) throw new Error('ownership note not shown');
+    })()
+- url: http://127.0.0.1:8099/?s=library-nested-dark#/files
+  output: docs/screenshots/library-nested-dark.png
+  width: 1280
+  height: 760
+  wait: 1800
+  javascript: *js_library_nested

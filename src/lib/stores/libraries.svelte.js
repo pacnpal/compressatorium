@@ -168,6 +168,11 @@ class LibrariesStore {
   #catalogueEpoch = 0;
   // Library id -> the catalogue epoch it was registered at.
   #registeredAt = new Map();
+  // Catalogue reads in the order they were sent, and the newest one applied:
+  // a read answering after a newer one was applied is dropped, so it can't
+  // restore stale nesting (`contains`, `within`) over it (CodeRabbit PR #551).
+  #loadsSent = 0;
+  #loadApplied = 0;
 
   get selected() {
     return this.list.find((lib) => lib.id === this.selectedId) ?? null;
@@ -175,6 +180,23 @@ class LibrariesStore {
 
   get folders() {
     return this.list.filter((lib) => lib.kind === 'folder');
+  }
+
+  /** The folder Library *path* is in (its root or below it), or null. */
+  folderLibraryFor(path) {
+    if (!path) return null;
+    // Libraries may nest (#514): the nearest root owns the path.
+    let owner = null;
+    let ownerLength = -1;
+    for (const lib of this.folders) {
+      const root = String(lib.root ?? '').replace(/\/+$/, '');
+      if (!root || root.length <= ownerLength) continue;
+      if (path === root || path.startsWith(`${root}/`)) {
+        owner = lib;
+        ownerLength = root.length;
+      }
+    }
+    return owner;
   }
 
   /** The rules source for *id*: the RomM store, or a folder Library's own. */
@@ -195,8 +217,11 @@ class LibrariesStore {
     this.error = null;
     const readAt = new Map(this.#settingsGenerations);
     const epoch = this.#catalogueEpoch;
+    const sent = ++this.#loadsSent;
     try {
       const data = await api.listLibraries();
+      if (sent < this.#loadApplied) return this.list;
+      this.#loadApplied = sent;
       const current = new Map(this.list.map((lib) => [lib.id, lib]));
       // A row whose settings were saved while this read was out keeps the
       // saved row; see `adopt`.
@@ -332,6 +357,8 @@ class LibrariesStore {
     if (inboxes.status === 'fulfilled') {
       facts.watchFolders = inboxes.value?.inboxes?.length ?? 0;
     }
+    // Removed while this read was out: don't bring its card back.
+    if (!(id in this.facts)) return;
     this.facts = { ...this.facts, [id]: facts };
   }
 
@@ -347,6 +374,8 @@ class LibrariesStore {
       const library = await api.registerLibrary(path, name);
       if (library?.id) this.#registeredAt.set(library.id, this.#catalogueEpoch++);
       this.adopt(library);
+      // The Libraries around it now list it in `contains` (#514).
+      void this.load();
       return library;
     } finally {
       this.registering = false;
@@ -361,6 +390,9 @@ class LibrariesStore {
     const { [id]: _gone, ...facts } = this.facts;
     this.facts = facts;
     if (this.selectedId === id) this.selectedId = ROMM_LIBRARY_ID;
+    // The Libraries around it no longer list it in `contains` (CodeRabbit
+    // PR #518): read the catalogue again rather than keep a stale notice.
+    void this.load();
   }
 }
 

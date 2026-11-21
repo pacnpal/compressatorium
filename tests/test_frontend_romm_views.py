@@ -3,10 +3,9 @@
 Three things these screens must not do, each of which costs the operator
 something the UI had just told them was safe:
 
-* the Connection tab's one Save must not submit an address or games folder
-  it didn't change — the backend reads a changed URL or library root as a
-  move to another instance, which clears the conversion history and retires
-  every pending snapshot;
+* the Metadata card's Save must not submit the connection buffers — the
+  backend reads a changed URL or library root as a move to another instance,
+  which clears the conversion history and retires every pending snapshot;
 * enabling the master automation switch must commit pending rule edits first,
   or the scheduler runs the *server's* rules while the editor shows the
   operator's;
@@ -97,6 +96,10 @@ def _script_of(component: Path) -> str:
 _STUBS = """
 const __saved = [];
 const __tested = [];
+const __paired = [];
+let __testReply = {
+  reachable: true, authorized: true, library_root_mounted: true, version: '5.4.1', error: null,
+};
 const toast = { success() {}, error() {}, info() {}, warning() {} };
 const romm = {
   settings: {
@@ -104,11 +107,18 @@ const romm = {
     repin_enabled: true, repin_on_load: true, repin_abandon_days: 7,
     swap_keep_rom_id: false, env_defaults: [],
   },
-  status: null,
   settingsSaving: false,
   testResult: null,
   async saveSettings(patch) { __saved.push(patch); return this.settings; },
-  async testConnection(patch) { __tested.push(patch); return {}; },
+  async testConnection(patch) {
+    __tested.push(patch);
+    return typeof __testReply === 'function' ? __testReply(patch) : __testReply;
+  },
+  async pair(url, code) {
+    __paired.push([url, code]);
+    return { url: url.replace(/[/]+$/, ''), missing_scopes: [] };
+  },
+  async discover() { return null; },
   async loadStatus() {},
 };
 """
@@ -128,115 +138,125 @@ def _run(tmp_path: Path, component: Path, scenario: str) -> dict:
     return json.loads(proc.stdout)
 
 
-_MORE_SAVE = """
-// The person only toggles something under More, and saves.
+_REPORT = """
+process.stdout.write(JSON.stringify({
+  saved: __saved, tested: __tested, paired: __paired, problem,
+  credential, clear_after: clearToken, library_root: libraryRoot,
+}));
+"""
+
+
+def test_save_tests_first_and_saves_nothing_that_fails(tmp_path):
+    """Test on Save (#532): a connection that doesn't work is not saved, and
+    the problem names the field to fix."""
+    data = _run(tmp_path, _SETTINGS, """
+url = 'http://typo:8080';
+__testReply = { reachable: false, authorized: null, library_root_mounted: null,
+                field: 'url', error: 'Could not reach RomM.' };
+await handleSave();
+""" + _REPORT)
+
+    assert data["tested"][0]["url"] == "http://typo:8080", data
+    assert data["saved"] == [], data
+    assert data["problem"]["field"] == "url", data
+
+
+def test_save_anyway_skips_the_test(tmp_path):
+    data = _run(tmp_path, _SETTINGS, """
+__testReply = { reachable: false, field: 'url', error: 'down' };
+await handleSave(true);
+""" + _REPORT)
+    assert data["tested"] == [], data
+    assert len(data["saved"]) == 1, data
+
+
+def test_one_save_sends_the_whole_form(tmp_path):
+    """One form, one Save: connection and metadata go together."""
+    data = _run(tmp_path, _SETTINGS, """
 repinOnLoad = false;
+credential = 'rmm_new_credential';
 await handleSave();
-process.stdout.write(JSON.stringify({ submitted: __saved, tested: __tested }));
-"""
+""" + _REPORT)
 
-
-_CONNECTION_SAVE = """
-token = 'rmm_new_credential';
-await handleSave();
-process.stdout.write(JSON.stringify({
-  submitted: __saved, token_after: token, clear_after: clearToken,
-}));
-"""
-
-
-_CLEAR_TOKEN_SAVE = """
-clearToken = true;
-await handleSave();
-process.stdout.write(JSON.stringify({
-  submitted: __saved, token_after: token, clear_after: clearToken,
-}));
-"""
-
-
-_MOVED_SAVE = """
-url = 'http://new-romm';
-await handleSave();
-process.stdout.write(JSON.stringify({ submitted: __saved }));
-"""
-
-
-_SWAP_REFUSED = """
-romm.saveSettings = async (patch) => {
-  __saved.push(patch);
-  if ('swap_keep_rom_id' in patch) throw new Error('The token is missing tasks.run');
-  return romm.settings;
-};
-swapKeepRomId = true;
-await handleSave();
-process.stdout.write(JSON.stringify({
-  submitted: __saved, swap: swapKeepRomId, refusal: swapRefusal, tested: __tested.length,
-}));
-"""
-
-
-def test_saving_does_not_submit_an_unchanged_address_or_games_folder(tmp_path):
-    """A toggle under More must not read as a move to another RomM.
-
-    A URL or root that differs from the saved one is an identity change on
-    the backend: it clears the conversion history and retires every pending
-    re-pin snapshot. The one Save sends them only when they changed.
-    """
-    data = _run(tmp_path, _SETTINGS, _MORE_SAVE)
-
-    assert len(data["submitted"]) == 1, data
-    sent = data["submitted"][0]
-    assert sorted(sent) == [
-        "hasheous_write_ids", "repin_abandon_days", "repin_enabled", "repin_on_load",
-    ], sent
+    sent = data["saved"][0]
+    assert sent["url"] == "http://romm:8080", sent
+    assert sent["token"] == "rmm_new_credential", sent
     assert sent["repin_on_load"] is False, sent
-    # Then the connection is tested, as typed.
+    # The swap switch didn't change, so it isn't sent (it probes the token).
+    assert "swap_keep_rom_id" not in sent, sent
+    # Once submitted, the token doesn't linger in the field.
+    assert data["credential"] == "", data
+
+
+def test_a_cleared_token_is_sent_and_the_tick_reset(tmp_path):
+    data = _run(tmp_path, _SETTINGS, "clearToken = true;\nawait handleSave();\n" + _REPORT)
+    assert data["saved"][0]["clear_token"] is True, data
+    assert data["clear_after"] is False, data
+
+
+def test_a_pairing_code_is_traded_for_a_token_not_saved_as_one(tmp_path):
+    """RomM's pairing code (#532) goes to the pair call, never into `token`."""
+    data = _run(tmp_path, _SETTINGS, "credential = 'abcd-2345';\nawait handleSave();\n" + _REPORT)
+
+    assert data["paired"] == [["http://romm:8080", "abcd-2345"]], data
+    assert all("token" not in sent for sent in data["saved"]), data
+    # The held token is named for the test and the Save that commits it.
+    assert data["tested"][0]["paired"] is True, data
+    assert data["saved"][0]["paired"] is True, data
+    assert data["credential"] == "", data
+
+
+def test_the_save_sends_the_values_that_passed_the_test(tmp_path):
+    """An edit made while the test runs is not saved untested (CodeRabbit
+    PRRT_kwDOQ9nULM66RLwF, Codex PRRT_kwDOQ9nULM66ReGy): the Save sends the
+    snapshot the test passed."""
+    data = _run(tmp_path, _SETTINGS, """
+__testReply = () => {
+  url = 'http://edited:8080';
+  libraryRoot = '/elsewhere';
+  return { reachable: true, authorized: true, library_root_mounted: true, error: null };
+};
+await handleSave();
+""" + _REPORT)
+
     assert data["tested"][0]["url"] == "http://romm:8080", data
+    assert data["saved"][0]["url"] == "http://romm:8080", data
+    assert data["saved"][0]["library_root"] == "/library", data
 
 
-def test_a_changed_address_is_sent(tmp_path):
-    data = _run(tmp_path, _SETTINGS, _MOVED_SAVE)
-    assert data["submitted"][0]["url"] == "http://new-romm", data
-    assert "library_root" not in data["submitted"][0], data
+def test_an_empty_library_path_is_filled_from_romm(tmp_path):
+    data = _run(tmp_path, _SETTINGS, """
+libraryRoot = '';
+__testReply = (patch) => patch.library_root
+  ? { reachable: true, authorized: true, library_root_mounted: true, error: null }
+  : { reachable: true, authorized: true, library_root_mounted: null,
+      library_root_suggestion: '/data/romm/library', field: 'library_root', error: 'Fill in' };
+await handleSave();
+""" + _REPORT)
+
+    assert data["library_root"] == "/data/romm/library", data
+    assert data["saved"][0]["library_root"] == "/data/romm/library", data
 
 
-def test_a_save_without_a_token_sends_none(tmp_path):
-    data = _run(tmp_path, _SETTINGS, _MORE_SAVE)
-    sent = data["submitted"][0]
-    assert "token" not in sent and "clear_token" not in sent, sent
+def test_the_keep_rom_id_switch_is_saved_on_its_own(tmp_path):
+    """Turning it on probes the token; a refusal must not undo the rest."""
+    data = _run(tmp_path, _SETTINGS, "swapKeepRomId = true;\nawait handleSave();\n" + _REPORT)
+    assert data["saved"][-1] == {"swap_keep_rom_id": True}, data
+    assert "swap_keep_rom_id" not in data["saved"][0], data
 
 
-def test_a_connection_save_still_clears_the_credential_buffers(tmp_path):
-    """Once submitted, the token must not linger in the component.
+def test_the_one_save_button_waits_for_the_settings_to_load():
+    """Empty buffers submitted as a connection read as a move to nowhere.
 
-    The reset is what stops a saved credential sitting in a field for the rest
-    of the session and being re-submitted by the next save.
+    Until the saved settings arrive the edit buffers are `''`. Saving then
+    blanks the URL and library root, which is an identity change — the one
+    that retires pending snapshots.
     """
-    saved = _run(tmp_path, _SETTINGS, _CONNECTION_SAVE)
-    assert saved["submitted"][0]["token"] == "rmm_new_credential", saved
-    assert saved["token_after"] == "", saved
-
-    cleared = _run(tmp_path, _SETTINGS, _CLEAR_TOKEN_SAVE)
-    assert cleared["submitted"][0]["clear_token"] is True, cleared
-    assert cleared["clear_after"] is False, cleared
-
-
-def test_a_refused_keep_the_entry_does_not_undo_the_rest(tmp_path):
-    """RomM checks the token for it (#390): a refusal is said, not a lost save."""
-    data = _run(tmp_path, _SETTINGS, _SWAP_REFUSED)
-    assert "swap_keep_rom_id" not in data["submitted"][0], data
-    assert data["submitted"][1] == {"swap_keep_rom_id": True}, data
-    assert data["swap"] is False, data
-    assert "tasks.run" in data["refusal"], data
-    assert data["tested"] == 1, data
-
-
-def test_the_save_button_waits_for_the_settings_to_load():
-    """Empty buffers submitted as a connection read as a move to nowhere."""
     src = _SETTINGS.read_text(encoding="utf-8")
-    buttons = re.findall(r"<Button\b[^>]*?onclick=\{(handleSave\w*)\}(.*?)>", src, re.DOTALL)
-    assert [name for name, _ in buttons] == ["handleSave"], buttons
-    assert "disabled={!loaded}" in buttons[0][1]
+    submits = re.findall(r'<Button\b[^>]*?type="submit"(.*?)>', src, re.DOTALL)
+    assert len(submits) == 1, submits
+    assert "disabled={!loaded}" in submits[0], submits[0]
+    assert "handleSaveMetadata" not in src and "handleSaveSwap" not in src
 
 
 def test_enabling_automation_commits_pending_rule_edits():
@@ -319,7 +339,6 @@ def test_the_repin_promise_is_qualified_for_split_builds():
     assert "puts them back" in warning, warning
     assert "rule.split" in warning, warning
 
-
 def test_using_romms_choices_reads_its_plan():
     """The converter banner's import (#385) lives on the Automation tab now."""
     src = _AUTOMATION.read_text(encoding="utf-8")
@@ -327,3 +346,4 @@ def test_using_romms_choices_reads_its_plan():
     assert body, "useRommChoices moved"
     assert "source.importConverterTargets()" in body.group(1)
     assert "Use RomM's choices" in src
+

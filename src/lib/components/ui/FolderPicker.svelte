@@ -14,6 +14,7 @@
    */
   import { onMount } from 'svelte';
   import { api } from '$lib/api/endpoints.js';
+  import { crumbsFor, isWithin, parentPath, trimPath } from '$lib/util/folderPath.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import Folder from '@lucide/svelte/icons/folder';
@@ -36,22 +37,9 @@
   // Only the latest listing writes: a slow folder never replaces a newer one.
   let request = 0;
 
-  const trimmed = (p) => String(p ?? '').replace(/\/+$/, '');
-  const within = (p, root) => p === trimmed(root) || p.startsWith(`${trimmed(root)}/`);
-
   // The breadcrumb from the Drive's top folder down to `path`.
-  const crumbs = $derived.by(() => {
-    if (!drive || !path) return [];
-    const root = trimmed(drive.path);
-    const out = [{ label: drive.name || root, path: root }];
-    let at = root;
-    for (const part of path.slice(root.length).split('/').filter(Boolean)) {
-      at = `${at}/${part}`;
-      out.push({ label: part, path: at });
-    }
-    return out;
-  });
-  const blocked = $derived(!!path && disabledPaths.map(trimmed).includes(path));
+  const crumbs = $derived(drive && path ? crumbsFor(drive, path) : []);
+  const blocked = $derived(!!path && disabledPaths.map(trimPath).includes(path));
 
   async function loadDrives() {
     status = 'loading';
@@ -59,9 +47,9 @@
     try {
       const list = await api.getVolumes();
       drives = Array.isArray(list) ? list.filter((v) => v?.path) : [];
-      const home = start ? drives.find((v) => within(trimmed(start), v.path)) : null;
-      if (home) await open(home, trimmed(start));
-      else if (drives.length === 1) await open(drives[0], trimmed(drives[0].path));
+      const home = start ? drives.find((v) => isWithin(start, v.path)) : null;
+      if (home) await open(home, trimPath(start));
+      else if (drives.length === 1) await open(drives[0], trimPath(drives[0].path));
       else status = 'ready';
     } catch (e) {
       drives = [];
@@ -98,8 +86,8 @@
   }
 
   function up() {
-    if (!drive || path === trimmed(drive.path)) toDrives();
-    else open(drive, path.slice(0, path.lastIndexOf('/')));
+    if (!drive || path === trimPath(drive.path)) toDrives();
+    else open(drive, parentPath(path));
   }
 
   function retry() {
@@ -130,7 +118,7 @@
     {:else if !drive}
       {#if drives?.length}
         {#each drives as d (d.path)}
-          <button type="button" class="row" onclick={() => open(d, trimmed(d.path))}>
+          <button type="button" class="row" onclick={() => open(d, trimPath(d.path))}>
             <HardDrive size={16} aria-hidden="true" />
             <span class="name">{d.name || d.path}</span>
             <span class="path">{d.path}</span>
@@ -150,7 +138,7 @@
         <span class="name">..</span>
       </button>
       {#each folders as f (f.path)}
-        <button type="button" class="row" onclick={() => open(drive, trimmed(f.path))}>
+        <button type="button" class="row" onclick={() => open(drive, trimPath(f.path))}>
           <Folder size={16} aria-hidden="true" />
           <span class="name">{f.name}</span>
         </button>
@@ -165,7 +153,7 @@
     {#if onCancel}<Button variant="ghost" onclick={onCancel}>Cancel</Button>{/if}
     <Button
       variant="primary"
-      disabled={!path || status === 'loading' || blocked}
+      disabled={!path || status !== 'ready' || blocked}
       onclick={() => onpick?.(path)}
     >{confirmLabel}</Button>
   </div>

@@ -46,12 +46,20 @@
 
   <article class="panel">
     <h2 class="panel-title">Converting by hand</h2>
-    <p>In Files, pick games and press Convert. The plan shows each game's new format before anything runs.</p>
+    <p>
+      In Files, pick games and press Convert. With Auto on, a plan shows each game's new
+      format before anything runs; with a format picked, they start right away.
+    </p>
   </article>
 
   <article class="panel">
     <h2 class="panel-title">Safe by default</h2>
-    <p>Originals are only deleted when you ask, and only after the new file reads back as an exact copy.</p>
+    <p>
+      Originals are only deleted when you ask, and only after the new file passes its check.
+      Most formats must read back as an exact copy. A few instead need a known good dump
+      match, and Quick check only checks the file's structure. If a check fails, the
+      original stays.
+    </p>
   </article>
 
   <article class="panel">

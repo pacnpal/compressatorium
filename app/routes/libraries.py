@@ -170,6 +170,20 @@ async def update_library(library_id: str, payload: UpdateLibraryRequest) -> dict
     return await run_in_threadpool(libraries.describe, library)
 
 
+@router.get("/libraries/gamelists-folders")
+async def find_gamelists_folders() -> dict:
+    """ES-DE gamelists folders found in the Volumes (#523), for the Rules
+    editor to offer with one click. Bounded: a Volume that stops answering
+    answers 503 and leaves nothing behind but the abandoned search."""
+    try:
+        folders = await libraries.admitted(
+            libraries.find_gamelists_folders, what="A Volume",
+        )
+    except libraries.LibraryPathError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+    return {"folders": folders}
+
+
 @router.delete("/libraries/{library_id}")
 async def remove_library(library_id: str) -> dict:
     """Remove a folder Library with its Rules and run state. No file is touched."""
@@ -387,6 +401,7 @@ async def library_placements(library_id: str) -> dict:
     the folder relative to the Library's root (``roms/ps2``), whether it
     exists yet, or why it can't be told. Any kind of Library."""
     library = _library(library_id)
+    await library.refresh()  # the layout placement reads (#532)
     try:
         placements = await asyncio.wait_for(
             run_detached(lambda: _placements(library)), _SCAN_SECONDS,

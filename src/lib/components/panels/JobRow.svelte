@@ -189,7 +189,7 @@
   }
   .message.muted { color: var(--text-3); font-family: var(--font-mono); }
   .warning-message {
-    color: var(--warning);
+    color: var(--warning-text);
     font-size: var(--text-xs);
     background: var(--warning-muted);
     border-radius: var(--radius-sm);
@@ -204,7 +204,7 @@
   }
 
   .kept-message {
-    color: var(--warning);
+    color: var(--warning-text);
     font-size: var(--text-xs);
     background: var(--warning-muted);
     border-radius: var(--radius-sm);

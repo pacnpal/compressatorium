@@ -39,10 +39,9 @@
   const entries = $derived(fileBrowser.entries);
 
   /**
-   * What the chosen console can be converted to, grouped as everywhere else
-   * ($lib/tools/convertTargets.js) and narrowed by the backend's own
-   * `mode_ids` / `tool_ids` for it, so the list never offers a format for the
-   * wrong console.
+   * Whether anything here can convert the chosen console, narrowed by the
+   * backend's own `mode_ids` / `tool_ids` for it. The Convert panel's own
+   * Convert to (ModeSelect) offers the same narrowed list.
    */
   const modeGroups = $derived.by(() => {
     const platform = romm.platforms.find((p) => p.id === romm.selectedPlatformId);
@@ -53,18 +52,6 @@
     }).filter((g) => g.group !== 'Recommended');
   });
   const hasModes = $derived(modeGroups.length > 0);
-
-  /** Switch the workspace to a chosen target format, tool included.
-   *
-   * `setPrimaryTool` resets the mode to that tool's default, so it has to run
-   * first — and it has to run at all, because the Convert panel and the
-   * sidebar both key off the primary tool, not the mode.
-   */
-  function chooseMode(mode) {
-    const tool = registry.toolForMode(mode);
-    if (tool && tool.id !== conversion.primaryTool) conversion.setPrimaryTool(tool.id);
-    conversion.chooseTarget(mode);
-  }
 
   const selectedPlatformName = $derived(
     romm.platforms.find((p) => p.id === romm.selectedPlatformId)?.name
@@ -302,20 +289,6 @@
         {:else}
           <span class="muted">No consoles in RomM.</span>
         {/if}
-        {#if hasModes}
-          <label class="convert-to">
-            <span class="label">Convert to</span>
-            <select value={conversion.mode ?? ''} onchange={(e) => chooseMode(e.currentTarget.value)}>
-              {#each modeGroups as g (g.group)}
-                <optgroup label={g.group}>
-                  {#each g.options as o (o.value)}
-                    <option value={o.value}>{o.label} · {o.hint}</option>
-                  {/each}
-                </optgroup>
-              {/each}
-            </select>
-          </label>
-        {/if}
         {#if romm.pendingRepins > 0}
           <Badge tone="warning">{romm.pendingRepins} awaiting re-match</Badge>
           <Button
@@ -385,8 +358,16 @@
         <TriangleAlert size={16} />
         <span>
           RomM can't match {activeMode?.outputExt?.replace(/^\./, '').toUpperCase()} files by
-          hash. Compressatorium keeps their RomM details and puts them back after RomM's
-          next scan.
+          hash.
+          <!-- The promise follows the setting: with it off (or unread) nothing
+               is saved, so these lose their RomM match. -->
+          {#if romm.settings && romm.settings.repin_enabled !== false}
+            Compressatorium keeps their RomM details and puts them back after RomM's
+            next scan.
+          {:else}
+            Keeping RomM's details is off or couldn't be read (Connection, More), so
+            these lose their RomM match and need identifying by hand.
+          {/if}
         </span>
       </div>
     {/if}

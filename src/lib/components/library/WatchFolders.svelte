@@ -8,7 +8,6 @@
    *
    * @typedef {Object} Props
    * @property {object} library the Library row (`{ id, name }`)
-   * @property {import('svelte').Snippet} [after] under the rows (the *arr hook)
    */
   import { toast } from 'svelte-sonner';
   import { api } from '$lib/api/endpoints.js';
@@ -18,12 +17,13 @@
   import { drivePath } from '$lib/util/drivePath.js';
   import FolderPickerModal from '$lib/components/modals/FolderPickerModal.svelte';
   import BaseModal from '$lib/components/modals/BaseModal.svelte';
+  import ArrHook from '$lib/components/views/ArrHook.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
 
   /** @type {Props} */
-  let { library, after } = $props();
+  let { library } = $props();
 
   const REFRESH_MS = 15_000;
   // The intake waits this long for a file to stop growing.
@@ -168,7 +168,10 @@
     </Button>
   </div>
 
-  {#if after}{@render after()}{/if}
+  <details class="arr-fold">
+    <summary>Send games here from Sonarr, Radarr or ROMarr</summary>
+    <ArrHook />
+  </details>
 </section>
 
 <FolderPickerModal
@@ -197,6 +200,8 @@
 
 <style>
   .watch { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+  .arr-fold summary { cursor: pointer; font-weight: var(--weight-semibold); color: var(--text-1); }
+  .arr-fold[open] summary { margin-bottom: var(--space-3); }
   .text h2 { margin: 0 0 var(--space-1); font-size: var(--text-lg); font-weight: var(--weight-semibold); }
   .text p { margin: 0; }
   .rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }

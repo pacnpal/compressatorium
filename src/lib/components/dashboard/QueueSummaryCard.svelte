@@ -3,8 +3,17 @@
   import { ui } from '$lib/stores/ui.svelte.js';
   import StatCard from './StatCard.svelte';
   import Button from '$lib/components/ui/Button.svelte';
-  import Badge from '$lib/components/ui/Badge.svelte';
+  import { ledger } from '$lib/stores/ledger.svelte.js';
   import ListTodo from '@lucide/svelte/icons/list-todo';
+
+  // Done and Failed are all-time totals from the Ledger (#533); the job list
+  // keeps only the newest finished jobs. Until the Ledger answers, the list.
+  const totals = $derived(ledger.totals ?? {});
+  const failed = $derived(
+    totals.failed != null
+      ? totals.failed + (totals.cancelled ?? 0)
+      : jobs.failedCount + jobs.cancelledCount,
+  );
 </script>
 
 <StatCard title="Job queue" subtitle="Live state" accent="var(--badge-converting)">
@@ -20,18 +29,14 @@
         <span class="lbl">Active</span>
       </div>
       <div class="cell">
-        <span class="num">{jobs.completedCount}</span>
+        <span class="num">{totals.completed ?? jobs.completedCount}</span>
         <span class="lbl">Done</span>
       </div>
       <div class="cell">
-        <span class="num">{jobs.failedCount + jobs.cancelledCount}</span>
+        <span class="num">{failed}</span>
         <span class="lbl">Failed</span>
       </div>
     </div>
-    {#if jobs.stuckState?.is_stuck}
-      {@const n = (jobs.stuckState.queued_count ?? 0) + (jobs.stuckState.processing_count ?? 0)}
-      <Badge tone="warning">{n} stuck</Badge>
-    {/if}
   {/snippet}
   {#snippet footer()}
     <Button variant="ghost" size="sm" onclick={() => ui.navigate('files')}>
