@@ -20,8 +20,12 @@ pytestmark = pytest.mark.usefixtures("fresh_detect_cache", "tmp_volume")
 
 
 @pytest.mark.asyncio
-async def test_an_ordinary_failure_still_returns_the_kept_jobs(route_env, monkeypatch, caplog):
+async def test_a_group_that_fails_to_queue_skips_its_files_and_keeps_the_rest(
+    route_env, monkeypatch, caplog,
+):
+    """One target's queue call failing reports its files; the others stay queued (#520)."""
     paths = _mixed_selection(route_env["tmp_path"])
+    cancelled: list[str] = []
 
     async def fake_atomic(job_specs, mode, **_kwargs):
         if mode.value == "dolphin_rvz":
@@ -30,21 +34,24 @@ async def test_an_ordinary_failure_still_returns_the_kept_jobs(route_env, monkey
         return [convert_routes.ConversionJob(
             id=f"job-{mode.value}", file_path=spec["file_path"],
             filename=Path(spec["file_path"]).name, output_path=spec["output_path"],
-            mode=mode, status="completed", created_at="2026-11-14T00:00:00Z",
+            mode=mode, status="queued", created_at="2026-11-14T00:00:00Z",
         )]
 
-    async def fake_cancel(_job_id):
-        return False   # already finished
+    async def fake_cancel(job_id):
+        cancelled.append(job_id)
+        return True
 
     monkeypatch.setattr(convert_routes.job_manager, "create_jobs_atomic", fake_atomic)
     monkeypatch.setattr(convert_routes.job_manager, "cancel_job", fake_cancel)
 
-    with pytest.raises(convert_routes.HTTPException) as exc:
-        await convert_routes.create_auto_jobs(await _confirmed(paths))
+    result = await convert_routes.create_auto_jobs(await _confirmed(paths))
 
-    assert exc.value.status_code == 500
-    assert {job["id"] for job in exc.value.detail["jobs"]} == {"job-createdvd"}
-    assert "queue fell over" in caplog.text   # the original error is logged
+    assert cancelled == []                       # nothing is withdrawn
+    assert {job.id for job in result.jobs} == {"job-createdvd", "job-createcd"}
+    assert [Path(s.path).name for s in result.skipped] == ["gc.iso"]
+    assert result.skipped[0].code == "queue_failed"
+    assert "queue fell over" not in result.skipped[0].reason   # no internals
+    assert "queue fell over" in caplog.text      # the original error is logged
 
 
 @pytest.mark.asyncio

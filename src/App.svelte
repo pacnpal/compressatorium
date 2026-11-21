@@ -122,11 +122,11 @@
 
   onMount(() => {
     ui.loadVersion();
-    // Ask the backend which tools to show. Switch (nsz) is hidden until
-    // prod.keys are configured. The tool list stays empty until this answers;
-    // on failure every tool is shown rather than none.
+    // Ask the backend which tools can run, and why the others can't (#515):
+    // the dashboard lists those with their fix. The tool list stays empty
+    // until this answers; on failure every tool is shown rather than none.
     api.getTools()
-      .then((t) => ui.applyToolAvailability(t?.available))
+      .then((t) => ui.applyToolAvailability(t?.available, t?.reasons))
       .catch(() => ui.applyToolAvailability(null));
     // Load remembered per-tool compression settings from the server.
     conversion.loadServerPrefs();

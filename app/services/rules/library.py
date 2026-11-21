@@ -167,12 +167,15 @@ class Platform:
     registry knows (``ngc``, ``ps2``), used to check a mode fits the Platform.
     ``folder`` is the Library's own name for its folder on disk, where that
     can differ from the slug (RomM's ``fs_slug``); None otherwise (#430).
+    ``rom_count`` is how many Images the Library's own record says it holds
+    (RomM's ``rom_count``, #512); None when the Library keeps no count.
     """
 
     id: str
     slug: str | None
     name: str
     folder: str | None = None
+    rom_count: int | None = None
 
 
 class Image:
@@ -282,19 +285,48 @@ class Placement:
 
     ``folder`` is absolute and inside a Volume. ``exists`` is False for a
     Platform folder that isn't there yet: whoever places an Image creates it.
+
+    ``guessed`` is True when the folder is a best guess the user may want to
+    change: more than one folder could be it and a folder Library picked one
+    (#515; a mapping makes it certain), RomM's default structure where its
+    structure can't be read off the disk, or one of several RomM folders for
+    the Platform that hold ROMs (#512). ``why`` says in plain words how the
+    folder was picked, or None when there was nothing to pick. ``choices``
+    are the folder names the Library could have picked from, each with its
+    ROM count, when there are several (RomM's records for one Platform);
+    empty otherwise.
     """
 
     platform: str
     folder: str
     exists: bool
+    guessed: bool = False
+    why: str | None = None
+    choices: tuple[tuple[str, int], ...] = ()
+
+
+class LibrariesChanged(Exception):
+    """Which Libraries sit inside which changed since a listing was taken
+    (``libraries.owned_as_listed``, PR #518): work from it is refused."""
 
 
 class PlacementUnknown(Exception):
     """Where a Platform's Images go can't be told, so nothing may be placed.
 
-    The message says why (two folders for one Platform, a RomM folder
-    structure that can't be told, a folder outside every Volume).
+    The message says why (two folders a folder Library can't choose between,
+    a folder name with a path in it, a folder outside every Volume, a folder
+    detection would read as another Platform). ``choices`` and ``picked``
+    are the Platform's folder choices and the one picked, when the Library
+    had several to pick from (Codex PR #516), so a bad pick can be changed.
     """
+
+    def __init__(
+        self, message: str = "", *,
+        choices: tuple[tuple[str, int], ...] = (), picked: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.choices = choices
+        self.picked = picked
 
 
 @dataclass(frozen=True)

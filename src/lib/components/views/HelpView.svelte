@@ -34,7 +34,7 @@
     {
       glyph: 'NSW',
       name: 'Switch',
-      blurb: 'Nintendo Switch dumps to NSZ/XCZ and back, using nsz, the format Tinfoil and DBI read. Usually 40 to 80 percent smaller, fully reversible. Switch content is encrypted, so this needs your own prod.keys, dumped from a console you own. Without keys the Switch tool is hidden entirely. Set SWITCH_KEYS to the folder holding them, or drop them under a mounted volume and the app finds them.',
+      blurb: 'Nintendo Switch dumps to NSZ/XCZ and back, using nsz, the format Tinfoil and DBI read. Usually 40 to 80 percent smaller, fully reversible. Switch content is encrypted, so this needs your own prod.keys, dumped from a console you own. Drop your prod.keys anywhere on a mounted volume, or in ~/.switch, and reload: the app finds them on its own. Until then the dashboard lists Switch under Not ready here.',
       io: '.nsp / .xci  ↔  .nsz / .xcz',
     },
     {
@@ -58,7 +58,7 @@
     {
       glyph: 'NKT',
       name: 'NKit',
-      blurb: 'NKit-shrunk GameCube and Wii images back to a plain, full-size .iso, using nkit2iso. NKit shrinks a disc by dropping everything a program can recreate — the junk padding, the gaps, and for Wii the encryption and hash tree — so restoring means rebuilding all of it and checking the result against the CRC32 stored in the NKit header. There are no per-job settings to choose, and the output is bit-exact and passes the CRC32 check — except for one case: a Wii image whose update partition was removed at shrink time has no way back to bit-exact, because that data is not in the file. By default that region is zero-filled and the CRC32 check is skipped, so the ISO is playable but will not match its Redump entry, and the job says so plainly. One direction only: this app never writes NKit. There is also a one-step Convert to RVZ mode (nkit_to_rvz) that restores and compresses in a single job, keeping the full-size ISO in a scratch directory instead of your library — usually what you want, since no emulator reads NKit and Dolphin reads RVZ natively. Info reads the NKit header, so you can see the console, game and restored size before spending the restore. Set NKIT2ISO_RECOVERY=download if you want the tool to fetch the publicly archived recovery partition for those images instead and get a bit-exact restore that matches Redump — the only case where it uses the network.',
+      blurb: 'NKit-shrunk GameCube and Wii images back to a plain, full-size .iso, using nkit2iso. NKit shrinks a disc by dropping everything a program can recreate — the junk padding, the gaps, and for Wii the encryption and hash tree — so restoring means rebuilding all of it and checking the result against the CRC32 stored in the NKit header. There are no per-job settings to choose, and the output is bit-exact and passes the CRC32 check — except for one case: a Wii image whose update partition was removed at shrink time has no way back to bit-exact, because that data is not in the file. By default that region is zero-filled and the CRC32 check is skipped, so the ISO is playable but will not match its Redump entry, and the job says so plainly. One direction only: this app never writes NKit. There is also a one-step Convert to RVZ mode (nkit_to_rvz) that restores and compresses in a single job, keeping the full-size ISO in a scratch directory instead of your library — usually what you want, since no emulator reads NKit and Dolphin reads RVZ natively. Info reads the NKit header, so you can see the console, game and restored size before spending the restore. The server can be set up to fetch that recovery partition instead, for a bit-exact restore that matches Redump. It is off by default, because it is the only case where this tool uses the network; the README (NKit section) says how to turn it on.',
       io: '.nkit.iso / .nkit.gcz  →  .iso  (or  →  .rvz  in one step)',
     },
     {
@@ -76,13 +76,13 @@
     {
       glyph: 'RC',
       name: 'rom-converto',
-      blurb: 'The converter RomM ships (rom-converto 0.24.0, the version RomM pins), used here only for formats nothing else in this app writes. Its first job is Xbox 360 disc images to ZAR, the ZArchive format Xenia mounts directly: the game\'s files, zstd-compressed, without the video partition and disc padding. Like the Xbox tool, it looks inside each .iso and is only offered on Xbox 360 images; an original Xbox disc can\'t become a ZAR. The result is Game.zar beside the source. The source ISO is always kept: a ZAR holds the disc\'s files, not the disc itself, and nothing turns a ZAR back into an ISO, so the output can\'t be Round-tripped against it, and there is no delete-after-verify option. Verify has rom-converto decode every block and check its hash. Info shows how many files the ZAR holds, their size, and whether default.xex (what Xenia boots) is at its root. It also turns a PSP game\'s EBOOT.PBP into the UMD ISO inside it, a 3DS CIA into a trimmed CCI (Game.cci), and a CCI (.cci or .3ds) into a CIA. A PS1 Classic PBP is not offered. rom-converto carries its own common keys; the app never downloads or ships keys or seeds, and an input that needs one fails with a message that says so. None of these can be Round-tripped (a converted CIA is unsigned with a zero title key), so with delete-source on the source goes only when the output is Recognized by one of your DATs or Hasheous; otherwise it is kept, and the job says so. rom-converto is downloaded into the image at a pinned version and checked against its SHA-256; outside the image, set ROM_CONVERTO_PATH, and the tool is hidden until the binary is there and runs.',
+      blurb: 'The converter RomM ships (rom-converto 0.24.0, the version RomM pins), used here only for formats nothing else in this app writes. Its first job is Xbox 360 disc images to ZAR, the ZArchive format Xenia mounts directly: the game\'s files, zstd-compressed, without the video partition and disc padding. Like the Xbox tool, it looks inside each .iso and is only offered on Xbox 360 images; an original Xbox disc can\'t become a ZAR. The result is Game.zar beside the source. The source ISO is always kept: a ZAR holds the disc\'s files, not the disc itself, and nothing turns a ZAR back into an ISO, so the output can\'t be Round-tripped against it, and there is no delete-after-verify option. Verify has rom-converto decode every block and check its hash. Info shows how many files the ZAR holds, their size, and whether default.xex (what Xenia boots) is at its root. It also turns a PSP game\'s EBOOT.PBP into the UMD ISO inside it, a 3DS CIA into a trimmed CCI (Game.cci), and a CCI (.cci or .3ds) into a CIA. A PS1 Classic PBP is not offered. rom-converto carries its own common keys; the app never downloads or ships keys or seeds, and an input that needs one fails with a message that says so. None of these can be Round-tripped (a converted CIA is unsigned with a zero title key), so with delete-source on the source goes only when the output is Recognized by one of your DATs or Hasheous; otherwise it is kept, and the job says so. rom-converto is downloaded into the image at a pinned version and checked against its SHA-256; outside the image, an install on PATH is found on its own, and until it is there and runs the dashboard lists the tool under Not ready here.',
       io: '.iso  →  .zar  ·  .pbp  →  .iso  ·  .cia  ↔  .cci',
     },
     {
       glyph: 'DOS',
       name: 'eXoDOS',
-      blurb: 'eXoDOS game zips repacked for RomM\'s in-browser DOS player (DOSBox Pure). eXoDOS keeps each game\'s DOSBox setup in a separate !dos folder, with mount paths that point into the whole collection, so a game zip copied into RomM alone does not start. The repack moves the game to the root of a new file and writes its dosbox.conf there with those paths rewritten, which is where DOSBox Pure looks for one. Only mount, imgmount and boot lines change. The result is Game.dosz beside the source (a zip under the name DOSBox Pure documents for one); the original is only ever read. If the config still points outside the game after the rewrite, the job says so, because that game will probably not start. Set EXODOS_DOS_DIR to your eXoDOS !dos folder (inside a volume) to turn the tool on, and in RomM\'s config.yml set emulatorjs.settings.dosbox_pure.dosbox_pure_conf: inside (and leave emulatorjs.disable_batch_bootup at false) so DOSBox Pure can load the file\'s dosbox.conf, which is the file\'s first entry. Whether a repacked game boots in RomM\'s player (EmulatorJS 4.2.3 or the nightly) has not been tested yet.',
+      blurb: 'eXoDOS game zips repacked for RomM\'s in-browser DOS player (DOSBox Pure). eXoDOS keeps each game\'s DOSBox setup in a separate !dos folder, with mount paths that point into the whole collection, so a game zip copied into RomM alone does not start. The repack moves the game to the root of a new file and writes its dosbox.conf there with those paths rewritten, which is where DOSBox Pure looks for one. Only mount, imgmount and boot lines change. The result is Game.dosz beside the source (a zip under the name DOSBox Pure documents for one); the original is only ever read. If the config still points outside the game after the rewrite, the job says so, because that game will probably not start. Nothing to set: each game\'s template is found in the !dos folder beside its zip, or in a parent folder up to the volume (EXODOS_DOS_DIR, if set, is searched first). A game with no template is still repacked, with no dosbox.conf, and the job says so; DOSBox Pure\'s start menu then offers the program to run. Each job says what its game got. In RomM\'s config.yml set emulatorjs.settings.dosbox_pure.dosbox_pure_conf: inside (and leave emulatorjs.disable_batch_bootup at false) so DOSBox Pure can load the file\'s dosbox.conf, which is the file\'s first entry. Whether a repacked game boots in RomM\'s player (EmulatorJS 4.2.3 or the nightly) has not been tested yet.',
       io: '.zip  →  .dosz',
     },
     {
@@ -270,6 +270,15 @@
       <strong>rename</strong> writes the new one under a different name, and
       <strong>overwrite</strong> replaces it. Nothing is overwritten without you saying so.
     </p>
+    <p>
+      For a Library, <strong>Where new Images go</strong> in the Rules view shows the folder
+      each Platform's new Images land in, from an Inbox or a sweep. On RomM that's RomM's
+      own folder for the Platform. RomM often keeps a second, empty record for a Platform
+      (<code>famicom</code> beside <code>nes</code>); the folder holding the ROMs is picked
+      for you, and the row says which and why ("RomM's NES folder, 4933 ROMs"). When more
+      than one holds ROMs, the one with the most is picked and marked as a best guess. Pick
+      another folder from the list on that row and it's kept.
+    </p>
   </article>
 
   <article class="panel">
@@ -403,7 +412,7 @@
       tooltip names which databases list the game (IGDB, TheGamesDB, RetroAchievements),
       and the URLs themselves come back from
       <code>/api/dat/matches/lookup</code>. Point
-      <code>COMPRESSATORIUM_HASHEOUS_URL</code> at your own instance to keep lookups on
+      the server's Hasheous URL (README, Hasheous section) at your own instance to keep lookups on
       your network.
     </p>
     <p>
@@ -411,7 +420,7 @@
       the game image's content SHA1, reconstructed on the fly by
       <code>dolphin-tool verify --algorithm sha1</code> — the same hash Redump records — so any
       compression setting still matches for both. A missing badge usually means the DATs aren't
-      synced, the title isn't in the DAT, or the file is over <code>MATCH_MAX_FILE_SIZE</code>
+      synced, the title isn't in the DAT, or the file is over the match size cap the server may set
       (which skips the expensive full-disc reconstruction). It's about hash matching, not file
       health, so verify is the real proof your file is good.
     </p>
@@ -504,8 +513,11 @@
       <dt>A 3DS ROM failed to compress</dt>
       <dd>The ROM has to be decrypted first. Encrypted dumps won't work.</dd>
 
+      <dt>A tool isn't in the sidebar</dt>
+      <dd>Its program or its keys are missing here. The dashboard's Quick tools card lists it under <strong>Not ready here</strong> with the one thing to install or set. A program installed on <code>PATH</code> (Homebrew, your distro) is found on its own.</dd>
+
       <dt>The Switch tool isn't there, or jobs fail asking for prod.keys</dt>
-      <dd>Switch needs your own <code>prod.keys</code>. Set <code>SWITCH_KEYS</code> to the folder that holds them, or drop <code>prod.keys</code> under a mounted volume and the app finds it. Without keys the Switch tool is hidden. The keys come from a console you own; none ship with the app.</dd>
+      <dd>Switch needs your own <code>prod.keys</code>. Drop it anywhere on a mounted volume, or in <code>~/.switch</code>, and reload: the app finds it on its own. Until then the dashboard lists Switch under Not ready here. The keys come from a console you own; none ship with the app.</dd>
 
       <dt>The host got sluggish during a batch</dt>
       <dd>
@@ -520,7 +532,7 @@
     <h2 class="panel-title">FAQ and edge cases</h2>
     <dl class="qa">
       <dt>Will compression hurt the game?</dt>
-      <dd>No. Every compressed format here is lossless. The data you get back after decompression is bit-for-bit identical to what went in. Smaller file, same game. There are two exceptions. The Xbox XISO trim keeps the game's files intact and plays the same, but the video partition and disc padding are discarded for good, so the original full disc image can't be rebuilt from it. And an NKit-shrunk Wii image whose update partition was removed at shrink time restores playable but not bit-exact, unless you set <code>NKIT2ISO_RECOVERY=download</code>. In both cases, keep the original if preserving the complete disc matters to you.</dd>
+      <dd>No. Every compressed format here is lossless. The data you get back after decompression is bit-for-bit identical to what went in. Smaller file, same game. There are two exceptions. The Xbox XISO trim keeps the game's files intact and plays the same, but the video partition and disc padding are discarded for good, so the original full disc image can't be rebuilt from it. And an NKit-shrunk Wii image whose update partition was removed at shrink time restores playable but not bit-exact, unless the server is set up to fetch the recovery partition (off by default; see the README's NKit section). In both cases, keep the original if preserving the complete disc matters to you.</dd>
 
       <dt>Does converting touch my original file?</dt>
       <dd>No. The output is a new file and the source is left alone, unless you explicitly turn on delete-on-verify. Even then the source is only removed after the output passes verification.</dd>
@@ -575,7 +587,7 @@
       <dd>Yes. That's exactly what copy mode is for. Point it at the existing CHD, pick new codecs, and it recompresses without needing the original disc.</dd>
 
       <dt>The DAT badge didn't appear on a file I'm sure is good.</dt>
-      <dd>RVZ/WIA/GCZ and CHD both match on the reconstructed disc / header hash (not the container bytes), so recompressing doesn't break matching. A missing badge usually means the DATs aren't synced, the title isn't in the DAT, or the file is over <code>MATCH_MAX_FILE_SIZE</code> (which skips the full-disc reconstruction). It's about hash matching, not file health, so verify is the real proof your file is good.</dd>
+      <dd>RVZ/WIA/GCZ and CHD both match on the reconstructed disc / header hash (not the container bytes), so recompressing doesn't break matching. A missing badge usually means the DATs aren't synced, the title isn't in the DAT, or the file is over the match size cap the server may set (which skips the full-disc reconstruction). It's about hash matching, not file health, so verify is the real proof your file is good.</dd>
     </dl>
   </article>
 

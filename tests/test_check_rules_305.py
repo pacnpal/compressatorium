@@ -2560,3 +2560,29 @@ async def test_a_conversion_sweep_skips_a_source_a_running_check_holds(
     assert queue == ["Melee.iso"]
     assert after["queued"] == 1
     assert not ((await sweep.get_state(library)).get(platform) or {}).get("failed")
+
+
+@pytest.mark.asyncio
+async def test_a_check_pick_refused_for_a_libraries_change_names_its_platform(
+    tree: Path, ready, verifier, sent, monkeypatch,
+) -> None:
+    """CodeRabbit PR #551: a pick refused because a Library was registered or
+    removed since the listing is reported against the Platform it came from,
+    and nothing is checked."""
+    from services.rules import sweep
+    from services.rules.library import LibrariesChanged
+
+    _verdicts, calls = verifier
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 6})
+
+    def refused(_owned_at):
+        raise LibrariesChanged
+
+    monkeypatch.setattr(sweep, "_owned_as_listed", refused)
+
+    result = await _run(lib)
+
+    assert calls == []
+    assert {"platform_id": "ps2", "error": "libraries_changed"} in result["errors"]
+    (summary,) = [p for p in result["platforms"] if p.get("check")]
+    assert summary["libraries_changed"] is True

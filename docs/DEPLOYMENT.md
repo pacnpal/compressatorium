@@ -39,8 +39,15 @@ The full environment variable reference lives in [README.md](../README.md#enviro
 | `MAX_CONCURRENT_JOBS` | `1` | Parallel conversion jobs |
 | `COMPRESSATORIUM_TOOL_NICE` / `COMPRESSATORIUM_TOOL_IOPRIO_CLASS` / `COMPRESSATORIUM_TOOL_IOPRIO_LEVEL` | `10` / `2` / `6` | CPU and I/O priority for **all** tools (chdman, Dolphin, 3DS, Switch, PSP/PS2 CSO, handheld ROM, PS3 ISO, NKit, Wii U, Xbox, rom-converto, RAR sets; RAR sets takes only these shared values). Legacy aliases `CHD_CHDMAN_NICE` / `CHD_CHDMAN_IOPRIO_CLASS` / `CHD_CHDMAN_IOPRIO_LEVEL` still work. Also `COMPRESSATORIUM_TOOL_INFO_TIMEOUT` (chdman, Dolphin and rom-converto info subprocess) and the verify bound, on by default: `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` (`1800`) + `_PER_GIB` (`600`) capped by `_CAP` (`86400`), plus `COMPRESSATORIUM_TOOL_VERIFY_PROGRESS_TIMEOUT` (`600`, no-output stall bound for the streaming verifiers, independent of the overall bound — zero both for no bound at all). Per-tool overrides: `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` for `<TOOL>` = `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`, `MAXCSO`, `ROMZ`, `MAKEPS3ISO`, `NKIT2ISO`, `JWUD`, `XISO`, `ROM_CONVERTO` (`NKIT2ISO` and `MAKEPS3ISO` have no `_VERIFY_TIMEOUT` — no verify step, and no reachable verify entry point, respectively; `JWUD` verifies without a subprocess, so its bound applies to the verify call itself); `_INFO_TIMEOUT` only for `CHDMAN`, `DOLPHIN_TOOL` and `ROM_CONVERTO`. |
 | `SWITCH_KEYS` | (unset) | Directory holding your own Switch `prod.keys`. Source of truth for the Switch (nsz) tool; mount it read-only. When unset, the app best-effort checks `~/.switch`, the nsz config dirs, your mounted volumes and the data dir. No keys ship with the image. |
-| `EXODOS_DOS_DIR` | (unset) | Your eXoDOS `!dos` folder (holding `<Game>/dosbox.conf`) for the eXoDOS repack. Must be inside a volume; unset hides the tool. Nothing from eXoDOS ships with the image. |
+| `EXODOS_DOS_DIR` | (unset) | Optional. A `!dos` folder (holding `<Game>/dosbox.conf`) the eXoDOS repack searches first. Not needed: it finds `!dos` beside each game zip, or in a parent folder up to the volume. Must be inside a volume; a value that is not is skipped. Nothing from eXoDOS ships with the image. |
 | `STATIC_DIR` | `/static` | Static web assets |
+
+**Out of the box.** Nothing above has to be set. Every folder mounted under
+`/data` is a Volume, every tool whose program is in the image (or, outside it,
+on `PATH`) works, and a tool that can't run is listed on the dashboard under
+**Not ready here** with the one thing to install or set. A folder Library with
+two folders for one Platform places new Images in the one that already holds
+the most, and says it guessed.
 
 **Switch keys.** The Switch (nsz) tool needs your own `prod.keys`, dumped from a
 console you own. Mount the directory holding it read-only and set `SWITCH_KEYS`

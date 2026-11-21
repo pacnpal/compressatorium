@@ -696,3 +696,22 @@ def test_rules_is_a_view_of_its_own():
         encoding="utf-8",
     )
     assert "go('rules')" in sidebar
+
+
+def test_a_catalogue_read_answering_after_a_newer_one_is_dropped(tmp_path):
+    """CodeRabbit PR #551: an older read finishing last must not put back
+    stale nesting over the newer catalogue."""
+    data = _run(tmp_path, f"""
+const first = libraries.load();
+await tick();
+const second = libraries.load();
+await tick();
+__calls[1].resolve([{{ ...{_FOLDER}, contains: [] }}]);
+await second;
+__calls[0].resolve([{{ ...{_FOLDER}, contains: [{{ id: 'folder:7', name: 'gone' }}] }}]);
+await first;
+process.stdout.write(JSON.stringify({{
+  contains: libraries.list.find((lib) => lib.id === 'folder:3').contains,
+}}));
+""")
+    assert data["contains"] == [], data

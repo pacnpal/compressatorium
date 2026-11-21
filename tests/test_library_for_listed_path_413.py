@@ -181,3 +181,23 @@ def test_library_for_refuses_to_choose_between_two_libraries(volume, db):
 
     with pytest.raises(libraries.AmbiguousLibrary, match="more than one Library"):
         libraries.library_for(str(roms / "psx" / "Game.cue"))
+
+
+@pytest.mark.asyncio
+async def test_a_folder_library_inside_romm_uses_its_own_referrers(volume, db):
+    """#514: ``esde/ROMs`` is a folder Library inside RomM's folder ``esde``.
+    The nearest root owns the file, so the folder Library's gamelist follows
+    the output, and the Source goes as it would anywhere else."""
+    from services.romm import settings as romm_settings
+
+    roms, gamelist = _esde_library(volume)
+    await romm_settings.save({"url": "http://romm:8080", "library_root": str(volume / "esde")})
+    (roms / "psx").mkdir()
+    _cue(roms / "psx" / "Game.cue")
+
+    assert libraries.library_for(str(roms / "psx" / "Game.cue")).root == str(roms)
+    job = await _convert(roms / "psx" / "Game.cue")
+
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    assert gamelist.read_bytes() == GAMELIST.replace(b"Game.cue", b"Game.chd")
+    assert (roms / "psx" / "Game.chd").is_file() and not (roms / "psx" / "Game.cue").exists()
