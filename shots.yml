@@ -810,8 +810,9 @@
         const apply = await waitFor(() => [...document.querySelectorAll('button')]
           .find(b => b.textContent.trim() === 'Apply recommended'), 'Apply recommended');
         apply.click();
-        await waitFor(() => document.querySelector('[data-platform-id="ps2"] select')?.value,
-          'the recommended formats');
+        // The answer toasts either way: consoles set up, or (with no converter
+        // installed, as in the screenshot run) why none could be.
+        await waitFor(() => document.querySelector('[data-sonner-toast]'), 'the Apply recommended answer');
         await sleep(400);
       } else if (shot === 'library-automation-advanced') {
         await send(`/api/libraries/${id}/rules`, 'PUT', {
@@ -1152,7 +1153,7 @@
         await waitFor(() => document.querySelector('.banner'), "RomM's converter banner");
       } else if (shot === 'romm-more') {
         location.hash = '#/libraries/romm/connection';
-        const more = await waitFor(() => document.querySelector('details.more'), 'More');
+        const more = await waitFor(() => document.querySelector('details.advanced'), 'More');
         more.open = true;
         more.scrollIntoView({ block: 'center' });
         await sleep(300);

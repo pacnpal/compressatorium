@@ -49,6 +49,11 @@ function withoutWindowFlags(rules) {
   }));
 }
 
+/** The consoles *keys* as they are in *from*, null for one removed (#541). */
+function rulePatch(keys, from) {
+  return withoutWindowFlags(Object.fromEntries(keys.map((k) => [k, from[k] ?? null])));
+}
+
 export class RulesSource {
   rules = $state({});
   checkRules = $state({});
@@ -279,14 +284,11 @@ export class RulesSource {
     const changedChecks = Object.keys(this.#changedChecks);
     this.#changedRules = {};
     this.#changedChecks = {};
-    const patch = (keys, from) => withoutWindowFlags(
-      Object.fromEntries(keys.map((k) => [k, from[k] ?? null])),
-    );
     let data;
     try {
       data = await this.#endpoints.saveRules(
-        patch(changed, this.rules),
-        changedChecks.length ? patch(changedChecks, this.checkRules) : undefined,
+        rulePatch(changed, this.rules),
+        changedChecks.length ? rulePatch(changedChecks, this.checkRules) : undefined,
       );
     } catch (e) {
       // Not saved: they go with the next save.
