@@ -34,6 +34,7 @@ from logging_setup import get_logger
 from services import inbox as inbox_store
 from services.platform_detect import canonical_slug
 from services.preferences_store import preferences_store
+from services.rules.library import LibraryUnreadable
 from services.subprocess_runner import run_detached
 from utils.path_utils import volume_containment
 
@@ -283,9 +284,16 @@ async def check_one(path: str) -> dict[str, Any]:
     """:func:`check`, and for a Library path the answer an import would get
     (CodeRabbit 4652729358): never "works" for one the import would skip."""
     rules = await load_rewrites()
-    found, _real, ids = await asyncio.wait_for(
-        run_detached(_checked, path, rules), _STEP_SECONDS,
-    )
+    try:
+        found, _real, ids = await asyncio.wait_for(
+            run_detached(_checked, path, rules), _STEP_SECONDS,
+        )
+    except (OSError, TimeoutError, ValueError, LibraryUnreadable) as exc:
+        # A busy or unreadable Library is this path's answer, as in
+        # `process` (CodeRabbit 4653326169).
+        return {"path": path, "local": rewrite(path, rules), "inbox_id": None,
+                "library_id": None, "problem": f"Couldn't check it: {exc}",
+                "suggestion": None}
     if found["inbox_id"] is None and found["library_id"] is not None:
         _library, _due, why = await _due_in_library(found, ids)
         if why:
@@ -316,7 +324,7 @@ async def process(paths: list[str], *, source: str) -> dict[str, Any]:
             found, real, ids = await asyncio.wait_for(
                 run_detached(_checked, path, rules), _STEP_SECONDS,
             )
-        except (OSError, TimeoutError, ValueError) as exc:
+        except (OSError, TimeoutError, ValueError, LibraryUnreadable) as exc:
             found, real, ids = {"path": path, "local": path, "inbox_id": None,
                                 "library_id": None, "problem": f"Couldn't check it: {exc}",
                                 "suggestion": None}, None, []

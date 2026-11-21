@@ -130,3 +130,24 @@ async def test_an_ambiguous_console_folder_does_not_fail_the_listing(mixed: Path
     rows = {p["id"]: p for p in listed["platforms"]}
     assert rows["psx"]["folder"] is None and rows["psx"]["folder_note"]
     assert rows["gba"]["folder"] == "gba" and rows["gba"]["folder_note"] is None
+
+
+@pytest.mark.asyncio
+async def test_games_mostly_in_the_root_open_the_root(db: Path) -> None:
+    """CodeRabbit 4653326177: two PS2 games in the root and one in ps2/ open
+    the root, where most of them are."""
+    from routes import libraries as routes
+
+    from .test_platform_detect import _ps2
+
+    roms = db / "roms"
+    _ps2(roms / "Ico.iso")
+    _ps2(roms / "Okami.iso")
+    _ps2(roms / "ps2" / "Rez.iso")
+    lib = await _register(roms)
+
+    listed = await routes.library_platforms(lib["id"])
+
+    rows = {p["id"]: p for p in listed["platforms"]}
+    assert rows["ps2"]["images"] == 3
+    assert rows["ps2"]["folder"] is None

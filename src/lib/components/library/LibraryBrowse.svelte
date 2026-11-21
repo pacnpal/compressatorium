@@ -22,7 +22,8 @@
   const RETRY_MS = 3000;
 
   $effect(() => {
-    if (!source.platformsBusy) return;
+    // Read with the loading flag, so every read that ends still busy re-arms it.
+    if (!source.platformsBusy || source.platformsLoading) return;
     const timer = setTimeout(() => source.loadPlatforms(), RETRY_MS);
     return () => clearTimeout(timer);
   });

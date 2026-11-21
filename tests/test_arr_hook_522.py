@@ -614,3 +614,26 @@ async def test_an_import_right_after_a_listing_is_found(client, vol, queued):
     assert reply.json()["accepted"], reply.json()
     await trigger.drain()
     assert str(fresh) in queued
+
+
+@pytest.mark.asyncio
+async def test_a_busy_library_listing_skips_that_path_only(client, vol, queued, monkeypatch):
+    """CodeRabbit 4653326169: a walk already running (`ListingInProgress`)
+    is one path's skip, never the end of the request or the check."""
+    from services.libraries.folder import FolderLibrary, ListingInProgress
+
+    _library, game = await _ps2_library(vol)
+
+    def busy(self):
+        raise ListingInProgress("a listing of this folder is still running")
+
+    monkeypatch.setattr(FolderLibrary, "platforms", busy)
+
+    reply = await client.post("/api/scan", headers=CONFIRM, json={"paths": [str(game), "/nowhere"]})
+    body = reply.json()
+    assert body["accepted"] == []
+    assert len(body["skipped"]) == 2
+    assert "still running" in body["skipped"][0]["problem"]
+
+    check = (await client.post("/api/hooks/arr/check", json={"path": str(game)})).json()
+    assert "still running" in check["problem"]

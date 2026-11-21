@@ -475,3 +475,21 @@ process.stdout.write(JSON.stringify({ waited, done, saved: __saves, refused, rea
     assert data["fine"] is True
     advanced = (_COMPONENTS / "RuleAdvanced.svelte").read_text(encoding="utf-8")
     assert "source.hold(" in advanced and "source.markUnsaved(" in advanced
+
+
+def test_a_busy_listing_is_retried_after_every_busy_answer():
+    """CodeRabbit 4653326178: two busy answers in a row stopped the retry.
+    The retry re-arms whenever a read ends with the folder still busy."""
+    for name in ("LibraryAutomation.svelte", "LibraryBrowse.svelte"):
+        src = (_COMPONENTS / name).read_text(encoding="utf-8")
+        assert "if (!source.platformsBusy || source.platformsLoading) return;" in src, name
+
+
+def test_a_later_switch_wins_over_an_earlier_one_still_saving():
+    """CodeRabbit 4653326180: on, then off, while a Rule save is out must
+    end off."""
+    src = (_COMPONENTS / "LibraryAutomation.svelte").read_text(encoding="utf-8")
+    body = src[src.index("async function setAuto(enabled)"):]
+    body = body[: body.index("\n  }\n")]
+    assert "const mine = ++autoChoice;" in body
+    assert body.index("if (mine !== autoChoice) return;") < body.index("setScheduleEnabled")

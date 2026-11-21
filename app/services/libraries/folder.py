@@ -726,11 +726,14 @@ class FolderLibrary(LibraryDefaults):
             except AmbiguousFolder as exc:
                 ambiguous = str(exc)
                 continue
-            if folder:
-                held[folder] += 1
+            # None is the root: games sitting there count too (CodeRabbit
+            # 4653326177), so most games in the root open the root.
+            held[folder or None] += 1
         if not held:
             return None, ambiguous
         folder = held.most_common(1)[0][0]
+        if folder is None:
+            return None, None
         return os.path.relpath(folder, self.root).replace(os.sep, "/"), None
 
     def summary(self, *, refresh: bool = False) -> dict[str, Any]:

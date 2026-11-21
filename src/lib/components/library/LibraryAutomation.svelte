@@ -30,7 +30,8 @@
   // A folder is read one listing at a time: while one runs, look again in 3 s.
   const RETRY_MS = 3000;
   $effect(() => {
-    if (!source.platformsBusy) return;
+    // Read with the loading flag, so every read that ends still busy re-arms it.
+    if (!source.platformsBusy || source.platformsLoading) return;
     const timer = setTimeout(() => source.loadPlatforms(), RETRY_MS);
     return () => clearTimeout(timer);
   });
@@ -104,8 +105,13 @@
 
   // Turning it on saves first: the scheduler reads the server's Rules, so an
   // edit still waiting would run on the previous ones. Off needs no care.
+  // Bumped by every switch: an "on" still waiting for a save never lands
+  // after a later "off" (CodeRabbit 4653326180).
+  let autoChoice = 0;
   async function setAuto(enabled) {
+    const mine = ++autoChoice;
     if (enabled && !(await committed())) return;
+    if (mine !== autoChoice) return;
     try {
       await source.setScheduleEnabled(enabled);
     } catch (e) {
