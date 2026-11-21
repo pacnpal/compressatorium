@@ -385,3 +385,74 @@ async def test_an_inbox_poll_reads_the_librarys_layout_before_placing():
                          AsyncMock(side_effect=intake.InboxUnavailable("gone"))):
         await intake.poll(inbox)
     library.refresh.assert_awaited_once()
+
+
+# ---- a layout read that got nothing ---------------------------------------------
+
+
+def _layout_client(*, answers: bool):
+    """A RommClient stand-in whose layout calls fail, or answer, counted."""
+    from unittest.mock import MagicMock
+
+    client = MagicMock(base_url="http://romm.test")
+    if answers:
+        client.config.return_value = {}
+        client.library_structure.return_value = "roms/{platform}/{game}"
+    else:
+        client.config.side_effect = RommError("timed out")
+        client.library_structure.side_effect = RommError("timed out")
+    return client
+
+
+@pytest.mark.parametrize(("answers", "reads"), [(False, 2), (True, 1)])
+def test_a_layout_read_that_got_nothing_is_retried_soon(monkeypatch, answers, reads):
+    """A read where every call failed is retried after a short wait, not the
+    full TTL; one that got an answer keeps the TTL (CodeRabbit
+    PRRT_kwDOQ9nULM66RLv7)."""
+    romm_connect.reset_for_tests()
+    monkeypatch.setattr(romm_connect, "_LAYOUT_RETRY", 0.0)
+    client = _layout_client(answers=answers)
+
+    romm_connect.refresh_layout_now(client)
+    romm_connect.refresh_layout_now(client)
+
+    assert client.config.call_count == reads
+    romm_connect.reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_a_layout_never_read_defers_the_sweep_and_placement(romm_db, romm_root):
+    """RomM's layout was never read (RomM unreachable since the start): the
+    sweep is deferred and placement refused, never run as if RomM excluded
+    nothing and declared no structure (CodeRabbit PRRT_kwDOQ9nULM66RLv9)."""
+    from services.romm import settings as romm_settings
+    from services.romm.library import romm_library
+    from services.rules import sweep as rules_sweep
+
+    await romm_settings.save({"url": "http://127.0.0.1:1", "token": "rmm_x"})
+
+    result = await rules_sweep.sweep(romm_library, dry_run=True)
+
+    assert result["queued"] == 0
+    assert {"platform_id": None, "error": "romm_layout_unread"} in result["errors"], result
+    with pytest.raises(PlacementUnknown):
+        romm_library.placement("ps2")
+
+
+def test_the_platform_folder_follows_the_declared_prefix(romm_root):
+    """``games/{platform}/{game}``: the Platform folder is ``games/gc``, not
+    ``games`` (CodeRabbit PRRT_kwDOQ9nULM66RLwA); RomM's standard structure
+    keeps its answer."""
+    from services.romm.library import romm_library
+
+    (romm_root / "games" / "gc").mkdir(parents=True)
+    game = romm_root / "games" / "gc" / "Game.rvz"
+    game.write_bytes(b"x")
+    with patch.object(romm_connect, "structure", return_value=(("games",), ())):
+        assert romm_library.platform_folder(str(game)) == str(romm_root / "games" / "gc")
+
+    (romm_root / "roms" / "gc").mkdir(parents=True)
+    other = romm_root / "roms" / "gc" / "Other.rvz"
+    other.write_bytes(b"x")
+    with patch.object(romm_connect, "structure", return_value=(("roms",), ())):
+        assert romm_library.platform_folder(str(other)) == str(romm_root / "roms" / "gc")

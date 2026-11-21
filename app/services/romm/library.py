@@ -120,6 +120,11 @@ def _structure(root: str, name: str) -> tuple[str, str | None]:
     declared = romm_connect.structure()
     if declared is not None:
         return _declared(root, name, *declared), None
+    if not romm_connect.layout_known():
+        # Not "no structure declared": RomM hasn't been asked successfully.
+        raise PlacementUnknown(
+            "RomM's folder structure couldn't be read yet; the next pass tries again",
+        )
     own = os.path.join(root, name)
     if os.path.isdir(os.path.join(root, "roms")):
         return os.path.join(root, "roms", name), None
@@ -165,10 +170,17 @@ def _declared(
             "keeps games in folders of their own under each platform, so this app "
             "can't tell which one a new game goes in",
         )
+    return os.path.join(_prefix(root, before), name, *levels)
+
+
+def _prefix(root: str, before: tuple[str, ...]) -> str:
+    """The folder RomM's declared structure keeps the Platform folders in:
+    *before* under *root*, a leading ``roms`` dropped when *root* is RomM's
+    ``roms`` folder itself (see :func:`_declared`)."""
     if before[:1] == ("roms",) and not os.path.isdir(os.path.join(root, "roms")) \
             and _platform_dirs(root):
         before = before[1:]
-    return os.path.join(root, *before, name, *levels)
+    return os.path.join(root, *before)
 
 
 def _holds_structure(folder: str) -> bool:
@@ -491,6 +503,10 @@ class RommLibrary(LibraryDefaults):
         cleanup on its own tick, under the locks it requires, and a sweep
         holding the sweep lock is the one caller that cannot take them.
         """
+        if self.configured() and not romm_connect.layout_known():
+            # RomM's exclusions and structure were never read (#532): a sweep
+            # now would convert what RomM ignores. Deferred, not guessed.
+            return "romm_layout_unread"
         if not romm_settings.cleanup_owed():
             return None
         logger.warning(
@@ -524,6 +540,11 @@ class RommLibrary(LibraryDefaults):
         root = self.root
         if not root:
             return None
+        declared = romm_connect.structure()
+        if declared is not None:
+            # Under the declared prefix (#532): `games/{platform}/{game}`
+            # holds its Platform folders in `games`.
+            return folder_holding(_prefix(root, declared[0]), path)
         roms = os.path.join(root, "roms")
         return folder_holding(roms if os.path.isdir(roms) else root, path)
 

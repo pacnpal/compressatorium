@@ -133,13 +133,17 @@
           ? `Paired with RomM. The token lacks ${missing.join(', ')}, so the features that need them stay off.`
           : 'Paired with RomM');
       }
+      // One snapshot, tested and then saved as it was: an edit made while
+      // the test runs is never saved untested.
+      let body = patch();
       if (!force) {
-        let result = await romm.testConnection(patch());
+        let result = await romm.testConnection(body);
         // RomM's library found in the Volumes and the field still empty:
         // fill it in and check again.
-        if (result?.library_root_suggestion && !libraryRoot.trim()) {
+        if (result?.library_root_suggestion && !body.library_root) {
           libraryRoot = result.library_root_suggestion;
-          result = await romm.testConnection(patch());
+          body = { ...body, library_root: result.library_root_suggestion };
+          result = await romm.testConnection(body);
         }
         if (!works(result)) {
           problem = {
@@ -150,7 +154,7 @@
           return;
         }
       }
-      await save(patch());
+      await save(body);
     } catch (e) {
       problem = { field: null, error: e?.message ?? 'Failed to save settings' };
     } finally {

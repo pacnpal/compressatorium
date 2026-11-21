@@ -548,6 +548,9 @@
     output_dir_outside_volumes:
       'its output folder is outside the configured volumes — skipped',
     output_excluded: "RomM is set to ignore this format, so converted games would vanish from it — skipped",
+    romm_layout_unread:
+      "RomM's folder structure and ignore settings couldn't be read yet, so nothing "
+      + 'was converted — the next run asks again',
     unreadable: 'the Library could not list this platform',
     root_unavailable:
       'the folder could not be reached inside the configured volumes (a mount may '

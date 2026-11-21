@@ -50,17 +50,20 @@ def _no_romm_layout_reads(request):
     if getattr(request.module, "READS_ROMM_LAYOUT", False):
         yield
         return
+    from services.romm import connect as romm_connect
     from services.romm.library import RommLibrary
 
     async def no_read(_self) -> None:
         return None
 
-    real = RommLibrary.refresh
+    real, known = RommLibrary.refresh, romm_connect.layout_known
     RommLibrary.refresh = no_read
+    # ...and read as declaring nothing, so a sweep isn't deferred for it.
+    romm_connect.layout_known = lambda: True
     try:
         yield
     finally:
-        RommLibrary.refresh = real
+        RommLibrary.refresh, romm_connect.layout_known = real, known
 
 
 @pytest.fixture(autouse=True)

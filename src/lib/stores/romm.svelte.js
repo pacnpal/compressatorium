@@ -389,11 +389,17 @@ class RommStore extends RulesSource {
     // and discards a listing that was still correct, because none of those
     // settings changes which server or which files are being described.
     //
-    // Keyed off what the *patch* carried rather than off a diff of the saved
-    // settings, because the token is never returned to the browser: a
-    // credential change is only ever visible here as a submitted field.
-    const identityKeys = ['url', 'library_root', 'token', 'clear_token'];
-    const changesIdentity = identityKeys.some((key) => key in (patch ?? {}));
+    // A submitted `url` or `library_root` counts when it differs from the
+    // stored one (the one form sends both on every Save). The token is never
+    // returned to the browser, so a credential change is only ever visible
+    // here as a submitted field: `token`, `clear_token` and `paired` count
+    // whenever they are sent.
+    const sent = patch ?? {};
+    const stored = this.settings ?? {};
+    const changesIdentity = ['token', 'clear_token', 'paired'].some((key) => key in sent)
+      || ['url', 'library_root'].some(
+        (key) => key in sent && (sent[key] ?? '') !== (stored[key] ?? ''),
+      );
     let saved;
     try {
       saved = await api.saveRommSettings(patch);

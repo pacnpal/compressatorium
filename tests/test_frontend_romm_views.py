@@ -113,7 +113,7 @@ const romm = {
   },
   async pair(url, code) {
     __paired.push([url, code]);
-    return { settings: this.settings, missing_scopes: [] };
+    return { url: url.replace(/[/]+$/, ''), missing_scopes: [] };
   },
   async discover() { return null; },
   async loadStatus() {},
@@ -197,7 +197,28 @@ def test_a_pairing_code_is_traded_for_a_token_not_saved_as_one(tmp_path):
 
     assert data["paired"] == [["http://romm:8080", "abcd-2345"]], data
     assert all("token" not in sent for sent in data["saved"]), data
+    # The held token is named for the test and the Save that commits it.
+    assert data["tested"][0]["paired"] is True, data
+    assert data["saved"][0]["paired"] is True, data
     assert data["credential"] == "", data
+
+
+def test_the_save_sends_the_values_that_passed_the_test(tmp_path):
+    """An edit made while the test runs is not saved untested (CodeRabbit
+    PRRT_kwDOQ9nULM66RLwF, Codex PRRT_kwDOQ9nULM66ReGy): the Save sends the
+    snapshot the test passed."""
+    data = _run(tmp_path, _SETTINGS, """
+__testReply = () => {
+  url = 'http://edited:8080';
+  libraryRoot = '/elsewhere';
+  return { reachable: true, authorized: true, library_root_mounted: true, error: null };
+};
+await handleSave();
+""" + _REPORT)
+
+    assert data["tested"][0]["url"] == "http://romm:8080", data
+    assert data["saved"][0]["url"] == "http://romm:8080", data
+    assert data["saved"][0]["library_root"] == "/library", data
 
 
 def test_an_empty_library_path_is_filled_from_romm(tmp_path):

@@ -18,8 +18,12 @@
     refuse a target format RomM ignores; a single file name RomM ignores skips
     only the game whose output has that name. Scheduled runs, `run-rules` and
     Inbox placement read RomM's settings themselves, with RomM's page closed.
+    Until RomM's settings have been read once, runs wait and new games aren't
+    placed, rather than guessing; a failed read is retried within a minute.
   - **Save tests the connection first** and names the field to fix, with
-    **Retry** and **Save anyway**. A check that couldn't run shows as "not
+    **Retry** and **Save anyway**. It saves exactly what was tested, and a
+    Save that leaves the URL and Library path as they were no longer reloads
+    the catalog. A check that couldn't run shows as "not
     checked" instead of failed.
   - The three RomM Settings cards are one form with one Save; the re-pin
     knobs are under **Advanced**.

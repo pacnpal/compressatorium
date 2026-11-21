@@ -313,6 +313,7 @@ async def library_placements(library_id: str) -> dict:
     the folder relative to the Library's root (``roms/ps2``), whether it
     exists yet, or why it can't be told. Any kind of Library."""
     library = _library(library_id)
+    await library.refresh()  # the layout placement reads (#532)
     try:
         placements = await asyncio.wait_for(
             run_detached(lambda: _placements(library)), _SCAN_SECONDS,

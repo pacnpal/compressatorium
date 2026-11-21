@@ -1662,6 +1662,10 @@ async def _run_kept_delete(
     """One :func:`_run_kept_deletes` attempt."""
     pending = attempt.pending
     deleting = pending.get("state") == KEPT_DELETING
+    # A Source the Library now ignores by name (#532) is left alone, its
+    # entry pending; a delete already under way finishes.
+    if not deleting and library.excluded(Path(str(pending.get("source") or "")).name):
+        return
     try:
         async with job_manager.kept_delete(
             source_path=str(pending.get("source") or ""),
