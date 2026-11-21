@@ -8878,6 +8878,24 @@ dry run the UI's **Test** uses; for a path that lands nowhere,
 `trigger.suggest` looks for the same tail of folders under each Volume and
 offers the rewrite. The last 20 paths received are kept in memory for the UI.
 
+A path no Inbox holds but a Library does (an *arr importing straight into the
+games folder, #541) is that Library's: `check` names its `library_id`
+(`libraries.library_for`, so overlapping Libraries pick the nearest root and an
+ambiguous one is refused), and `_checked` works out, in the same bounded
+worker, the Library's console ids for the console folder it landed in
+(`Library.platform_folder`, matched on the console's id, folder or canonical
+slug). `_due_in_library` then fails closed: the path is converted only when
+the Library converts on its own (`schedule_enabled()`), the console's
+conversion Rule has a mode and is on, and now is inside its window
+(`schedule._in_window`); otherwise it is skipped with why, and the next
+scheduled run takes it. The on check matters: a sweep that names its
+Platforms runs a Rule the person paused (Run now's contract), so it is read
+first. Then `rules_sweep.sweep(library, platform_ids=..., ignore_schedule=True,
+kinds=(CONVERT,))` runs, the same pass as Run now for those consoles: its
+containment, filters, duplicate policy and in-flight checks decide. `kinds`
+(default every kind) keeps a console's check Rule from spending a budget on an
+import.
+
 ### 3.3.26 Event streams end cleanly on shutdown (`services/event_stream.py`, #465)
 
 Every server-sent event route returns `event_stream(generator)`, never a bare
