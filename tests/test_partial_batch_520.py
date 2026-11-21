@@ -18,7 +18,6 @@ import pytest
 
 from app.models import BatchJobCreateRequest, ConversionMode, DuplicateAction
 from app.routes import convert as convert_routes
-from app.services import job_manager as job_manager_module
 from app.services.job_manager import JobManager, OutputClaimedError
 from services.tools import registry
 
@@ -40,25 +39,22 @@ async def test_a_claimed_destination_skips_that_file_and_queues_the_rest(tmp_pat
     for source in sources:
         source.write_bytes(b"x")
     manager = JobManager(max_concurrent=1, max_job_history=10)
-    held = await manager.create_job(
+    # Holds taken.chd, so the batch's first file is skipped.
+    await manager.create_job(
         str(sources[0]), ConversionMode.CREATECD, output_path=str(tmp_path / "taken.chd"),
     )
-    try:
-        skipped: list = []
-        jobs = await manager.create_jobs_atomic(
-            [
-                {"file_path": str(sources[1]), "output_path": str(tmp_path / "taken.chd")},
-                {"file_path": str(sources[2]), "output_path": str(tmp_path / "c.chd")},
-            ],
-            ConversionMode.CREATECD,
-            skipped=skipped,
-        )
-        assert [job.file_path for job in jobs] == [str(sources[2])]
-        assert [path for path, _reason in skipped] == [str(sources[1])]
-        assert "already writing taken.chd" in skipped[0][1]
-    finally:
-        for job in [held, *jobs]:
-            job_manager_module.concurrency_manager.release(job.id)
+    skipped: list = []
+    jobs = await manager.create_jobs_atomic(
+        [
+            {"file_path": str(sources[1]), "output_path": str(tmp_path / "taken.chd")},
+            {"file_path": str(sources[2]), "output_path": str(tmp_path / "c.chd")},
+        ],
+        ConversionMode.CREATECD,
+        skipped=skipped,
+    )
+    assert [job.file_path for job in jobs] == [str(sources[2])]
+    assert [path for path, _reason in skipped] == [str(sources[1])]
+    assert "already writing taken.chd" in skipped[0][1]
 
 
 @pytest.mark.asyncio
@@ -71,18 +67,15 @@ async def test_without_a_skip_list_the_batch_stays_all_or_nothing(tmp_path) -> N
     held = await manager.create_job(
         str(sources[0]), ConversionMode.CREATECD, output_path=str(tmp_path / "taken.chd"),
     )
-    try:
-        with pytest.raises(OutputClaimedError):
-            await manager.create_jobs_atomic(
-                [
-                    {"file_path": str(sources[2]), "output_path": str(tmp_path / "c.chd")},
-                    {"file_path": str(sources[1]), "output_path": str(tmp_path / "taken.chd")},
-                ],
-                ConversionMode.CREATECD,
-            )
-        assert [job.id for job in manager.get_all_jobs()] == [held.id]
-    finally:
-        job_manager_module.concurrency_manager.release(held.id)
+    with pytest.raises(OutputClaimedError):
+        await manager.create_jobs_atomic(
+            [
+                {"file_path": str(sources[2]), "output_path": str(tmp_path / "c.chd")},
+                {"file_path": str(sources[1]), "output_path": str(tmp_path / "taken.chd")},
+            ],
+            ConversionMode.CREATECD,
+        )
+    assert [job.id for job in manager.get_all_jobs()] == [held.id]
 
 
 @pytest.mark.asyncio
