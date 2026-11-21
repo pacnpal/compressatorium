@@ -153,7 +153,8 @@
   }
 
   // A folder (not an archive, not inside one) can become a Library (#303).
-  // The backend checks it against the Volumes and refuses an overlap.
+  // The backend checks it against the Volumes. It may sit inside or around
+  // another Library, RomM's included (#514); only the same folder twice is refused.
   const canRegister = $derived(entry?.type === 'directory' && !inArchive);
 
   async function handleRegister() {

@@ -304,11 +304,12 @@ class ToolPlugin(Protocol):
     def overwrite_targets(self, output_path: str, mode: str) -> list[str]: ...
 
     # Runtime prerequisites met? False => GET /api/tools reports the tool
-    # unavailable and the frontend hides it, instead of offering jobs that can
-    # only fail. BaseTool answers it from `required_binaries` (the programs
+    # unavailable, with `not_ready_message` in its `reasons` map (#515), and
+    # the dashboard lists it under "Not ready here" with that fix, instead
+    # of offering jobs that can only fail. BaseTool answers it from `required_binaries` (the programs
     # the tool runs, through the shared probe, §3.4 "Declaring the programs a
-    # tool runs"); nsz and exodos override it (prod.keys, EXODOS_DOS_DIR), and
-    # so do rom_converto (its `--version` probe) and the chain (every step).
+    # tool runs"); nsz overrides it (prod.keys), exodos (always ready, #513),
+    # and so do rom_converto (its `--version` probe) and the chain (every step).
     # Async because the probe may touch disk. `not_ready_reason` / `verify_not_ready_reason` say
     # why it answered False; callers show them through `not_ready_message`
     # (§3.4) rather than formatting their own line.
@@ -3445,12 +3446,62 @@ of `folder_libraries` (root unique, name, `schedule_enabled`, `max_per_sweep`,
 migration 0012, `AUTOINCREMENT` so a removed Library's id is never reused and
 state keyed by it cannot reach another folder), read once and cached; `register`, `update` and `remove`
 replace the cached copy. `register` uses `ensure_path_within_volumes` (the file
-browser's check), requires a folder, and refuses the same root or one that
-contains or sits inside another Library's root, a registered folder or RomM's
-library folder (409), since two Libraries would give one Image two Rules. The
-rule is one function, `libraries.find_overlap`, run in both directions: the
-RomM settings route checks a new RomM library root against every folder
-Library (`check_romm_root`, a 409 naming the Library) before saving it. Both
+browser's check), requires a folder, and refuses the same root as another
+Library, a registered folder or RomM's library folder (409), and a root that
+is, holds or sits inside an Inbox (409). The same-root rule is one function,
+`libraries.same_root`, run in both directions: the RomM settings route checks
+a new RomM library root against every folder Library (`check_romm_root`, a 409
+naming the Library) before saving it.
+
+Libraries may nest (#514): a folder inside RomM's library folder, or inside or
+around another folder Library, registers, and RomM's root may be set around or
+inside one. **The nearest root owns a file.** `library_for` takes the longest
+root spelling that holds the path as listed and the deepest resolved root that
+holds where it lives; when those two name different Libraries it still raises
+`AmbiguousLibrary` (#413), and every caller fails closed as before. The owner's
+Referrers apply, and only the owner's: a file in a folder Library inside RomM
+gets that Library's gamelist and `.m3u` Referrers, never RomM's swap, re-pin
+or gamelist, because RomM's Rules never convert it and RomM's settings were
+not chosen for it (RomM sees the new file on its next library scan). No file
+is swept twice: `libraries.inner_folders(library)` lists the roots of the
+other Libraries inside *library*'s (resolved, relative to its root), and each
+Library's listing leaves them out. A folder Library's walk prunes them (so its
+Rules, check Rules, Findings, find-duplicates and counts never see an inner
+Library's files), and `RommLibrary.images` gives a ROM whose local path is in
+one no path (`image_from_rom(owned_elsewhere=...)`), asked only when the
+path is read, inside the bounded candidate probe, so listing never maps every
+ROM onto the mount (Codex PR #518). A root
+that can't be resolved there raises `LibraryUnreadable`: the listing fails
+rather than take an inner Library's files. Registering, removing a Library
+and saving RomM's root drop every folder Library's kept walk, so an outer
+Library re-lists, and move `libraries.ownership_generation()`, all as one
+step under `libraries._ownership_lock` (`_changing_ownership`, which also drops
+every cached resolved root; registration, removal and every RomM settings
+save then seed RomM's again, `_reseed_romm_root`, bounded through
+`run_admitted` and outside the registration lock, so the Rules view's nesting
+is right before any scan and a dead RomM mount holds nothing up). A sweep reads the counter when it lists a
+Platform and admits its work through `libraries.owned_as_listed(owned_at)`,
+which raises `rules.library.LibrariesChanged` when it moved and otherwise
+holds that lock while the work goes in: `JobManager.create_jobs_atomic(...,
+admission=...)` (and `create_batch_jobs`) enters it under the queue lock around
+the checks and the queueing, with no await inside, and the check job is
+started inside it against the counter read when the sweep began. So no
+registration lands between the check and the queueing: work from a stale
+listing is never queued, the run is not recorded, and the Platform reports
+`libraries_changed` (PR #518). The lock is taken before `libraries._lock`,
+never after, and never held across an await or a disk read. Hidden staging (#398) asks `libraries.hidden_staging(path)`,
+any Library holding the path with `HIDDEN_STAGING`, not only its owner: RomM
+scans its whole folder, an inner folder Library included. Folder Platform
+mappings belong to the nearest folder Library (`set_mapping`), and where two
+Libraries mapped one folder the nearer root's mapping wins in the index.
+Setting or clearing a folder's mapping also deletes the rows the outer
+Libraries holding it keep for that folder (a mapping made before the folder
+became a nearer Library's), so a clear always clears (Codex PR #518). The
+Libraries API adds `within` (the nearest Library around this one, or null)
+and `contains` (the Libraries inside it), worked out from the stored and
+already-resolved roots without touching the disk; the Rules view shows them.
+
+Registration and the RomM root save both
 take `_register_lock`: `register` in its worker thread, held across RomM's
 root resolve and the database write, and the RomM save through
 `romm_root_claim`, which polls for the lock without parking a thread, so a
@@ -3486,8 +3537,19 @@ and `automatable_modes`, as RomM's platform list carries),
 `GET /api/libraries/{id}/placements` (any Library, #430) lists, for each of
 the Library's `platforms()` (one listing, passed to every row as `known`),
 the Platform's own `id` (the row's key: two RomM platforms can share a slug),
-its `placement` relative to the root, whether the folder exists, or the
-`PlacementUnknown` reason; the PATCH takes a folder Library's `layout`. The
+its `placement` relative to the root, placed by its own record alone
+(`known=[platform]`, so two RomM records show their own two folders, #512),
+whether the folder exists, its `rom_count`, `guessed` (a best guess among
+several: a folder Library's two folders for one Platform, #515, or RomM's, #512;
+`Placement.guessed`, False by default, is the shared field every Library sets)
+and `why`, or the
+`PlacementUnknown` reason. Where the Platform's new Images go is placed from
+the whole listing: when that has `choices`, the row it lands on has
+`new_images_here` True, the `choices` and the `picked` folder name, and the
+Platform's other rows have `new_images_here` False. When the pick can't take
+Images, its row keeps the `PlacementUnknown` reason with the `choices`, so it
+can be changed. The PATCH takes a folder
+Library's `layout`. The
 panel (`LibraryPlacement.svelte`) waits for the view's own Platform listing
 and drops a superseded answer (`src/lib/util/latestOnly.js`).
 
@@ -3497,7 +3559,10 @@ inverse of `platform_folder`: given a Platform slug (detection's vocabulary,
 so the Inbox can pass what `detect_platform` returned without asking which
 kind of Library it has), the folder its Images go in. `Placement` carries
 `platform`, `folder` (absolute) and `exists` (False: whoever places an Image
-creates the folder; `placement` never does). It raises `PlacementUnknown`
+creates the folder; `placement` never does), and, for a best guess the user
+may want to change (#512), `guessed`, `why` (how it was picked, in plain
+words) and `choices` (`(folder name, ROM count)` pairs it picked from, when
+there were several). It raises `PlacementUnknown`
 when the answer can't be told, and `LibraryUnreadable` when the Library can't
 be read. Every implementation ends in `rules.library.placed_in(folder,
 platform, mapped=...)`, which fails closed: the folder must be inside a Volume
@@ -3514,21 +3579,46 @@ a Library that needs its Platform records (RomM's folder names, carried as
   (`<root>/roms/<platform>`) or `flat` (`<root>`, where the header decides).
   For the first two it uses a folder already in the parent that names the
   Platform by the user's mapping or by a name detection reads
-  (`platform_detect.platform_folders`, spelled as listed; two refuse), else a
+  (`platform_detect.platform_folders`, spelled as listed; with two or more it
+  takes the one holding the most Image files, ties by name, and marks the
+  `Placement` `guessed=True`, #515), else a
   new one named by `platform_detect.esde_folder_name(slug)` (ES-DE's system
   name, `_ESDE_FOLDERS`, each value an alias of its slug) or the RomM slug.
   The layout decides only where new Images go, and changing it moves
   nothing: `platform_folder` finds the folder holding an existing Image
   whatever the layout, directly under the root or, when that folder is the
   root's `roms`, directly under `roms`.
-- `RommLibrary` names the folder by the RomM platform's `fs_slug` (`Platform.folder`; the slug
-  for a Platform RomM has no record of yet; two RomM platforms for one slug
-  refuse) and reads RomM's structure off the disk at the directory level, as
-  `RommClient.local_path` does: `<root>/roms/<name>` when `<root>/roms`
-  exists, `<root>/<name>/roms` when that exists, `<root>/<name>` when it
-  exists with neither `roms` nor `bios` in it (the root is RomM's `roms`
-  folder). Anything else refuses: RomM 5.3 declares the structure in a setting
-  this app doesn't read.
+- `RommLibrary` names the folder by a RomM platform record's `fs_slug`
+  (`Platform.folder`; the slug for a Platform RomM has no record of yet).
+  RomM often keeps several records for one Platform (`famicom` beside `nes`,
+  #512): their folders, each with its summed `rom_count` (`Platform.rom_count`),
+  are `Placement.choices`, and the pick is the user's saved one
+  (`romm_settings.platform_folders()`, the `platform_folders` key of RomM's
+  settings row, written only by `romm_settings.pick_platform_folder`), else the
+  only folder holding ROMs, else the one with the most (then the one named as
+  the Platform) with `guessed` True. A folder name with a path in it is never
+  picked over a good one, and refuses when it is the only one.
+  `Placement.why` says how it was picked ("RomM's NES folder, 4933 ROMs: the
+  only one with ROMs"). It reads RomM's structure off the disk at the
+  directory level, as `RommClient.local_path` does: `<root>/roms/<name>` when
+  `<root>/roms` exists, `<root>/<name>/roms` when that exists,
+  `<root>/<name>` when it exists with neither `roms` nor `bios` in it (the
+  root is RomM's `roms` folder). `<root>/<name>/bios` alone guesses
+  `<root>/<name>/roms`, and nothing at all guesses RomM's default
+  `<root>/roms/<name>`, both `guessed` (RomM 5.3 declares the structure in a
+  setting this app doesn't read). With no folder for the Platform yet, it
+  follows the other Platform folders under the root first (Codex PR #516):
+  `<root>/<name>/roms` when one holds `roms` or `bios`, else `<root>/<name>`,
+  never a new `<root>/roms`, which would flip `local_path`'s layout and lose
+  every existing record. When `placed_in` refuses the pick,
+  `PlacementUnknown.choices` and `.picked` carry the choices, so the
+  listing's row for the picked folder keeps its chooser and the pick can be
+  changed. `RommLibrary.platforms` drops a record whose
+  `fs_slug` is a junk name (`utils.junk.is_junk_entry`, Synology's `@eaDir`).
+  `RommLibrary.pick_folder(platform, folder)` saves a pick after checking it is
+  one folder (no path in it) and one of the choices; the panel's "Automatic"
+  option sends None to forget it (`PUT /api/libraries/{id}/placements/{platform}`, 422
+  otherwise; 400 for a Library without `pick_folder`).
 
 **The Rules view** (`src/lib/components/views/RulesView.svelte`). A Library
 picker over `RuleEditor.svelte` (the former `RommAutomation.svelte`). The editor
@@ -7045,20 +7135,43 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   even when that worker is abandoned by the stall bound: its unlink is guarded
   by the folder descriptor, sidecar lock and inode checks the same thread
   holds while it unlinks, not by locks a caller could release.
-- **Gating.** `EXODOS_DOS_DIR` is the only source of the template tree. It must
-  be a directory inside a configured Volume; otherwise `is_ready` is false (run
-  through `run_detached`, since it stats a possibly dead mount) and the tool is
-  hidden. Checking a product reads only the `.dosz`, so `verify_is_ready` is
-  always true: `compressatorium verify` and Verify work without the install.
+- **No gating (#513).** `is_ready` and `verify_is_ready` are always true: the
+  tool runs no binary and needs no setting. The template tree is found per zip
+  by `ExodosService.candidates(path)`: the `EXODOS_DOS_DIR` override first, then
+  `<folder>/!dos` for the zip's real folder and each parent up to
+  `lock_boundary_root(path)`, nearest first. A candidate is used only when its
+  real path is a directory inside a Volume (`is_within_configured_volumes`), and
+  the template is read beneath that real path through `read_beneath`, so it
+  resolves inside the `!dos` folder it came from. The first candidate holding
+  `<game>/dosbox.conf` wins (`NoTemplate`, a missing file, moves on to the next).
+  A template that is there but refused (a link, not a regular file, too large)
+  or unreadable just now stops the search and fails the zip: it never becomes
+  a repack without a conf.
+- **No template.** A zip with no template found still repacks when its one game
+  folder holds a DOS program (`.exe`, `.com`, `.bat`, what DOSBox Pure's start
+  menu offers). That is the line between an eXoDOS game zip and any other zip
+  with one folder: the tool is manual only and writes a new `.dosz` beside a
+  Source it never changes, so a false yes costs one extra file, while a folder
+  with nothing to run is refused. Such a product gets no `dosbox.conf`: the
+  zip's own `<Game>/dosbox.conf` (in any case, `DOSBOX.CONF` too), never
+  rewritten, is left out too (PR #517), or DOSBox Pure would load it instead
+  of its start menu. The job's last update is a warning naming where it
+  looked (`RepackPlan.no_template_reason`, worked out during the bounded
+  inspection, so nothing is read on the event loop), and saying so when it
+  left the zip's own conf out. A candidate tree that is missing is skipped;
+  one whose stat fails just now (`EIO`) raises `TemplateUnreadable`, a
+  `ProbeUnavailable` the probe never caches. The repack's own
+  check requires the root conf only when it wrote one; Verify accepts a `.dosz`
+  with no root conf when it holds a DOS program.
 - **Content-refined source.** `.zip` is romz's archive extension too, so
   `converts_path` reads the zip's directory: every name passes
   `member_segments` and `enforce_archive_limits`, every member sits in one game
   folder (a loose root file refuses it), and `<tree>/<game>/dosbox.conf`
   is read through `read_beneath` (no symlink on any component, a regular
   file, one descriptor). The answer, a yes or a no, is cached per (path,
-  size, mtime) of the zip and kept only while the template tree is unchanged
-  (#331): the root's and the game folder's mtimes, and the template file's
-  own mtime, size and inode. That stamp is taken before the template is read
+  size, mtime) of the zip and its candidate list, and kept only while every
+  candidate tree is unchanged (#331, #513): each tree's, its game folder's
+  and its template file's mtime, size and inode. That stamp is taken before the template is read
   and checked again after; if the tree moved in between, the answer is not
   cached. Only a verdict is cached (not an eXoDOS layout, no template): any
   OSError reading the zip or the template (a permission or I/O error, an
@@ -8641,6 +8754,36 @@ own work has drained, whatever it queued meanwhile is cancelled and drained too
 memory a run keeps includes `ranked_holds` and `taken_holds` (Codex
 4608417851), so a later run lifts a hold whose ranking or name changed.
 
+**Taking a path in now (#522, `services/inbox/trigger.py`, `routes/hooks.py`).**
+`POST /api/hooks/arr` (Sonarr, Radarr, ROMarr webhooks) and `POST /api/scan`
+(`{"path"}` or `{"paths"}`) are one path into the same intake; there is no
+second pipeline. Both need the app's auth when it is on and the action
+confirmation header `X-Chd-Action-Confirm: scan`, the *arr `Test` event
+included, so its Test button proves the whole setup. `trigger.paths_in` reads
+`path`/`paths` and the `path` of every `*File` object and `*Files` list, so an
+*arr with its own field name needs no code; only `Download`/`Import` (or no
+`eventType`) take anything. Each path is rewritten by the longest whole-folder
+`from` (Autoscan's `from`/`to`, stored in the `arr_hook` preference and set in
+the UI only), then must be `volume_containment(...) is True` (a "couldn't
+tell" refuses it) and lie under an Inbox's folder. `intake.mark_ready` records
+it on that Inbox's `_State.ready`, and the Inbox is polled at once
+(`_poll_now`, waiting out a poll already running, then
+`report.after_pass`). A poll treats an Image as settled when a marker names it,
+a folder above it, or one of its files (a sheet's track): only the settle wait
+is skipped. Every marker covers only what was last written by the time it
+was named (every file of the Image, a sheet and its tracks, by mtime against
+the marker's wall-clock time), so a download still being written there, or a
+new one at a named path, settles as usual. A taken Image consumes its own
+markers (the file, its tracks), never another sheet's beside it; a folder's
+marker stays for the rest of the folder until it expires. `trigger.process` resolves the marker's path in the same bounded
+worker as the check (`_checked`) and hands it to `mark_ready(...,
+resolved=True)`, so nothing touches the disk on the event loop (PR #526). A held Image stays held, and only files the poll lists (no link,
+no `processed/`) are ever taken, so a marker can't reach anything intake
+wouldn't. Markers expire after `READY_SECONDS`. `trigger.check` is the
+dry run the UI's **Test** uses; for a path that lands nowhere,
+`trigger.suggest` looks for the same tail of folders under each Volume and
+offers the rewrite. The last 20 paths received are kept in memory for the UI.
+
 ### 3.3.26 Event streams end cleanly on shutdown (`services/event_stream.py`, #465)
 
 Every server-sent event route returns `event_stream(generator)`, never a bare
@@ -8927,6 +9070,15 @@ every tool that declares `required_binaries` (below) touch the disk; the
 requirement is stated on `ToolPlugin.is_ready` so a new gated tool inherits it.
 
 #### Declaring the programs a tool runs (`required_binaries`, #494)
+
+Where a program is found (#515): each image-installed fixed path
+(`config._IMAGE_BINARIES`: `CHDMAN_PATH`, `DOLPHIN_TOOL_PATH`, ...) is
+resolved once, when `Settings` is built, by `config.detected_binary`: the
+default when it exists, else the same base name on `PATH`, else the default
+(so the not-ready reason names it). A path the operator set is never
+replaced. `SEVENZIP_PATH` falls back to `7zz` the same way. A new tool whose
+image path is fixed adds its field to `_IMAGE_BINARIES`; the probe below then
+checks the resolved path like any other.
 
 A tool that spawns a program does not write its own readiness check. It
 declares the program on `BaseTool.required_binaries`, a tuple of

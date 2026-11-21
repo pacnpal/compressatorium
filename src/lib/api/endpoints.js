@@ -469,8 +469,8 @@ export const api = {
     return fetchJson(buildApiUrl('/rom-converto-info', params), undefined, 'Failed to get ZAR info');
   },
 
-  // Which tools the UI should show. Switch is reported unavailable when no
-  // prod.keys are configured, so the sidebar can hide it entirely.
+  // Which tools can run, and `reasons`: why each of the others can't, with
+  // the fix (Switch with no prod.keys, a program that isn't installed).
   getTools() {
     return fetchJson(`${API_BASE}/tools`, undefined, 'Failed to load tool availability');
   },
@@ -824,6 +824,19 @@ export const api = {
       'Failed to read where Images go',
     ),
 
+  // Which of RomM's folders a Platform's new Images go to (#512); `null`
+  // goes back to the automatic pick.
+  pickLibraryPlacement: (id, platform, folder) =>
+    fetchJson(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/placements/${encodeURIComponent(platform)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder }),
+      },
+      'Failed to save where new Images go',
+    ),
+
   // A Library's Inboxes (#431): folders whose new files are taken into it.
   listInboxes: (id) =>
     fetchJson(
@@ -846,6 +859,23 @@ export const api = {
       { method: 'DELETE' },
       'Failed to remove the Inbox',
     ),
+
+  // The *arr webhook (#522): its setup, path rewrites and a dry-run check.
+  getArrHook: () => fetchJson(`${API_BASE}/hooks/arr`, undefined, 'Could not read the webhook setup'),
+
+  saveArrRewrites: (rewrites) =>
+    fetchJson(
+      `${API_BASE}/hooks/arr/rewrites`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rewrites }),
+      },
+      'Could not save the rewrites',
+    ),
+
+  checkArrPath: (path) =>
+    jsonPost(`${API_BASE}/hooks/arr/check`, { path }, {}, 'Could not check the path'),
 
   getLibraryRules: (id) =>
     fetchJson(

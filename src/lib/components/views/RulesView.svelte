@@ -19,6 +19,7 @@
   import RuleEditor from '$lib/components/views/RuleEditor.svelte';
   import LibraryPlacement from '$lib/components/views/LibraryPlacement.svelte';
   import LibraryInboxes from '$lib/components/views/LibraryInboxes.svelte';
+  import ArrHook from '$lib/components/views/ArrHook.svelte';
   import BaseModal from '$lib/components/modals/BaseModal.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Select from '$lib/components/ui/Select.svelte';
@@ -177,6 +178,24 @@
     </p>
   {/if}
 
+  <!-- Libraries may overlap (#514): the nearest root owns a file. -->
+  {#if selected?.within || selected?.contains?.length}
+    <p class="hint muted ownership">
+      <FolderCog size={14} aria-hidden="true" />
+      <span>
+        {#if selected.within}
+          This folder is inside <strong>{selected.within.name}</strong>. Its files belong to
+          {selected.name}, so only these Rules convert them.
+        {/if}
+        {#if selected.contains?.length}
+          Files in {selected.contains.map((lib) => lib.name).join(', ')} belong to
+          {selected.contains.length === 1 ? 'that Library' : 'those Libraries'}, so these Rules
+          leave them alone.
+        {/if}
+      </span>
+    </p>
+  {/if}
+
   {#if isFolder && source}
     <section class="library">
       <div class="library-text">
@@ -225,6 +244,7 @@
       platforms={source?.platforms ?? null}
     />
     <LibraryInboxes library={selected} />
+    <ArrHook />
   {/if}
 
   {#if source}
