@@ -199,12 +199,10 @@
       if (fromRomm) romm.setPendingRepins(conversion.lastRepinPending);
       conversion.clearDuplicateCheck();
       fileBrowser.clearSelection();
-      // Honor the per-deployment auto-return-from-search setting
-      // (/api/version → ui.searchAutoReturnToFileList). The legacy
-      // flow dropped users back to the pre-search directory after a
-      // successful submit so they could see the new output in
-      // context; otherwise the UI stays stuck in the recursive
-      // search result set even though those files are now queued.
+      // "Back to the folder after queueing" (ui.searchAutoReturnToFileList):
+      // drop back to the pre-search directory after a successful submit so
+      // the new output shows in context, instead of staying in the
+      // recursive search result set whose files are now queued.
       if (fileBrowser.searchMode && ui.searchAutoReturnToFileList) {
         fileBrowser.exitSearch();
         // exitSearch only flips the flag; force a refresh so the
@@ -289,6 +287,14 @@
           bind:checked={conversion.split}
           label="Split into 4 GB parts (FAT32)"
           description="Writes Game.iso.0, Game.iso.1, … so the image fits on FAT32. RPCS3 mounts the .0 part. Single .iso below 4 GB."
+        />
+      {/if}
+
+      {#if fileBrowser.searchMode}
+        <Checkbox
+          bind:checked={ui.searchAutoReturnToFileList}
+          label="Back to the folder after queueing"
+          description="Leaves these search results once the files are queued."
         />
       {/if}
     </div>

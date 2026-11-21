@@ -622,7 +622,7 @@ class RomConvertoService:
         if match_extension(file_path, ZAR_VERIFY_EXTENSIONS) is None:
             raise RomConvertoError(f"Not a ZAR ({ZAR_OUTPUT_EXTENSION})")
         size = await run_detached(os.path.getsize, file_path)
-        timeout = info_timeout(_OWNER)
+        timeout = info_timeout()
         returncode, stdout, _ = await self._runner.run_capture(
             self._command("xenon", "info", file_path),
             timeout=timeout or None, stderr_to_stdout=True, env=_env(),

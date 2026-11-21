@@ -29,7 +29,6 @@ from logging_setup import get_logger
 from config import settings
 from models import DirectoryListing, FileEntry, RommDiagnostics, RommListingSummary
 from pydantic import BaseModel, Field
-from routes import rules as shared_rule_routes
 from routes.files import (
     detect_directory_outputs,
     detect_file_outputs,
@@ -76,7 +75,6 @@ from services.romm import (
     swap_referrer as romm_swap_referrer,
 )
 from services.romm.library import app_verdicts, rom_identified, romm_library
-from services.rules import editor as rules_editor
 from services.rules import sweep as rules_sweep
 from services.subprocess_runner import (
     SIZE_RATIOS,
@@ -428,7 +426,7 @@ async def romm_converter_import_plan() -> dict:
     """The Rules importing RomM's converter targets would create (#385).
 
     Read-only: nothing is saved here. The view merges ``rules`` into the
-    Rules it holds and saves them through ``PUT /api/romm/rules``, the same as
+    Rules it holds and saves them through ``PUT /api/libraries/romm/rules``, the same as
     any edit. Only Platforms with no conversion Rule are planned; a RomM target
     with no matching mode here is listed in ``skipped``.
     """
@@ -2296,89 +2294,3 @@ async def discover_romm() -> dict:
     when nothing answered. Only RomM's public heartbeat is asked."""
     found = await romm_connect.discover()
     return found or {"url": None, "version": None, "library_root": None}
-
-
-@router.get("/romm/rules")
-async def get_romm_rules() -> dict:
-    """Per-platform automation rules, plus the schema the editor renders from.
-
-    ``defaults`` and ``options`` ship with the rules so the UI never carries a
-    second copy of what a valid rule looks like.
-    """
-    return await rules_editor.editor_payload(romm_library)
-
-
-@router.put("/romm/rules")
-async def put_romm_rules(payload: dict) -> dict:
-    """Replace the rule set. Rules naming an unknown mode are dropped."""
-    return await shared_rule_routes.save_rules(romm_library, payload)
-
-
-@router.patch("/romm/rules")
-async def patch_romm_rules(payload: dict) -> dict:
-    """Change only the platforms named (``null`` removes one), as the console
-    table sends (#541)."""
-    return await shared_rule_routes.patch_rules(romm_library, payload)
-
-
-@router.post("/romm/rules/forget-converted")
-async def forget_romm_converted(payload: dict | None = None) -> dict:
-    """Forget which ROMs the automation has already converted.
-
-    ``overwrite`` and ``rename`` rules remember what they have produced, since
-    neither policy can tell "already done" from the destination alone. Restore
-    a library from backup, or move outputs aside by hand, and that memory is
-    the only thing standing between the operator and a rerun -- so it is
-    clearable, per platform or wholesale.
-    """
-    if (payload or {}).get("failed_only"):
-        # Retry the failed ROMs, keeping what was converted (#541).
-        return await shared_rule_routes.forget_converted(romm_library, payload)
-    cleared = await romm_auto.forget_converted(
-        shared_rule_routes.requested_platform_ids(payload),
-    )
-    return {"cleared": cleared, "state": await romm_auto.get_state()}
-
-
-class SweepRequest(BaseModel):
-    """What a manual Preview / Run now may ask for.
-
-    Typed rather than a bare dict because both fields reach the sweep: an
-    unvalidated `limit` became the overall cap verbatim, so a number larger
-    than `auto_convert_max_per_run` queued past the configured safety limit and
-    a string failed the comparison inside the sweep with a 500. Here it can
-    only ever narrow: the sweep clamps it down to the configured maximum.
-    """
-
-    platform_ids: list[int] | None = None
-    limit: int | None = Field(default=None, ge=1)
-
-
-@router.post("/romm/auto-convert/preview")
-async def preview_auto_convert(payload: SweepRequest | None = None) -> dict:
-    """What a sweep would queue right now, without queueing anything.
-
-    Ignores each rule's schedule so the operator can see the effect of a rule
-    they just wrote instead of waiting for its next window.
-    """
-    _require_configured()
-    payload = payload or SweepRequest()
-    return await rules_editor.sweep_now(
-        romm_library, platform_ids=payload.platform_ids, limit=payload.limit,
-        dry_run=True,
-    )
-
-
-@router.post("/romm/auto-convert/run")
-async def run_auto_convert(payload: SweepRequest | None = None) -> dict:
-    """Run a sweep now, queueing real jobs.
-
-    Manual runs ignore the schedule -- pressing the button means "now" -- but
-    still honour every other part of each rule (filters, caps, ordering).
-    """
-    _require_configured()
-    payload = payload or SweepRequest()
-    return await rules_editor.sweep_now(
-        romm_library, platform_ids=payload.platform_ids, limit=payload.limit,
-        dry_run=False,
-    )

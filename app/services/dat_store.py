@@ -12,7 +12,7 @@ from logging_setup import get_logger
 import os
 import threading
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -29,7 +29,6 @@ from services.dat_ranking import (
     FAMILIES, RankedMatch, apply_ranking, dat_family, image_kind,
     is_unrankable_local_hit, ranked_match,
 )
-from utils.path_utils import path_presence
 
 logger = get_logger("dat_store")
 
@@ -1175,38 +1174,6 @@ class DATStore:
         """
         with self._session() as session:
             return list(session.scalars(select(_db.DATMatch.path)).all())
-
-    def _prune_missing_sync(self, progress: Callable[..., None] | None = None) -> int:
-        """Drop the match entries whose file is confirmed gone; how many.
-
-        Only a confirmed absence (``path_presence(...) is False``): a file on
-        a Volume that stalls or errors keeps its entry (#373). ``progress`` is
-        told each entry, for a stall-bounded caller; no session is held open
-        while a Volume is asked. Blocking.
-        """
-        tick = progress or (lambda *_args: None)
-        with self._session() as session:
-            paths = list(session.scalars(select(_db.DATMatch.path)).all())
-        missing = []
-        for path in paths:
-            tick(path)
-            if path_presence(path) is False:
-                missing.append(path)
-        tick()  # a caller that gave up stops here, before deleting anything
-        if not missing:
-            return 0
-        with self._session() as session:
-            # Chunk to stay under SQLite's bind-parameter limit (default 999).
-            chunk_size = 900
-            for i in range(0, len(missing), chunk_size):
-                chunk = missing[i:i + chunk_size]
-                session.execute(delete(_db.DATMatch).where(_db.DATMatch.path.in_(chunk)))
-            session.commit()
-        return len(missing)
-
-    def prune_missing_blocking(self, progress: Callable[..., None] | None = None) -> int:
-        """:meth:`_prune_missing_sync`, for a stall-bounded caller (#373)."""
-        return self._prune_missing_sync(progress)
 
 
 dat_store = DATStore()

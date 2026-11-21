@@ -261,6 +261,30 @@
     template is found for it or the folder holds a DOS program (`.exe`, `.com`
     or `.bat`). Other zips are skipped with the reason, as before.
   - Verify accepts a `.dosz` with no `dosbox.conf` when it holds a DOS program.
+- **Fewer settings** (#542). Process priority and timeouts are one value for
+  every tool now (`COMPRESSATORIUM_TOOL_*`). The 45 per-tool overrides
+  (`COMPRESSATORIUM_<TOOL>_NICE`, `_IOPRIO_CLASS`, `_IOPRIO_LEVEL`,
+  `_INFO_TIMEOUT`, `_VERIFY_TIMEOUT`) are retired. A deployment that still sets
+  one keeps working: the value sets the shared setting for every tool (when the
+  shared one isn't set; two that disagree give the largest), and startup logs
+  one warning naming it.
+  - The stall warning (300 s) and the DEBUG progress line (every 30 s) are fixed
+    timings. `CHD_DEBUG_PROGRESS_TIMEOUT`, `CHD_DEBUG_PROGRESS_INTERVAL` and (since #536) `CHD_DEBUG_HEARTBEAT` are
+    no longer read.
+  - "Back to the folder after queueing" from search results is a checkbox in
+    the Convert panel, remembered by the browser. It was the
+    `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` environment variable,
+    which is no longer read; it still starts on.
+  - Ledger rows are kept forever. The retention setting (only reachable through
+    `PUT /api/ledger/settings`) is gone, and a retention stored by an older
+    release prunes nothing.
+- **No duplicate routes** (#542). RomM's Rules use the Library routes like any
+  other Library: `/api/libraries/romm/rules`, `.../rules/forget-converted`,
+  `.../preview` and `.../run`. Removed: `/api/romm/rules`,
+  `/api/romm/rules/forget-converted`, `/api/romm/auto-convert/preview`,
+  `/api/romm/auto-convert/run`, and the uncalled `GET /api/jobs/{id}/events`
+  (use `/api/jobs/events`), `POST /api/dat/prune` and `GET/PUT
+  /api/ledger/settings`. `POST /api/dat/match` stays: ROMarr calls it.
 
 ### Fixed
 

@@ -36,7 +36,6 @@ _XCI_MISMATCH = "nsz did not rebuild this XCI byte-for-byte, so the Source is ke
 class NszTool(BaseTool):
     id = "nsz"
     platform_slugs = frozenset({"switch", "nintendo-switch"})
-    policy_owner = "nsz"
     display_name = "Switch"
     # File info is the size and the extension's format; nsz and prod.keys aren't needed.
     info_needs_tool = False

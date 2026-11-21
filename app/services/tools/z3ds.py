@@ -40,7 +40,6 @@ _Z3DS_DECOMPRESSED = frozenset(Z3DS_DECOMPRESS_FORMATS.values())
 class Z3dsTool(BaseTool):
     id = "z3ds"
     platform_slugs = frozenset({"3ds", "n3ds", "new-nintendo-3ds"})
-    policy_owner = "z3ds"
     display_name = "3DS"
     # File info is the size and the extension's format; z3ds_compressor isn't run.
     info_needs_tool = False

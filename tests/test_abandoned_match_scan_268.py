@@ -444,7 +444,7 @@ async def test_disc_hashes_does_not_spawn_after_an_abandoned_size_probe(monkeypa
 
     spawned = []
 
-    async def fake_resolve(path, owner, *, cancel_event=None):
+    async def fake_resolve(path, *, cancel_event=None):
         _note("detached read")          # what run_detached records
         return 1800
 

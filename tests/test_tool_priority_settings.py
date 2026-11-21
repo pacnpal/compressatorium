@@ -4,8 +4,9 @@ These knobs (nice level, I/O priority, info/verify timeouts) govern every
 conversion tool's subprocess, not just chdman. They are exposed under
 tool-neutral ``COMPRESSATORIUM_TOOL_*`` names while the chdman-era
 ``CHD_*``/``CHDMAN_*`` names remain backwards-compatible aliases, mirroring the
-``chd_volumes`` -> ``COMPRESSATORIUM_VOLUMES`` pattern. Optional per-tool
-overrides (``COMPRESSATORIUM_<TOOL>_*``) fall back to the shared default.
+``chd_volumes`` -> ``COMPRESSATORIUM_VOLUMES`` pattern. The per-tool
+overrides (``COMPRESSATORIUM_<TOOL>_*``) are retired (#542): each old name now
+sets the shared value, and startup names it in one warning.
 """
 from __future__ import annotations
 
@@ -27,12 +28,6 @@ def test_neutral_defaults_match_chdman_era_values():
     assert s.tool_verify_timeout_per_gib == 600
     assert s.tool_verify_timeout_cap == 86400
     assert s.tool_verify_progress_timeout == 600
-    # Per-tool overrides are unset by default -> fall back to the shared values.
-    assert s.chdman_nice is None
-    assert s.dolphin_tool_nice is None
-    assert s.nsz_nice is None
-    assert s.z3ds_nice is None
-    assert s.maxcso_nice is None
 
 
 def test_legacy_chd_env_names_still_populate_shared_settings():
@@ -93,38 +88,84 @@ def test_each_legacy_alias_maps_to_its_neutral_field(env, field):
     assert getattr(s, field) == 3
 
 
-def test_per_tool_override_takes_precedence_when_set():
-    s = Settings(
-        COMPRESSATORIUM_TOOL_NICE=10,
-        COMPRESSATORIUM_DOLPHIN_TOOL_NICE=15,
-    )
-    assert s.tool_nice == 10
-    assert s.dolphin_tool_nice == 15
-
-
-def test_nsz_z3ds_maxcso_expose_verify_timeout_override_only():
-    """nsz/z3ds/maxcso run a verify subprocess but no info subprocess.
-
-    They take a per-tool ``*_verify_timeout`` override but, unlike chdman and
-    dolphin, have no ``*_info_timeout`` field (their ``info()`` is a filesystem
-    read).
-    """
+def test_per_tool_settings_are_gone():
+    """One value for every tool (#542): no per-tool override fields remain."""
     s = Settings()
-    assert s.nsz_verify_timeout is None
-    assert s.z3ds_verify_timeout is None
-    assert s.maxcso_verify_timeout is None
-    assert not hasattr(s, "nsz_info_timeout")
-    assert not hasattr(s, "z3ds_info_timeout")
-    assert not hasattr(s, "maxcso_info_timeout")
+    for name in ("chdman_nice", "dolphin_tool_ioprio_class", "nsz_verify_timeout",
+                 "rom_converto_info_timeout", "xiso_ioprio_level"):
+        assert not hasattr(s, name)
 
-    s = Settings(
-        COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT=30,
-        COMPRESSATORIUM_Z3DS_VERIFY_TIMEOUT=45,
-        COMPRESSATORIUM_MAXCSO_VERIFY_TIMEOUT=50,
-    )
-    assert s.nsz_verify_timeout == 30
-    assert s.z3ds_verify_timeout == 45
-    assert s.maxcso_verify_timeout == 50
+
+def test_retired_per_tool_name_feeds_the_shared_setting(monkeypatch):
+    """An old COMPRESSATORIUM_<TOOL>_* name keeps working: it sets the shared value."""
+    monkeypatch.setenv("COMPRESSATORIUM_DOLPHIN_TOOL_NICE", "15")
+    monkeypatch.setenv("COMPRESSATORIUM_XISO_VERIFY_TIMEOUT", "77")
+    s = Settings()
+    assert s.tool_nice == 15
+    assert s.tool_verify_timeout == 77
+    assert s.retired_env == [
+        "COMPRESSATORIUM_DOLPHIN_TOOL_NICE", "COMPRESSATORIUM_XISO_VERIFY_TIMEOUT",
+    ]
+
+
+def test_retired_per_tool_names_that_disagree_take_the_largest(monkeypatch):
+    monkeypatch.setenv("COMPRESSATORIUM_CHDMAN_NICE", "5")
+    monkeypatch.setenv("COMPRESSATORIUM_NSZ_NICE", "12")
+    assert Settings().tool_nice == 12
+
+
+def test_shared_name_wins_over_a_retired_per_tool_name(monkeypatch):
+    monkeypatch.setenv("COMPRESSATORIUM_TOOL_NICE", "3")
+    monkeypatch.setenv("COMPRESSATORIUM_CHDMAN_NICE", "15")
+    s = Settings()
+    assert s.tool_nice == 3
+    assert s.retired_env == ["COMPRESSATORIUM_CHDMAN_NICE"]
+
+
+def test_unreadable_retired_value_is_skipped_not_fatal(monkeypatch):
+    monkeypatch.setenv("COMPRESSATORIUM_Z3DS_NICE", "lots")
+    s = Settings()
+    assert s.tool_nice == 10
+    assert s.retired_env == ["COMPRESSATORIUM_Z3DS_NICE"]
+
+
+def test_retired_names_no_longer_read_are_reported(monkeypatch):
+    monkeypatch.setenv("CHD_DEBUG_PROGRESS_TIMEOUT", "1")
+    monkeypatch.setenv("COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST", "false")
+    s = Settings()
+    assert s.retired_env == [
+        "CHD_DEBUG_PROGRESS_TIMEOUT", "COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST",
+    ]
+    assert not hasattr(s, "debug_progress_timeout")
+    assert not hasattr(s, "search_auto_return_to_file_list")
+
+
+def test_no_retired_names_no_warning_list(monkeypatch):
+    import os
+
+    for name in list(os.environ):
+        if name.startswith(("COMPRESSATORIUM_", "CHD_DEBUG_", "CHD_SEARCH_")):
+            monkeypatch.delenv(name)
+    assert Settings().retired_env == []
+
+
+def test_startup_logs_one_warning_naming_the_retired_names(monkeypatch, capfd):
+    import main
+    from logging_setup import get_logger
+
+    monkeypatch.setattr(main.settings, "_retired_env", ["COMPRESSATORIUM_CHDMAN_NICE"])
+    logger = get_logger()
+    # Restored afterwards: configure_logging sets all three.
+    monkeypatch.setattr(logger, "handlers", [])
+    monkeypatch.setattr(logger, "propagate", logger.propagate)
+    monkeypatch.setattr(logger, "level", logger.level)
+    main.configure_logging()
+    main.configure_logging()  # a second call (lifespan, then _serve) says nothing
+    for handler in logger.handlers:
+        handler.flush()
+    err = capfd.readouterr().err
+    assert err.count("Retired settings") == 1
+    assert "COMPRESSATORIUM_CHDMAN_NICE" in err
 
 
 class _StubSettings:
@@ -147,7 +188,7 @@ def _patch_settings(monkeypatch, **values):
     return subprocess_runner
 
 
-def test_resolver_falls_back_to_shared_default(monkeypatch):
+def test_resolver_reads_the_shared_values(monkeypatch):
     sr = _patch_settings(
         monkeypatch,
         tool_nice=10,
@@ -156,59 +197,9 @@ def test_resolver_falls_back_to_shared_default(monkeypatch):
         tool_ioprio_class=2,
         tool_ioprio_level=6,
     )
-    # No per-tool override defined -> shared default for every owner.
-    assert sr.nice_value("chdman") == 10
-    assert sr.nice_value("dolphin_tool") == 10
-    assert sr.info_timeout("dolphin_tool") == 60
-    assert sr.verify_timeout("chdman") == 0
-
-
-def test_resolver_prefers_per_tool_override(monkeypatch):
-    sr = _patch_settings(
-        monkeypatch,
-        tool_nice=10,
-        dolphin_tool_nice=15,
-        tool_info_timeout=60,
-        dolphin_tool_info_timeout=120,
-    )
-    assert sr.nice_value("dolphin_tool") == 15
-    # An owner without an override still falls back to the shared default.
-    assert sr.nice_value("chdman") == 10
-    assert sr.info_timeout("dolphin_tool") == 120
-    assert sr.info_timeout("chdman") == 60
-
-
-def test_resolver_prefers_maxcso_verify_timeout_override(monkeypatch):
-    """The runtime path maxcso uses (verify_timeout("maxcso")) honors the
-    per-tool COMPRESSATORIUM_MAXCSO_VERIFY_TIMEOUT override, not just Settings
-    parsing."""
-    sr = _patch_settings(
-        monkeypatch,
-        tool_verify_timeout=0,
-        maxcso_verify_timeout=50,
-    )
-    assert sr.verify_timeout("maxcso") == 50
-    # Owners without an override still fall back to the shared default.
-    assert sr.verify_timeout("chdman") == 0
-
-
-def test_resolver_none_override_falls_back(monkeypatch):
-    """An explicitly-None per-tool override defers to the shared default."""
-    sr = _patch_settings(monkeypatch, tool_nice=10, chdman_nice=None)
-    assert sr.nice_value("chdman") == 10
-
-
-def test_verify_timeout_resolves_per_tool_for_nsz_and_z3ds(monkeypatch):
-    sr = _patch_settings(
-        monkeypatch,
-        tool_verify_timeout=0,
-        nsz_verify_timeout=30,
-        z3ds_verify_timeout=45,
-    )
-    assert sr.verify_timeout("nsz") == 30
-    assert sr.verify_timeout("z3ds") == 45
-    # A tool without an override still falls back to the shared default.
-    assert sr.verify_timeout("chdman") == 0
+    assert sr.nice_value() == 10
+    assert sr.info_timeout() == 60
+    assert sr.verify_timeout() == 0
 
 
 def test_timeout_helpers_clamp_negative_and_none(monkeypatch):
@@ -219,3 +210,11 @@ def test_timeout_helpers_clamp_negative_and_none(monkeypatch):
     )
     assert sr.info_timeout() == 0
     assert sr.verify_timeout() == 0
+
+
+def test_the_heartbeat_name_is_reported_too(monkeypatch):
+    """#536 made the maintenance cadence a constant; its old name is retired."""
+    monkeypatch.setenv("CHD_DEBUG_HEARTBEAT", "5")
+    s = Settings()
+    assert s.retired_env == ["CHD_DEBUG_HEARTBEAT"]
+    assert not hasattr(s, "debug_heartbeat_interval")

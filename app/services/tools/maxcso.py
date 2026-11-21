@@ -40,7 +40,6 @@ class MaxcsoTool(BaseTool):
     # An effort preset rather than a codec; the dropdown offers
     # default/fast/max and "max" is what the manual picker seeds.
     default_compression = "max"
-    policy_owner = "maxcso"
     display_name = "CSO"
     # File info is the size and the extension's format; maxcso isn't run.
     info_needs_tool = False

@@ -780,10 +780,7 @@ async def get_app_version() -> dict:
         main_module = importlib.import_module("main")
     except ModuleNotFoundError:
         main_module = importlib.import_module("app.main")
-    return {
-        "version": main_module.get_version(),
-        "search_auto_return_to_file_list": settings.search_auto_return_to_file_list,
-    }
+    return {"version": main_module.get_version()}
 
 
 # ============ Z3DS endpoints ============

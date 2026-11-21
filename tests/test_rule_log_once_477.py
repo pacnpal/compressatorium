@@ -69,7 +69,7 @@ async def _store(lib_id: str, rules: dict, **others: dict) -> None:
 @pytest.mark.asyncio
 async def test_reading_the_rules_logs_nothing_however_often(tree: Path, caplog) -> None:
     from routes import libraries as routes
-    from routes import romm as romm_routes
+    from routes import libraries as lib_routes
 
     lib = await _register(tree)
     await _store(lib["id"], _STORED, romm={
@@ -80,7 +80,7 @@ async def test_reading_the_rules_logs_nothing_however_often(tree: Path, caplog) 
     with caplog.at_level(logging.DEBUG):
         for _ in range(3):
             rules = (await routes.get_library_rules(lib["id"]))["rules"]
-            await romm_routes.get_romm_rules()
+            await lib_routes.get_library_rules("romm")
 
     assert _warnings(caplog) == []
     # What was dropped is still on the Rule, for the editor.
