@@ -350,8 +350,7 @@ class Verification(Base):
 class LedgerEntry(Base):
     """One row per job that reached a terminal status (#292).
 
-    Permanent by default; ``services.ledger`` prunes by age only when a
-    retention is set. Timestamps are ISO-8601 UTC strings like the rest of
+    Permanent. Timestamps are ISO-8601 UTC strings like the rest of
     the schema, so they sort lexically.
     """
 
@@ -588,8 +587,7 @@ class ImageCheckRecord(Base):
 class LedgerTotal(Base):
     """Running per-status totals behind the Prometheus counters (#297).
 
-    Incremented when a Ledger row is written and never decremented, so a
-    retention prune of ``ledger`` rows cannot make a counter go down.
+    Incremented when a Ledger row is written and never decremented.
     Byte sums only accumulate for completed jobs.
     """
 

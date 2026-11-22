@@ -209,8 +209,6 @@ Volume behavior:
 | `COMPRESSATORIUM_ENABLE_AUTH` | `false` | Enable token auth for the Web UI and `/api`. Off by default; set `true` to require a token. |
 | `COMPRESSATORIUM_AUTH_TOKEN` / `CHD_AUTH_TOKEN` | generated in `/config/auth_token` | Web UI/API password (when auth is enabled). Use it via HTTP Basic, bearer token, or `X-Compressatorium-Token`. |
 | `COMPRESSATORIUM_AUTH_USERNAME` | `admin` | HTTP Basic username for the Web UI (when auth is enabled). |
-| `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Web UI: when true, `Search All` conversions return to the previous file-list view after queueing |
-| `CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Legacy alias for `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` |
 | `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction (auto-created) |
 | `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files, conversion slots and the Rule scheduler lock, shared by every container that mounts `/config`. Created at start; the process stops with an error if it can't be |
 | `COMPRESSATORIUM_DB_PATH` | `/config/compressatorium.db` | Unified SQLite database (DAT index, DAT-sync state, match cache, CHD metadata, verification state). On first startup, legacy JSON files are auto-migrated to this DB and renamed to `*.migrated.bak` (never deleted). Custom legacy paths set via `CHD_METADATA_STORE`, `CHD_VERIFICATION_STORE`, `CHD_DAT_STORE` or `CHD_DAT_SYNC_STORE` are honored during migration. |
@@ -247,8 +245,7 @@ Volume behavior:
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT_PER_GIB` | `600` | Extra verify allowance in seconds per GiB of the verified file (0 makes the bound flat). |
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT_CAP` | `86400` | Upper bound in seconds on the size-scaled verify timeout (0 uncapped). |
 | `COMPRESSATORIUM_TOOL_VERIFY_PROGRESS_TIMEOUT` | `600` | Timeout in seconds without any verify output, for the verifiers that stream progress (chdman, dolphin-tool); catches a wedged verify long before the overall bound. Independent of `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` — it still applies when that is `0`. 0 disables. Legacy alias: `CHD_VERIFY_PROGRESS_TIMEOUT`. |
-| `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` | *(shared default)* | Optional per-tool overrides (`<TOOL>` = `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`, `MAXCSO`, `ROMZ`, `MAKEPS3ISO`, `NKIT2ISO`, `JWUD`, `XISO`, `ROM_CONVERTO`) that fall back to the shared `COMPRESSATORIUM_TOOL_*` values. `NKIT2ISO` and `MAKEPS3ISO` have no `_VERIFY_TIMEOUT` (no verify step, and no reachable verify entry point, respectively); `JWUD` verifies without a subprocess, so its bound applies to the verify call itself. |
-| `COMPRESSATORIUM_<TOOL>_INFO_TIMEOUT` | *(shared default)* | Optional per-tool info-timeout override, only for `<TOOL>` = `CHDMAN`, `DOLPHIN_TOOL` or `ROM_CONVERTO` (the only tools whose `info` runs a subprocess). |
+| `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_INFO_TIMEOUT` / `_VERIFY_TIMEOUT` | *(retired)* | The old per-tool overrides. Each one still works: it sets the shared `COMPRESSATORIUM_TOOL_*` value above for every tool (when that isn't set itself; two that disagree give the largest), and startup logs one warning naming it. Use the shared name instead. |
 | `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
 | `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
 | `CHD_ARCHIVE_MAX_TOTAL_SIZE` | `0` | Max total size in bytes for archive listings/extractions (0 disables) |
@@ -259,8 +256,6 @@ Volume behavior:
 | `CHD_PATCH_MAX_ROM_SIZE` | `536870912` | Max size in bytes of a ROM to patch, and of the patched ROM (0 disables) |
 | `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
 | `LOG_PATH` | (none) | Path to log file (stdout only if unset). Legacy alias: `CHD_DEBUG_LOG_PATH` |
-| `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | Debug progress log interval |
-| `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | Debug progress timeout |
 | `CHD_PROGRESS_TIMEOUT` | `600` | Fail a conversion if progress and output size do not advance for this many seconds (0 disables) |
 | `CHD_PROGRESS_TIMEOUT_PER_GIB` | `120` | Additional stall-timeout seconds per GiB of input size |
 | `CHD_PROGRESS_TIMEOUT_CAP` | `7200` | Upper bound for adaptive conversion stall timeout (0 disables cap) |

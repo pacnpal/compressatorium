@@ -36,7 +36,6 @@ class JwudTool(BaseTool):
     # WUX has no codec; the dropdown carries JWUDTool's verification pass,
     # and verifying is the default.
     default_compression = "verify"
-    policy_owner = "jwud"
     display_name = "Wii U"
     # File info reads the WUX header in Python; JWUDTool and Java aren't run.
     info_needs_tool = False

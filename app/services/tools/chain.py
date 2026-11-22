@@ -340,7 +340,7 @@ class ChainTool(BaseTool):
                     # Forward the runner's liveness signal. A chained job runs
                     # far longer than a single one, so dropping it here would
                     # have every chain reported stalled once it passed
-                    # debug_progress_timeout while making steady progress.
+                    # job_manager.STALL_WARNING_SECONDS while making steady progress.
                     if update.get("activity"):
                         step_update["activity"] = True
                     yield step_update

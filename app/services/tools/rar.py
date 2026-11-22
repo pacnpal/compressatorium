@@ -38,7 +38,6 @@ FILE_CRC32_KIND = "file_size_crc32"
 
 class RarTool(BaseTool):
     id = "rar"
-    policy_owner = "rar"
     display_name = "RAR sets"
     # File info reads the set's headers in Python; unar isn't run.
     info_needs_tool = False

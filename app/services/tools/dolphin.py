@@ -166,7 +166,6 @@ class DolphinTool(BaseTool):
     platform_slugs = frozenset({"ngc", "gamecube", "wii"})
     # dolphin-tool's own RVZ/WIA default, and what the manual picker seeds.
     default_compression = "zstd"
-    policy_owner = "dolphin_tool"
     display_name = "Dolphin"
     modes = _build_modes()
     output_extensions = frozenset({".rvz", ".wia", ".gcz", ".iso"})

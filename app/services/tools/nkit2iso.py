@@ -36,7 +36,6 @@ class Nkit2IsoTool(BaseTool):
     id = "nkit"
     # NKit is a GameCube/Wii shrink format.
     platform_slugs = frozenset({"ngc", "gamecube", "wii"})
-    policy_owner = "nkit2iso"
     display_name = "NKit"
     # File info reads the NKit header in Python; nkit2iso has no info command.
     info_needs_tool = False

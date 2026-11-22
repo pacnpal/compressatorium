@@ -148,7 +148,7 @@ Two supporting layers:
   (`chdman_path`, `dolphin_tool_path`, `z3ds_compressor_path`, `nsz_path`,
   `maxcso_path`, `sevenzip_path`, `makeps3iso_path`, `nkit2iso_path`,
   `jwudtool_path`, `extract_xiso_path`, `rom_converto_path`, `unar_path`) plus the
-  shared and per-tool nice/ioprio/timeout policy knobs.
+  shared nice/ioprio/timeout policy knobs (one value for every tool).
 
 ### The tool registry
 
@@ -566,19 +566,6 @@ constructed from `settings.sevenzip_path`, `MaxcsoTool` from
 This lets ops override the path/env without code changes, and is what the plugin
 passes to its service in `__init__`.
 
-Optionally, add per-tool priority/timeout override fields so ops can diverge from
-the shared `COMPRESSATORIUM_TOOL_*` policy for just your tool. They default to
-`None` (fall back to the shared `tool_*` setting), and the `subprocess_runner`
-helpers resolve them by `<owner>_<key>` (see §5.3). Mirror `nsz`/`z3ds`/`maxcso`:
-
-```python
-nszip_nice: int | None = Field(default=None, alias="COMPRESSATORIUM_NSZIP_NICE")
-nszip_ioprio_class: int | None = Field(default=None, alias="COMPRESSATORIUM_NSZIP_IOPRIO_CLASS")
-nszip_ioprio_level: int | None = Field(default=None, alias="COMPRESSATORIUM_NSZIP_IOPRIO_LEVEL")
-nszip_verify_timeout: int | None = Field(default=None, alias="COMPRESSATORIUM_NSZIP_VERIFY_TIMEOUT")
-# add nszip_info_timeout only if the tool's info() runs a subprocess (chdman/Dolphin do; nsz/z3ds/maxcso don't)
-```
-
 ### 5.3 Write the service + the plugin
 
 There are two files. The **service** (`app/services/nszip.py`) owns the
@@ -670,11 +657,6 @@ from .spec import ModeKind, ModeSpec
 
 class NszipTool(BaseTool):
     id = "nszip"
-    # The SubprocessRunner owner your service runs under, which keys the
-    # per-tool COMPRESSATORIUM_<OWNER>_* overrides (and the verify bound
-    # `BaseTool.verify_timeout` resolves). Equal to `id` unless your service's
-    # historical owner name differs (dolphin/dolphin_tool, cso/maxcso).
-    policy_owner = "nszip"
     display_name = "Switch"
     modes = (
         ModeSpec(
@@ -760,11 +742,10 @@ class NszipTool(BaseTool):
   - Never hand-roll a size-growth estimator in a service. That logic lives in
     the runner precisely so every tool behaves the same way.
 - Read the shared timeout policy via the `services.subprocess_runner`
-  helpers (`info_timeout(owner)`, `verify_timeout(owner)`,
-  `resolve_verify_timeout(path, owner)`). These read the tool-neutral
-  `COMPRESSATORIUM_TOOL_*` settings (with optional per-tool
-  `COMPRESSATORIUM_<TOOL>_*` overrides) in one place, so you never re-read a
-  chdman-named setting in your service.
+  helpers (`info_timeout()`, `verify_timeout()`,
+  `resolve_verify_timeout(path)`). These read the tool-neutral
+  `COMPRESSATORIUM_TOOL_*` settings in one place, so you never re-read a
+  chdman-named setting in your service. There are no per-tool overrides.
 - **Verify must be bounded and cancellable** (issue #266), and neither is your
   code to write. Route a streaming verifier through
   `self._runner.run_verify(...)` and a one-shot one through

@@ -47,7 +47,6 @@ class XisoTool(BaseTool):
     id = "xiso"
     # RomM's slugs for the two consoles this serves.
     platform_slugs = frozenset({"xbox", "xbox360"})
-    policy_owner = "xiso"
     display_name = "Xbox"
     # File info walks the XDVDFS tables in Python; extract-xiso isn't run.
     info_needs_tool = False
