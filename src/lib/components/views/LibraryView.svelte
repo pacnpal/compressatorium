@@ -297,8 +297,7 @@
     <form class="rename" onsubmit={rename}>
       <label>
         <span class="label">Name</span>
-        <!-- svelte-ignore a11y_autofocus -->
-        <input type="text" bind:value={draftName} autofocus />
+        <input type="text" bind:value={draftName} data-autofocus />
       </label>
     </form>
   {/snippet}
