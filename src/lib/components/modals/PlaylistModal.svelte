@@ -144,7 +144,6 @@
           <input
             type="text"
             class="pl-input"
-            data-autofocus
             bind:value={title}
             oninput={onTitleInput}
             onkeydown={onTitleKeydown}

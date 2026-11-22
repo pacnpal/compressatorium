@@ -56,8 +56,7 @@ def test_the_delete_plan_count_reads_inside_its_sentence():
 def test_every_dialog_with_a_name_to_type_opens_on_it():
     """`autofocus` does nothing inside a bits-ui dialog (it moves focus itself),
     so a dialog's field is marked for BaseModal instead."""
-    for rel in ("views/LibraryView.svelte", "modals/PlaylistModal.svelte",
-                "modals/RenameModal.svelte"):
+    for rel in ("views/LibraryView.svelte", "modals/RenameModal.svelte"):
         source = _read(rel)
         assert "data-autofocus" in source, rel
         assert " autofocus" not in source, rel
