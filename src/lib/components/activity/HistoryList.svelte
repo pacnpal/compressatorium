@@ -289,6 +289,10 @@
                   {#if row.status === 'completed' && row.output_path && !row.source_deleted}
                     <span class="muted">original kept</span>
                   {/if}
+                  {#if !row.output_path && row.message && row.status === 'completed'}
+                    <!-- An external job's outcome: a check run's counts. -->
+                    <span class="muted">{row.message}</span>
+                  {/if}
                   {#if row.warning && row.status !== 'waiting'}
                     <!-- What the job warned about as it ended (an eXoDOS game that may not start). -->
                     <span class="warn">{row.warning}</span>

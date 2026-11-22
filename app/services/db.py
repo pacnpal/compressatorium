@@ -386,6 +386,9 @@ class LedgerEntry(Base):
     # migration 0028): an eXoDOS repack that may not start, the reason a
     # waiting archive waits. None when it warned of nothing.
     warning = Column(String, nullable=True)
+    # The job's closing message (#544, migration 0028): an external job's
+    # outcome, a check run's "2 Intact, 1 inconclusive, 3 skipped".
+    message = Column(String, nullable=True)
     __table_args__ = (
         Index("ix_ledger_finished_at", "finished_at"),
         Index("ux_ledger_job_finished", "job_id", "finished_at", unique=True),

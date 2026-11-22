@@ -108,6 +108,8 @@ def row_from_job(job: ConversionJob) -> dict:
         # What the job warned about as it ended, whatever its status (an
         # eXoDOS repack that may not start, a waiting archive's reason).
         "warning": job.warning,
+        # Its closing message: an external job's outcome (a check run's counts).
+        "message": job.message or None,
         "extra_inputs": [dict(item) for item in job.extra_inputs],
     }
 
@@ -298,7 +300,7 @@ CSV_COLUMNS = (
     "image_key", "platform", "error",
     # Last, so a script reading the columns by position before #423 (then
     # #428, then #544) still works.
-    "check_dat", "extra_inputs", "warning",
+    "check_dat", "extra_inputs", "warning", "message",
 )
 _CSV_PAGE = 500
 # Always exported so a scrape sees a zero, not a missing series.

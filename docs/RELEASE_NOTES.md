@@ -114,8 +114,10 @@
   `#/activity/history?status=failed` opens it on the failures.
   `GET /api/ledger` and its CSV export take `since` (`24h`, `7d` or an ISO time,
   fixed once for a whole export) and `checked=true`. A job's warning (an eXoDOS
-  game that may not start) is kept on its row and shown under its result; the
-  CSV has a new last column, `warning`.
+  game that may not start) and its closing summary (a check run's counts) are
+  kept on its row and shown under its result; the CSV has two new last columns,
+  `warning` and `message`. Delete in Needs attention opens on the file's real
+  entry, so it still asks before an original whose new file isn't checked.
 - The folder console dialog is now **Set console**.
 - **One page per Library** (#541). **Libraries** lists every Library as a
   card with its consoles, games, whether it converts on its own, its watch

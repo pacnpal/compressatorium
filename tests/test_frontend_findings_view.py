@@ -632,3 +632,17 @@ def test_the_summary_keeps_the_savings_split_and_a_running_check():
     src = (_ACTIVITY / "ActivitySummary.svelte").read_text(encoding="utf-8")
     assert "savings?.by_platform" in src and "savings?.by_format" in src
     assert "verification.batchRun" in src
+
+
+def test_delete_loads_the_real_file_entry_so_the_check_still_applies():
+    """Codex 4659056910: DeleteModal asks to acknowledge an unverified
+    replacement from the entry's `outputs`. Needs attention loads the file's
+    real listing entry first; if it can't, Delete doesn't open."""
+    view = _VIEW.read_text(encoding="utf-8")
+    body = view.split("async function remove(row)", 1)[1].split("\n  }\n", 1)[0]
+    assert "await api.listFiles(" in body
+    assert "(e) => e.path === row.path" in body
+    assert "ui.deleteTarget = { ...entry" in body
+    assert "toast.error(" in body
+    # Only the loaded entry reaches the dialog: nothing else assigns it.
+    assert view.count("ui.deleteTarget =") == 1

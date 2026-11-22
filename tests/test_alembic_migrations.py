@@ -587,9 +587,10 @@ def test_0028_gives_ledger_rows_a_warning(fresh_db_path: str):
 
     columns = {c["name"]: c for c in inspect(engine).get_columns("ledger")}
     assert columns["warning"]["nullable"] is True
+    assert columns["message"]["nullable"] is True
     with engine.connect() as conn:
-        row = conn.exec_driver_sql("SELECT job_id, warning FROM ledger").one()
-    assert tuple(row) == ("j1", None)
+        row = conn.exec_driver_sql("SELECT job_id, warning, message FROM ledger").one()
+    assert tuple(row) == ("j1", None, None)
     assert _current_rev(engine) == "0028"
 
 

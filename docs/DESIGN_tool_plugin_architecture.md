@@ -7209,8 +7209,9 @@ Inbox archive with no room to unpack, `result["waiting"]` and a `warning`) is
 recorded with status `waiting` (`ledger.WAITING`), never as `completed`: it did
 nothing yet, so it counts toward no savings or conversion, and History shows
 "Waiting:" and why. Every row keeps the job's `warning` (migration 0028), whatever
-its status (an eXoDOS repack that may not start), beside a failure's `error`;
-History shows it under the result. A relative `since` (`24h`, `7d`) is resolved
+its status (an eXoDOS repack that may not start), beside a failure's `error`,
+and its closing `message` (an external job's outcome, a check run's counts);
+History shows both under the result. A relative `since` (`24h`, `7d`) is resolved
 to a time once per request (`routes.ledger._filter`, and again in `export_csv`
 for a direct caller), so every page of a CSV export reads the same cutoff.
 
@@ -8567,7 +8568,10 @@ under the lock manager's exclusive locks on every file (`_place_locked`, the
 go on every outcome. Under those locks the watch folder's ownership holds are
 read again as a poll applies them (`_ownership_problem`: `_sharing` and
 `_behind_unreadable_sheets` over the folder as it is now), so a sheet dropped
-after the Finding that names the same track makes it a 409 and nothing moves. The move runs owned
+after the Finding that names the same track, or that names the selected file
+itself (a loose track a sheet now owns), makes it a 409 and nothing moves. The
+file set and its fingerprint as checked are compared again there too: a sheet
+rewritten since the check makes it a 409, so a stale set is never moved. The move runs owned
 (`_owned`, `_MOVE_SECONDS`), as `_move_to_processed` does: one past its bound may still
 land, so the locks stay held and its outcome is waited for until the worker ends. Refused, with nothing moved: a path outside the Inbox (or
 in `processed/`) or not confirmed inside a Volume (403), a folder Image or a

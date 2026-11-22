@@ -374,3 +374,60 @@ async def test_a_slow_move_keeps_its_locks_until_it_ends(vol, db, monkeypatch):
     # Let go once the worker ended.
     assert lock_manager.acquire_input_lock(str(cue.resolve()))
     lock_manager.release_input_lock(str(cue.resolve()))
+
+
+@pytest.mark.asyncio
+async def test_a_loose_track_a_sheet_now_owns_is_not_moved(vol, db):
+    """Codex 4659056897: Game.bin was dropped alone and got its problem; then
+    Game.cue arrives naming it. The BIN is now the sheet's track, so placing it
+    would break the sheet: refused, naming the sheet, nothing moved."""
+    box = _watch_folder(vol)
+    track = _drop(vol / "Downloads" / "Game.bin", b"\0" * 2352 * 4)
+    await _poll(box, now=0)
+    await _poll(box, now=61)
+    rows = [f for f in findings.list_findings()
+            if f["kind"] in findings.INBOX_KINDS and f["path"] == str(track.resolve())]
+    row = rows[0] if rows else {
+        "id": 0, "kind": findings.INBOX_UNSORTED, "path": str(track.resolve()),
+        "library_id": box.library_id, "cause": {"inbox": box.id},
+    }
+    row = {**row, "kind": findings.INBOX_UNSORTED}
+    cue = _drop(vol / "Downloads" / "Game.cue", CUE.encode())
+
+    with pytest.raises(intake.PlaceRefused) as caught:
+        await _place(row, "psx")
+
+    assert caught.value.status == 409
+    assert "Game.cue" in caught.value.message
+    assert track.exists() and cue.exists()
+    assert not (vol / "Downloads" / "psx").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_that_changes_after_its_check_moves_nothing(vol, db, monkeypatch):
+    """Codex 4659056902: the sheet is rewritten between the check and the move
+    (it now names a second track). The set checked is no longer the set on
+    disk, so the move is refused under the locks and nothing moves."""
+    box = _watch_folder(vol)
+    cue = _drop(vol / "Downloads" / "Game.cue", CUE.encode())
+    track = _drop(vol / "Downloads" / "Game.bin", b"\0" * 2352 * 4)
+    row = await _problem(box)
+    real = intake._place_files
+
+    def then_rewrite(*args):
+        checked = real(*args)
+        _drop(vol / "Downloads" / "Game2.bin", b"\0" * 2352 * 2)
+        cue.write_bytes(
+            CUE.encode()
+            + b'FILE "Game2.bin" BINARY\n  TRACK 02 MODE2/2352\n    INDEX 01 00:00:00\n',
+        )
+        return checked
+
+    monkeypatch.setattr(intake, "_place_files", then_rewrite)
+    with pytest.raises(intake.PlaceRefused) as caught:
+        await _place(row, "psx")
+
+    assert caught.value.status == 409
+    assert "changed" in caught.value.message
+    assert cue.exists() and track.exists() and (vol / "Downloads" / "Game2.bin").exists()
+    assert not (vol / "Downloads" / "psx").exists()

@@ -2996,13 +2996,15 @@ class PlaceRefused(Exception):
 PLACEABLE_KINDS = (findings.INBOX_UNSORTED, findings.INBOX_CONFLICT)
 
 
-def _place_files(inbox: inbox_store.Inbox, path: str) -> list[str]:
+def _place_files(inbox: inbox_store.Inbox, path: str) -> tuple[list[str], str]:
     """Every file Place it would move for the Image at *path*: the file, then
     a sheet's tracks. Refuses (:class:`PlaceRefused`) a path outside its
     watch folder or a Drive, a folder Image, a sheet whose references intake
     wouldn't take as they are (``../Tracks/Game.bin`` is dropped by the
     confined track resolver, so the sheet would look trackless and move
-    alone, Codex 4658826953), and files in more than one folder. Blocking."""
+    alone, Codex 4658826953), and files in more than one folder. Returns
+    the files and the Image's fingerprint as checked, which the move compares
+    again under its locks (Codex 4659056902). Blocking."""
     if volume_containment(inbox.folder, treat_archives=False) is not True:
         raise PlaceRefused(403, "The watch folder isn't confirmed inside a Drive")
     if (
@@ -3029,7 +3031,7 @@ def _place_files(inbox: inbox_store.Inbox, path: str) -> list[str]:
         # ponytail: tracks in another folder are moved by hand; keep their
         # layout below the console folder if it ever comes up.
         raise PlaceRefused(409, "Its files sit in more than one folder: move it by hand")
-    return files
+    return files, _fingerprint(path)
 
 
 def _ownership_problem(inbox: inbox_store.Inbox, path: str) -> str | None:
@@ -3042,6 +3044,20 @@ def _ownership_problem(inbox: inbox_store.Inbox, path: str) -> str | None:
     and its ancestors if that ever proves slow. Blocking."""
     files, _unlisted = _walk([inbox.folder], inbox.folder, lambda *_args: None)
     images = dict.fromkeys(group_images(sorted(files), members=_members), "")
+    # A loose file a sheet dropped later now names (Codex 4659056897): it is
+    # that sheet's track, not an Image of its own any more.
+    key = os.path.normcase(os.path.realpath(path))
+    owners = [
+        image for image in images
+        if image != path
+        and key in {os.path.normcase(os.path.realpath(m)) for m in _members(image)}
+    ]
+    if owners:
+        names = ", ".join(os.path.basename(p) for p in owners)
+        return (
+            f"It's now a file of {names}, so it can't be moved on its own: take "
+            f"{names} in instead"
+        )
     images.setdefault(path, "")
     sharing = _sharing(images)
     if path in sharing:
@@ -3061,7 +3077,7 @@ def _ownership_problem(inbox: inbox_store.Inbox, path: str) -> str | None:
 
 
 def _place_blocking(
-    inbox: inbox_store.Inbox, path: str, files: list[str], slug: str,
+    inbox: inbox_store.Inbox, path: str, files: list[str], slug: str, checked: str,
 ) -> tuple[str, str]:
     """Move *files*, the Image at *path* (:func:`_place_files`), into
     ``<inbox>/<slug>/``: anchored and all or none, as the move to
@@ -3071,6 +3087,10 @@ def _place_blocking(
     problem = _ownership_problem(inbox, path)
     if problem:
         raise PlaceRefused(409, problem)
+    # The sheet may have changed since it was checked: only the set checked
+    # is ever moved (Codex 4659056902). *checked* is its fingerprint then.
+    if [path, *_members(path)] != files or _fingerprint(path) != checked:
+        raise PlaceRefused(409, "It changed since it was checked: try again")
     identities = _identities(inbox, files)
     src, names = _folder_beneath(inbox, files)
     try:
@@ -3118,8 +3138,8 @@ async def place(row: dict[str, Any], platform: str, *, now: float | None = None)
     if path in state.flights:
         raise PlaceRefused(409, "It's being taken in right now")
     try:
-        files = await _step(_place_files, inbox, path)
-        moved, fingerprint = await _place_locked(inbox, path, files, slug)
+        files, checked = await _step(_place_files, inbox, path)
+        moved, fingerprint = await _place_locked(inbox, path, files, slug, checked)
     except FileNotFoundError:
         await _clear(inbox, path)
         raise PlaceRefused(404, f"{os.path.basename(path)} isn't in the watch folder any more")
@@ -3143,7 +3163,7 @@ async def place(row: dict[str, Any], platform: str, *, now: float | None = None)
 
 
 async def _place_locked(
-    inbox: inbox_store.Inbox, path: str, files: list[str], slug: str,
+    inbox: inbox_store.Inbox, path: str, files: list[str], slug: str, checked: str,
 ) -> tuple[str, str]:
     """:func:`_place_blocking` under the lock manager's exclusive locks on
     every file, the ones intake's own move to ``processed/`` takes
@@ -3165,7 +3185,7 @@ async def _place_locked(
         # may still land, so the locks stay held and its outcome is waited
         # for until the worker has actually finished (Codex 4658979972).
         return await _owned(
-            _place_blocking, inbox, path, files, slug,
+            _place_blocking, inbox, path, files, slug, checked,
             timeout=_MOVE_SECONDS, what=f"placing {os.path.basename(path)}",
         )
     finally:

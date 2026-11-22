@@ -358,8 +358,27 @@
     }
   }
 
-  function remove(row) {
-    ui.deleteTarget = { path: row.path, name: gameName(row) };
+  // Delete opens on the file's real listing entry, with its replacement
+  // outputs, so the dialog still asks before an original whose new file
+  // isn't checked goes (Codex 4659056910). Not found: it doesn't open.
+  async function remove(row) {
+    if (busy[row.id]) return;
+    busy = { ...busy, [row.id]: true };
+    try {
+      const folder = row.path.slice(0, row.path.lastIndexOf('/')) || '/';
+      const listing = await api.listFiles(folder);
+      const entry = (listing?.entries ?? []).find((e) => e.path === row.path);
+      if (!entry) {
+        toast.error(`Couldn't open ${gameName(row)} to delete it: it isn't in its folder any more`);
+        findings.load();
+        return;
+      }
+      ui.deleteTarget = { ...entry, name: entry.name ?? gameName(row) };
+    } catch (e) {
+      toast.error(e?.message ?? `Couldn't open ${gameName(row)} to delete it`);
+    } finally {
+      settle(row.id);
+    }
   }
 </script>
 
@@ -537,6 +556,7 @@
               <Button
                 variant="ghost" size="sm" icon={deleteIcon}
                 ariaLabel={`Delete ${gameName(row)}`}
+                loading={!!busy[row.id]}
                 onclick={() => remove(row)}
               >
                 Delete

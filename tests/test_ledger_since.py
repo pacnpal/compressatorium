@@ -195,3 +195,29 @@ async def test_a_relative_since_is_fixed_once_for_a_whole_export(monkeypatch):
     )
     body = "".join([chunk async for chunk in resp.body_iterator])
     assert [f"r{i}.iso" in body for i in range(4)] == [True] * 4
+
+
+@pytest.mark.asyncio
+async def test_a_jobs_closing_summary_is_kept():
+    """Codex 4659056907: an external job's last message is its outcome (a check
+    run's "2 Intact, 1 inconclusive, 3 skipped"). Every row keeps it, and
+    History shows it beside what the job did."""
+    from services.job_manager import JobManager
+
+    manager = JobManager()
+    job = manager.create_external_job("Check 6 games in roms", ConversionMode.CHECK)
+    await manager.update_external_job(job.id, message="2 Intact, 1 inconclusive, 3 skipped")
+    await manager.finish_external_job(job.id, success=True)
+    await ledger.record(job)
+
+    [row] = await ledger.recent(5)
+    assert row["message"] == "2 Intact, 1 inconclusive, 3 skipped"
+    assert "message" in ledger.CSV_COLUMNS
+
+
+def test_history_shows_a_jobs_closing_summary():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "src" / "lib" / "components" / "activity"
+           / "HistoryList.svelte").read_text(encoding="utf-8")
+    assert "{#if !row.output_path && row.message && row.status === 'completed'}" in src
