@@ -200,7 +200,10 @@ def read_nkit_header(path: str) -> dict:
 
 
 class Nkit2IsoService(RunnerService):
-    """Wrapper for the ``nkit2iso`` binary."""
+    """Wrapper for the ``nkit2iso`` binary.
+
+    A plain ``RunnerService``: nkit2iso has no verify of its own (#543).
+    """
 
     def __init__(self) -> None:
         self.nkit2iso_path = settings.nkit2iso_path

@@ -65,7 +65,11 @@ logger = get_logger("makeps3iso")
 
 
 class MakePs3IsoService(RunnerService):
-    """Wrapper for the makeps3iso binary."""
+    """Wrapper for the makeps3iso binary.
+
+    A plain ``RunnerService``: its ``verify`` is its own PARAM.SFO readback,
+    not a drained ``verify_stream`` (#543).
+    """
 
     def __init__(self) -> None:
         self.makeps3iso_path = settings.makeps3iso_path
