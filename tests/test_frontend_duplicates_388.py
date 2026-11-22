@@ -11,7 +11,7 @@ from pathlib import Path
 from .test_frontend_findings_view import _run
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
-_VIEW = _SRC / "lib" / "components" / "views" / "FindingsView.svelte"
+_VIEW = _SRC / "lib" / "components" / "activity" / "NeedsAttention.svelte"
 _LIBRARY_VIEW = _SRC / "lib" / "components" / "views" / "LibraryView.svelte"
 _ENDPOINTS = _SRC / "lib" / "api" / "endpoints.js"
 _JOBS = _SRC / "lib" / "stores" / "jobConstants.js"
@@ -86,14 +86,14 @@ process.stdout.write(JSON.stringify({
 
 def test_the_findings_view_shows_each_copy_and_what_was_not_checked() -> None:
     view = _VIEW.read_text(encoding="utf-8")
-    assert "duplicate: 'Duplicate'" in view
+    assert "duplicate: { label: 'Duplicate', tone: 'info', fix: 'duplicates'" in view
     assert "row.cause?.copies" in view
     assert "copy.container" in view and "bytes(copy.size)" in view
     assert "findings.duplicateRuns" in view and "notChecked(run)" in view
     # What the run could not see, and the groups it kept as they were.
     assert "run.unlisted" in view and "run.held" in view
-    # A duplicate is about the file, not its Platform, and it is read-only.
-    assert "row.kind !== 'duplicate'" in view
+    # A duplicate is about the file, not its console: its one fix is the delete.
+    assert "fix: 'duplicates'" in view and "about.fix === 'duplicates'" in view
     assert "deletePlan" not in view and "deleteFile" not in view
 
 

@@ -1330,11 +1330,10 @@ async def _take(
     if not detection.decided:
         conflict = detection.how == platform_detect.CONFLICT
         kind = findings.INBOX_CONFLICT if conflict else findings.INBOX_UNSORTED
-        what = "Its Platform is in doubt" if conflict else "Couldn't tell its Platform"
+        what = "Console unclear" if conflict else "Unknown console"
         await _hold(
             inbox, state, path, fingerprint, kind,
-            f"{what}: {detection.reason}. Move it into a folder named after its "
-            "Platform inside the Inbox.",
+            f"{what}: {detection.reason}.",
             {"how": detection.how, "header": detection.header, "folder": detection.folder},
         )
         return "held"
@@ -2894,71 +2893,301 @@ def _move_to_processed(
         _check_identities(src, identities)
         dst, processed = _processed_folder(inbox, files, names)
         try:
-            moved: list[str] = []
-            try:
-                for name in names:
-                    # The shared anchored move (#425's too): only while it is
-                    # the file taken, never over anything, and the entry that
-                    # landed checked again (one swapped in is moved back).
-                    try:
-                        move_anchored(name, src, dst, identities[name])
-                    except PlacementCommitted:
-                        moved.append(name)  # it landed: put back with the rest
-                        raise
-                    except MoveRollbackFailed:
-                        raise  # reported as it is, never as a changed file
-                    except OSError as exc:
-                        if exc.errno == errno.ESTALE:
-                            raise _SourceChanged(errno.ESTALE, str(exc)) from exc
-                        raise
-                    moved.append(name)
-            except OSError as failure:
-                # Back the way they came, through the same two folders.
-                stuck = []
-                inbox_folder = os.path.dirname(files[0])
-                for name in reversed(moved):
-                    here = os.path.join(processed, name)
-                    there = os.path.join(inbox_folder, name)
-                    at_old, at_new = stat_at(name, src), stat_at(name, dst)
-                    if at_old is not None and at_new is not None and (
-                        at_old.st_dev, at_old.st_ino,
-                    ) == (at_new.st_dev, at_new.st_ino):
-                        # Both names of one file (a move that never let go
-                        # of its Inbox name): the processed/ name goes.
-                        try:
-                            os.unlink(name, dir_fd=dst)
-                        except OSError as exc:
-                            stuck.append(f"{here} (a second name of {there}; {exc})")
-                        continue
-                    if at_old is not None:
-                        # Its Inbox name is taken by another file (a writer
-                        # put one there): never moved back over it. It keeps
-                        # its only name, in processed/.
-                        logger.error(
-                            "inbox: %s stays in processed/: %s is taken by another file",
-                            here, there,
-                        )
-                        stuck.append(f"{here} (its name in the Inbox, {there}, is taken by "
-                                     "another file, which was left alone)")
-                        continue
-                    try:
-                        place_without_clobbering(
-                            name, name, src_dir_fd=dst, dst_dir_fd=src, identity_sensitive=True,
-                        )
-                    except OSError as exc:
-                        logger.error("inbox: could not put %s back in the Inbox: %s", name, exc)
-                        stuck.append(f"{here} (couldn't be put back as {there}: {exc})")
-                if stuck:
-                    raise MoveRollbackFailed(
-                        errno.EIO,
-                        f"moving it to processed/ failed ({failure}), and these stay in "
-                        f"processed/: {'; '.join(stuck)}",
-                    ) from failure
-                raise
+            _move_all(
+                src, dst, names, identities,
+                from_folder=os.path.dirname(files[0]), to_folder=processed,
+                label="processed/",
+            )
         finally:
             os.close(dst)
     finally:
         os.close(src)
+
+
+def _move_all(
+    src: int, dst: int, names: list[str], identities: dict[str, dict[str, int]],
+    *, from_folder: str, to_folder: str, label: str,
+) -> None:
+    """Move each of *names* from the open folder *src* to *dst*, all or none.
+
+    The shared anchored move (#425's too): only while each is the file taken
+    (*identities*), never over anything, and the entry that landed checked
+    again. A move that fails puts back the ones already moved, never over a
+    file that took an old name meanwhile. *from_folder*, *to_folder* and
+    *label* are for messages only. Blocking."""
+    moved: list[str] = []
+    try:
+        for name in names:
+            try:
+                move_anchored(name, src, dst, identities[name])
+            except PlacementCommitted:
+                moved.append(name)  # it landed: put back with the rest
+                raise
+            except MoveRollbackFailed:
+                raise  # reported as it is, never as a changed file
+            except OSError as exc:
+                if exc.errno == errno.ESTALE:
+                    raise _SourceChanged(errno.ESTALE, str(exc)) from exc
+                raise
+            moved.append(name)
+    except OSError as failure:
+        # Back the way they came, through the same two folders.
+        stuck = []
+        for name in reversed(moved):
+            here = os.path.join(to_folder, name)
+            there = os.path.join(from_folder, name)
+            at_old, at_new = stat_at(name, src), stat_at(name, dst)
+            if at_old is not None and at_new is not None and (
+                at_old.st_dev, at_old.st_ino,
+            ) == (at_new.st_dev, at_new.st_ino):
+                # Both names of one file (a move that never let go of its
+                # old name): the new name goes.
+                try:
+                    os.unlink(name, dir_fd=dst)
+                except OSError as exc:
+                    stuck.append(f"{here} (a second name of {there}; {exc})")
+                continue
+            if at_old is not None:
+                # Its old name is taken by another file (a writer put one
+                # there): never moved back over it. It keeps its only name,
+                # the new one.
+                logger.error(
+                    "inbox: %s stays in %s: %s is taken by another file", here, label, there,
+                )
+                stuck.append(f"{here} (its name in the Inbox, {there}, is taken by "
+                             "another file, which was left alone)")
+                continue
+            try:
+                place_without_clobbering(
+                    name, name, src_dir_fd=dst, dst_dir_fd=src, identity_sensitive=True,
+                )
+            except OSError as exc:
+                logger.error("inbox: could not put %s back in the Inbox: %s", name, exc)
+                stuck.append(f"{here} (couldn't be put back as {there}: {exc})")
+        if stuck:
+            raise MoveRollbackFailed(
+                errno.EIO,
+                f"moving it to {label} failed ({failure}), and these stay in "
+                f"{label}: {'; '.join(stuck)}",
+            ) from failure
+        raise
+
+
+# ---- Place it (plan item 13): a console picked for a held file ------------
+
+
+class PlaceRefused(Exception):
+    """A Place it that can't go ahead. ``status`` is the HTTP status that fits."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+# The problems Place it answers: a watch folder's file whose console is
+# unknown or unclear. Its console comes from its folder, so moving it into a
+# folder named after the console settles it.
+PLACEABLE_KINDS = (findings.INBOX_UNSORTED, findings.INBOX_CONFLICT)
+
+
+def _place_files(inbox: inbox_store.Inbox, path: str) -> tuple[list[str], str]:
+    """Every file Place it would move for the Image at *path*: the file, then
+    a sheet's tracks. Refuses (:class:`PlaceRefused`) a path outside its
+    watch folder or a Drive, a folder Image, a sheet whose references intake
+    wouldn't take as they are (``../Tracks/Game.bin`` is dropped by the
+    confined track resolver, so the sheet would look trackless and move
+    alone), and files in more than one folder. Returns
+    the files and the Image's fingerprint as checked, which the move compares
+    again under its locks. Blocking."""
+    if volume_containment(inbox.folder, treat_archives=False) is not True:
+        raise PlaceRefused(403, "The watch folder isn't confirmed inside a Drive")
+    if (
+        os.path.realpath(path) != path
+        or not path.startswith(inbox.folder + os.sep)
+        or path.startswith(inbox.processed_folder + os.sep)
+        or volume_containment(path, treat_archives=False) is not True
+    ):
+        raise PlaceRefused(403, "Only a file inside its watch folder can be placed")
+    if not os.path.lexists(path):
+        raise FileNotFoundError(errno.ENOENT, f"{os.path.basename(path)} is gone")
+    if not os.path.isfile(path):
+        raise PlaceRefused(400, "Only a file can be placed: move this folder by hand")
+    # The same check intake makes before it takes a sheet in (`_take`).
+    sheet = sheet_reference_problems(path, within=[inbox.folder])
+    if sheet:
+        raise PlaceRefused(
+            400,
+            "Its track sheet can't be placed as it is: " + "; ".join(sheet[:3])
+            + ". Fix the sheet or move the game by hand",
+        )
+    files = [path, *_members(path)]
+    if any(os.path.dirname(f) != os.path.dirname(path) for f in files):
+        # ponytail: tracks in another folder are moved by hand; keep their
+        # layout below the console folder if it ever comes up.
+        raise PlaceRefused(409, "Its files sit in more than one folder: move it by hand")
+    return files, _fingerprint(path)
+
+
+def _ownership_problem(inbox: inbox_store.Inbox, path: str) -> str | None:
+    """Why the Image at *path* may not be moved on its own now, or None: the
+    ownership holds a poll applies (`_sharing`, `_behind_unreadable_sheets`),
+    read from the watch folder as it is now. A sheet dropped after the
+    problem was recorded may name the same track, and
+    moving that track would break it. Run under the move's locks.
+    ponytail: walks the whole watch folder; scope it to the Image's folder
+    and its ancestors if that ever proves slow. Blocking."""
+    files, _unlisted = _walk([inbox.folder], inbox.folder, lambda *_args: None)
+    images = dict.fromkeys(group_images(sorted(files), members=_members), "")
+    # A loose file a sheet dropped later now names: it is
+    # that sheet's track, not an Image of its own any more.
+    key = os.path.normcase(os.path.realpath(path))
+    owners = [
+        image for image in images
+        if image != path
+        and key in {os.path.normcase(os.path.realpath(m)) for m in _members(image)}
+    ]
+    if owners:
+        names = ", ".join(os.path.basename(p) for p in owners)
+        return (
+            f"It's now a file of {names}, so it can't be moved on its own: take "
+            f"{names} in instead"
+        )
+    images.setdefault(path, "")
+    sharing = _sharing(images)
+    if path in sharing:
+        others = ", ".join(os.path.basename(p) for p in sharing[path])
+        return (
+            f"It shares files with {others}, so it can't be moved on its own: take them "
+            "in by hand, or give each its own copy of the files"
+        )
+    blocked = _behind_unreadable_sheets(images, within=[inbox.folder])
+    if path in blocked:
+        return (
+            f"The track sheet {os.path.basename(blocked[path])} can't be read, or names a "
+            "track it may not use, so this may be one of its tracks: fix or remove that "
+            "sheet first"
+        )
+    return None
+
+
+def _place_blocking(
+    inbox: inbox_store.Inbox, path: str, files: list[str], slug: str, checked: str,
+) -> tuple[str, str]:
+    """Move *files*, the Image at *path* (:func:`_place_files`), into
+    ``<inbox>/<slug>/``: anchored and all or none, as the move to
+    ``processed/`` is, and never over another file (``FileExistsError``,
+    nothing moved). Its caller holds the exclusive locks on every one of
+    *files*. Returns its new path and fingerprint. Blocking."""
+    problem = _ownership_problem(inbox, path)
+    if problem:
+        raise PlaceRefused(409, problem)
+    # The sheet may have changed since it was checked: only the set checked
+    # is ever moved. *checked* is its fingerprint then.
+    if [path, *_members(path)] != files or _fingerprint(path) != checked:
+        raise PlaceRefused(409, "It changed since it was checked: try again")
+    identities = _identities(inbox, files)
+    src, names = _folder_beneath(inbox, files)
+    try:
+        top = open_dir_beneath(inbox.folder)
+        try:
+            dst = _dir_at(top, slug, make=True)
+        finally:
+            os.close(top)
+        try:
+            taken = [name for name in names if _exists_at(dst, name)]
+            if taken:
+                raise FileExistsError(
+                    errno.EEXIST, f"{slug}/{taken[0]} is already in the watch folder",
+                )
+            _move_all(
+                src, dst, names, identities,
+                from_folder=os.path.dirname(path), to_folder=os.path.join(inbox.folder, slug),
+                label=f"{slug}/",
+            )
+        finally:
+            os.close(dst)
+    finally:
+        os.close(src)
+    moved = os.path.join(inbox.folder, slug, names[0])
+    return moved, _fingerprint(moved)
+
+
+async def place(row: dict[str, Any], platform: str, *, now: float | None = None) -> dict:
+    """Place it (plan item 13): move a held watch-folder file whose console is
+    unknown or unclear into ``<watch folder>/<console>/``, clear its problem,
+    and mark it settled, so the next poll takes it in through the normal path
+    (placement, conversion, ``processed/``). Raises :class:`PlaceRefused`."""
+    if row.get("kind") not in PLACEABLE_KINDS:
+        raise PlaceRefused(
+            400, "Only a watch folder's game with an unknown or unclear console can be placed",
+        )
+    slug = platform_detect.known_slug(platform)
+    if slug is None:
+        raise PlaceRefused(400, f"{platform!r} isn't a console Compressatorium knows")
+    inbox = await run_in_threadpool(inbox_store.get, (row.get("cause") or {}).get("inbox"))
+    if inbox is None or inbox.library_id != row.get("library_id"):
+        raise PlaceRefused(404, "Its watch folder is gone")
+    path = str(row.get("path") or "")
+    state = _state(inbox.id)
+    if path in state.flights:
+        raise PlaceRefused(409, "It's being taken in right now")
+    try:
+        files, checked = await _step(_place_files, inbox, path)
+        moved, fingerprint = await _place_locked(inbox, path, files, slug, checked)
+    except FileNotFoundError:
+        await _clear(inbox, path)
+        raise PlaceRefused(404, f"{os.path.basename(path)} isn't in the watch folder any more")
+    except FileExistsError as exc:
+        raise PlaceRefused(409, f"{exc.strerror}: rename one of them first") from None
+    except asyncio.TimeoutError:
+        raise PlaceRefused(504, "The watch folder didn't answer in time") from None
+    except MutationNotStarted:
+        raise PlaceRefused(503, "No worker was free to move it: try again") from None
+    except _SourceChanged:
+        raise PlaceRefused(409, "It changed while it was being placed: try again") from None
+    except OSError as exc:
+        raise PlaceRefused(409, f"It couldn't be moved: {exc}") from None
+    await _clear(inbox, path)
+    # Settled now: the next poll takes it in without the settle wait.
+    now = time.time() if now is None else now
+    state.held.pop(path, None)
+    state.seen.pop(path, None)
+    state.seen[moved] = _Seen(fingerprint, now - inbox.settle_seconds)
+    return {"path": moved, "platform": slug, "inbox_id": inbox.id}
+
+
+async def _place_locked(
+    inbox: inbox_store.Inbox, path: str, files: list[str], slug: str, checked: str,
+) -> tuple[str, str]:
+    """:func:`_place_blocking` under the lock manager's exclusive locks on
+    every file, the ones intake's own move to ``processed/`` takes
+    (`_finish`): while any job reads one (a conversion
+    started from Files holds shared input locks), nothing moves and the
+    user is told to try again. The locks go on every outcome."""
+    try:
+        refused = await _lock_all(files, allow_existing=True)
+    except DeadlineExpired:
+        refused = "(no answer)"
+    except (asyncio.TimeoutError, LockFailed) as exc:
+        raise PlaceRefused(503, f"Its files couldn't be locked to move them: {exc}") from None
+    if refused is not None:
+        raise PlaceRefused(
+            409, f"{os.path.basename(refused)} is in use by a job: try again once it ends",
+        )
+    try:
+        # Owned (`_owned`), as `_move_to_processed` is: a move past its bound
+        # may still land, so the locks stay held and its outcome is waited
+        # for until the worker has actually finished.
+        return await _owned(
+            _place_blocking, inbox, path, files, slug, checked,
+            timeout=_MOVE_SECONDS, what=f"placing {os.path.basename(path)}",
+        )
+    finally:
+        try:
+            await _step(_release_locks, files)
+        except (asyncio.TimeoutError, OSError):
+            logger.warning("inbox: could not release the locks of %s", path, exc_info=True)
 
 
 # ---- copying an Image in as it is ----------------------------------------

@@ -102,6 +102,41 @@
   process priority, bound and cancel handling. Dead code is gone, the tool
   services share their common methods, and the two longest functions (the job
   runner and the Rule sweep) are split into named steps. Nothing else changes.
+- **Activity (#544) is one place for what needs you, what's running and everything
+  that ran.** A strip on top shows how many problems need you, what is running,
+  the space saved and how many games passed a check; each links to its tab. The
+  dashboard cards (job queue, space saved, verification) are gone: the strip
+  replaces them.
+- **Needs attention says what's wrong in one sentence, with the one button that
+  fixes it**: Pick console, Open folder, Delete the others…, Choose name order,
+  Place it or Delete. Plain words throughout ("Unknown console", "Console
+  unclear", "Failed its check", "Original kept"), Dismiss is now Ignore, and the
+  first and last seen times moved into each row's tooltip. A Library select (or
+  `#/activity/attention/<library id>`) shows one Library's problems, and a line
+  links to the conversions that failed in the last day.
+- **Place it** (plan item 13): a file dropped in a watch folder with no console,
+  or an unclear one, gets a console select. Place it moves the file (a sheet
+  with its tracks) into a folder named after that console inside the watch
+  folder, never over another file, and it is taken in at once.
+  `POST /api/findings/{id}/place {platform}`. Watch-folder rows show "downloads ›
+  Game.iso", never an internal key.
+- **Running is the queue only**: running first, then waiting, with Cancel all.
+  The Completed and Failed tabs, Clear and the "Show metadata jobs" switch are
+  gone.
+- **History has every job that ran.** Check runs, find-duplicates runs,
+  duplicate deletes, renames and a watch folder's copies now write their row
+  too, named by what they did ("Check 12 games in Roms"). Its columns are When,
+  Game, Console, Result ("CHD · saved 312 MB") and Check ("✓ Exact copy"). Filter
+  by Done, Failed, Checked, Cancelled or Waiting (a watch folder's archive
+  that's waiting for room, with why), by format and by console;
+  `#/activity/history?status=failed` opens it on the failures.
+  `GET /api/ledger` and its CSV export take `since` (`24h`, `7d` or an ISO time,
+  fixed once for a whole export) and `checked=true`. A job's warning (an eXoDOS
+  game that may not start) and its closing summary (a check run's counts) are
+  kept on its row and shown under its result; the CSV has two new last columns,
+  `warning` and `message`. Delete in Needs attention opens on the file's real
+  entry, so it still asks before an original whose new file isn't checked.
+- The folder console dialog is now **Set console**.
 - **The web UI reads its formats from the server** (#539). `GET /api/tools`
   now also lists every tool's extensions and every mode's settings, and the
   UI builds its list of converters from it at start, so it can never offer a

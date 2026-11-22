@@ -129,6 +129,24 @@ class FindingsStore {
     await this.load();
   }
 
+  /**
+   * Place it (plan item 13): a watch folder's file whose console is unknown
+   * or unclear moves into a folder named after *platform* inside that watch
+   * folder, and is taken in at once. The row leaves the list; a refusal
+   * (a name already taken, the file gone) throws with the backend's reason.
+   */
+  // The console picked for each Place it row, by Finding id: kept here so a
+  // tab switch (which unmounts the list) doesn't lose it.
+  placeChoices = $state({});
+
+  async place(id, platform) {
+    const placed = await api.placeFinding(id, platform);
+    this.#superseded();
+    this.list = this.list.filter((f) => f.id !== id);
+    await this.load();
+    return placed;
+  }
+
   /** Show a dismissed Finding again. */
   async undismiss(id) {
     await api.undismissFinding(id, this.#fingerprint(id));

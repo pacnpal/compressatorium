@@ -6,7 +6,9 @@ walks every folder Library again on request. ``/api/platform-mappings`` sets
 or clears "this folder is PSP" on a folder inside a folder Library; the
 Library is walked again right away so its Findings follow.
 
-Nothing here moves, renames or deletes a file.
+Nothing here moves, renames or deletes a file, except Place it
+(``/findings/{id}/place``), which moves a watch folder's file into a folder
+named after the console the user picked, inside that watch folder.
 """
 
 from __future__ import annotations
@@ -29,6 +31,8 @@ from services import (
     platform_detect,
     platform_mappings,
 )
+from services import inbox as inbox_store
+from services.inbox import intake
 from services.libraries.folder import ListingInProgress
 from services.rules.library import LibraryUnreadable
 from services.subprocess_runner import run_detached
@@ -131,11 +135,20 @@ async def list_findings(include_dismissed: bool = False) -> dict:
     dismissed = await run_in_threadpool(findings.count_dismissed)
     names = {lib.id: lib.name for lib in await run_in_threadpool(libraries.all_libraries)}
     names[findings.NO_LIBRARY] = findings.NO_LIBRARY_NAME
+    watch_folders = {box.id: box for box in await run_in_threadpool(inbox_store.all_inboxes)}
     for row in rows:
         row["library_name"] = names.get(row["library_id"], row["library_id"])
         # The folder holding the Image: where "open the folder" goes, and the
         # folder a mapping would be set on.
         row["folder"] = os.path.dirname(row["path"])
+        # A watch folder's file is shown as "<watch folder> › <path in it>",
+        # never by its internal `inbox:<id>/` key.
+        box = watch_folders.get(row["cause"].get("inbox")) if row["kind"] in (
+            findings.INBOX_KINDS
+        ) else None
+        if box is not None:
+            row["inbox_name"] = os.path.basename(box.folder)
+            row["relative"] = os.path.relpath(row["path"], box.folder).replace(os.sep, "/")
     # Each Library's last find-duplicates run (#388): what it could not check
     # is shown beside its groups. A run of a Library since removed is gone.
     runs = [
@@ -234,6 +247,47 @@ async def duplicate_delete(finding_id: int, payload: DuplicateDelete, request: R
         )
     except duplicate_cleanup.CleanupRefused as exc:
         raise HTTPException(status_code=exc.status, detail=exc.message) from None
+
+
+class PlaceRequest(BaseModel):
+    """The console a watch folder's file is, as the user picked it."""
+
+    platform: str
+
+
+# The background polls Place it starts, kept until they end.
+_place_polls: set[asyncio.Task] = set()
+
+
+async def _poll_now(box) -> None:
+    try:
+        await intake.poll(box)
+    except Exception:
+        logger.warning("Place it: polling %s failed", box.folder, exc_info=True)
+
+
+@router.post("/findings/{finding_id}/place")
+async def place_finding(finding_id: int, payload: PlaceRequest) -> dict:
+    """Place it (plan item 13): move a watch folder's file with an unknown or
+    unclear console into ``<watch folder>/<console>/`` and take it in now.
+
+    Only for those two kinds (400 otherwise), only for a file still inside its
+    watch folder and a Drive (403), never over another file (409). 404 when
+    the file is gone, which clears its problem too."""
+    row = await run_in_threadpool(findings.get_finding, finding_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="That problem is gone")
+    try:
+        placed = await intake.place(row, payload.platform)
+    except intake.PlaceRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.message) from None
+    box = await run_in_threadpool(inbox_store.get, placed["inbox_id"])
+    if box is not None:
+        # Off the request: a poll lists the whole watch folder.
+        task = asyncio.get_running_loop().create_task(_poll_now(box))
+        _place_polls.add(task)
+        task.add_done_callback(_place_polls.discard)
+    return placed
 
 
 @router.post("/findings/check")

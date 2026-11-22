@@ -24,7 +24,7 @@ _DIALOG = _SRC / "util" / "patchDialog.js"
 _MENU = _SRC / "components" / "panels" / "RowActionsMenu.svelte"
 _MODAL = _SRC / "components" / "modals" / "PatchModal.svelte"
 _ENDPOINTS = _SRC / "api" / "endpoints.js"
-_LEDGER = _SRC / "components" / "views" / "LedgerView.svelte"
+_LEDGER = _SRC / "components" / "activity" / "HistoryList.svelte"
 
 
 def _run(tmp_path: Path, expr: str):

@@ -386,6 +386,13 @@ class LedgerEntry(Base):
     # Inputs besides the Source, each {"kind", "path", "sha1"}: a patch job's
     # patch file (#428). Empty for a conversion.
     extra_inputs = Column(JSON, nullable=False, default=list, server_default=text("'[]'"))
+    # What the job warned about as it ended, whatever its status (#544,
+    # migration 0029): an eXoDOS repack that may not start, the reason a
+    # waiting archive waits. None when it warned of nothing.
+    warning = Column(String, nullable=True)
+    # The job's closing message (#544, migration 0029): an external job's
+    # outcome, a check run's "2 Intact, 1 inconclusive, 3 skipped".
+    message = Column(String, nullable=True)
     __table_args__ = (
         Index("ix_ledger_finished_at", "finished_at"),
         Index("ux_ledger_job_finished", "job_id", "finished_at", unique=True),

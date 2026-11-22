@@ -408,7 +408,7 @@ def start(
     """
     count = len(picked)
     job = job_manager.create_external_job(
-        f"Check {count} Image{'s' if count != 1 else ''} in {library.name}",
+        f"Check {count} game{'s' if count != 1 else ''} in {library.name}",
         ConversionMode.CHECK,
         message="Waiting to check",
     )

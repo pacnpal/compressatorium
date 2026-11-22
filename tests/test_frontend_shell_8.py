@@ -88,8 +88,8 @@ def test_the_shells_host_the_existing_screens():
     assert "{#if id}\n  <LibraryView />" in libs
     assert "<AddLibraryModal" in libs
     activity = _read("views/ActivityView.svelte")
-    for part in ("<FindingsView />", "<JobsPanel />", "<LedgerView />",
-                 "<SavingsCard />", "<QueueSummaryCard />"):
+    for part in ("<ActivitySummary />", "<NeedsAttention />", "<RunningList />",
+                 "<HistoryList />"):
         assert part in activity, part
     settings = _read("views/SettingsView.svelte")
     for section in ("connections", "identification", "notifications", "defaults", "converters"):

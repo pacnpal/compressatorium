@@ -10,7 +10,7 @@ from pathlib import Path
 from .test_frontend_findings_view import _run
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
-_VIEW = _SRC / "lib" / "components" / "views" / "FindingsView.svelte"
+_VIEW = _SRC / "lib" / "components" / "activity" / "NeedsAttention.svelte"
 _MODAL = _SRC / "lib" / "components" / "modals" / "DuplicateDeleteModal.svelte"
 _ENDPOINTS = _SRC / "lib" / "api" / "endpoints.js"
 

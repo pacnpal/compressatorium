@@ -2544,10 +2544,9 @@ it and counted in the totals, and anything evicted after is named in
 `evicted_ids` and dropped. Skip the overflow read entirely if the list read
 failed: the halves are only coherent together.
 
-Where retained rows exist but the total exceeds them, say so in the UI rather
-than let a badge and a list disagree — `JobsPanel` renders *"Showing the 500
-most recent of 1,153"*, and a distinct empty state for a tab whose jobs have all
-aged out.
+The UI no longer lists finished jobs from this list (restructure PR 4):
+Activity's Running list (`activity/RunningList.svelte`, `jobs.runningList`) is
+the queue only, and History reads the Ledger, which has every job.
 
 ### 3.3.8 Output-conflict resolution (`services/output_conflicts.py`)
 
@@ -7250,13 +7249,25 @@ up to `MAX_LISTED_FAILURES` of them, with `data = {library_id, failed: [{image,
 path, error}]}`, through `notifications.notify`. The run's job is external, so
 the sweep's own `sweep_finished` message does not count it.
 
-**Ledger.** Each external job mode declares itself in
-`job_manager.EXTERNAL_JOB_MODES` (`ExternalMode`). `CHECK` sets
-`in_ledger=False`, since a check run converts nothing, and `ledger.record`
-skips a job only when `job_manager.in_ledger(mode)` says so. Metadata scans and
-DAT matches keep their rows. `CHECK` also sets `started_by_hand=False`, so a
-failed run is not #293's "A job you started failed"
-(`notifications._started_by_hand`).
+**Ledger.** A job that ended only to wait (`finish_external_job_waiting`: an
+Inbox archive with no room to unpack, `result["waiting"]` and a `warning`) is
+recorded with status `waiting` (`ledger.WAITING`), never as `completed`: it did
+nothing yet, so it counts toward no savings or conversion, and History shows
+"Waiting:" and why. Every row keeps the job's `warning` (migration 0029), whatever
+its status (an eXoDOS repack that may not start), beside a failure's `error`,
+and its closing `message` (an external job's outcome, a check run's counts);
+History shows both under the result. A relative `since` (`24h`, `7d`) is resolved
+to a time once per request (`routes.ledger._filter`, and again in `export_csv`
+for a direct caller), so every page of a CSV export reads the same cutoff.
+
+Every finished job writes its Ledger row, external jobs included
+(restructure PR 4: History is everything that ran, so Activity's Running list
+can be the queue only). An external job's `file_path` is a placeholder under
+`job_manager.EXTERNAL_JOB_PATH`, so `ledger.row_from_job` records its
+`filename` ("Check 12 games in Roms") as the row's `source_path` instead. Each
+external job mode still declares itself in `job_manager.EXTERNAL_JOB_MODES`
+(`ExternalMode`): `CHECK` sets `started_by_hand=False`, so a failed run is not
+#293's "A job you started failed" (`notifications._started_by_hand`).
 ### 3.3.19 Editing a zip (`services/archive_edit.py`) and the eXoDOS repack
 
 `rewrite_zip(src, dst, *, rename, add, is_cancelled, on_progress)` is the shared
@@ -7508,8 +7519,8 @@ from before 0019 has no device or inode and is read again. The DAT match cache i
 for this: its rows carry no size or mtime to tie a SHA1 to the file.
 
 **The run.** `duplicates.start(library)` creates an external job of
-`ConversionMode.FIND_DUPLICATES` (`ExternalMode(in_ledger=False)`, so never a
-conversion and never a slot) and runs it as a task; one per Library at a time
+`ConversionMode.FIND_DUPLICATES` (`ExternalMode()`, so never a conversion and
+never a slot; its History row names the run) and runs it as a task; one per Library at a time
 (409 otherwise). It:
 
 1. lists the Library with `Library.all_images()`, a new Library contract method
@@ -7736,8 +7747,7 @@ snapshots taken before it, so the route only does the quick, database-only
 checks (`duplicate_cleanup._offered`: the Finding as shown, the keeper one of
 its copies, `not_deletable`; one delete per Finding at a time, 409 otherwise)
 and answers `{job_id}`. The job is an external job
-(`ConversionMode.DELETE_DUPLICATES`, `ExternalMode(in_ledger=False)`, as
-find-duplicates): progress and message through `update_external_job`, cancel
+(`ConversionMode.DELETE_DUPLICATES`, `ExternalMode()`, as find-duplicates): progress and message through `update_external_job`, cancel
 through its cancel event, its outcome on the job's new `result` field
 (`{finding_id, keep, keeper_changed, results}`, also its `deleted_paths`,
 `warning` and message), and a refusal as a failed job whose `error_message`
@@ -8480,8 +8490,8 @@ Platform, or whose tool isn't ready, holds the file with a Finding. A tool
 that isn't ready gives its own reason, `not_ready_message(tool)` read after
 `tool_is_ready` (§3.4, #484), followed by ", so the Rule can't run".
 
-**Copying** (`ConversionMode.INBOX_COPY`, an `ExternalMode(in_ledger=False,
-started_by_hand=False, takes_slot=True)`: it converts nothing). One background
+**Copying** (`ConversionMode.INBOX_COPY`, an `ExternalMode(started_by_hand=False,
+takes_slot=True)`: it converts nothing, and History still has it). One background
 task per Image, each an external job. Its file work runs in one of the same
 `max_concurrent` slots conversions take: `job_manager.hold_slot(job_id,
 cancel_event)` acquires the dispatcher's own semaphore. With the dispatcher
@@ -8586,6 +8596,41 @@ processed_count = processed_count + 1` (a copy and a conversion can finish at
 once; the cached total only grows to what the database answers) and the file's
 Findings cleared.
 
+**Place it** (plan item 13, `intake.place`, `POST /api/findings/{id}/place`).
+An `inbox_unsorted` or `inbox_conflict` Finding (`intake.PLACEABLE_KINDS`; any
+other kind is a 400) names its Inbox in `cause.inbox`. Its file, a sheet with
+its tracks (`_members`), moves into `<inbox>/<canonical slug>/` through the same
+all-or-none anchored move `_move_to_processed` uses (`_move_all`, over
+`move_anchored`): both folders opened beneath the Inbox with no link followed,
+each file's identity checked, a no-replace rename each, the ones already moved
+put back on a failure. The file set is worked out first (`_place_files`):
+a sheet's references go through `sheet_reference_problems` exactly as `_take`
+checks them, since the confined track resolver drops a `../Tracks/Game.bin`
+and the sheet would otherwise look trackless and move alone. The move then runs
+under the lock manager's exclusive locks on every file (`_place_locked`, the
+`_lock_all` that `_finish` takes before `processed/`): a job reading any of them
+(a conversion from Files holds shared input locks) makes it a 409, and the locks
+go on every outcome. Under those locks the watch folder's ownership holds are
+read again as a poll applies them (`_ownership_problem`: `_sharing` and
+`_behind_unreadable_sheets` over the folder as it is now), so a sheet dropped
+after the Finding that names the same track, or that names the selected file
+itself (a loose track a sheet now owns), makes it a 409 and nothing moves. The
+file set and its fingerprint as checked are compared again there too: a sheet
+rewritten since the check makes it a 409, so a stale set is never moved. The move runs owned
+(`_owned`, `_MOVE_SECONDS`), as `_move_to_processed` does: one past its bound may still
+land, so the locks stay held and its outcome is waited for until the worker ends. Refused, with nothing moved: a path outside the Inbox (or
+in `processed/`) or not confirmed inside a Volume (403), a folder Image or a
+sheet intake wouldn't take as it is (400), files in more than one folder, a
+file in use by a job, or a name already taken in the console folder (409,
+checked before anything moves). A file already gone is a 404 that
+clears its Finding. Then its Finding is cleared and it is marked settled
+(`state.seen[new] = _Seen(fingerprint, now - settle_seconds)`), so the next poll
+takes it through the normal path; the route starts that poll in the background.
+`GET /api/findings` adds `inbox_name` (the Inbox folder's basename) and
+`relative` (the path inside it) to every `inbox_*` row, so the UI never shows an
+`inbox:<id>/` key. A console the file's own header disagrees with stays a
+conflict after the move: the header wins over a folder (§ detection).
+
 **A cancel's reason** (#433). `ConversionJob.cancel_reason` records why a
 cancel was taken: `job_manager.cancel_job(job_id, reason=...)` and
 `cancel_all_jobs(reason=...)` default to `CANCEL_REQUESTED` (the UI and API
@@ -8632,8 +8677,7 @@ while the archive is still that file; it then goes down the ordinary path
 folder can't tell is unpacked: its Images say.
 
 Otherwise it is unpacked as an `inbox_unpack` job (`ConversionMode.INBOX_UNPACK`,
-an `ExternalMode(in_ledger=False, started_by_hand=False, takes_slot=True)` like
-the copy) on a stall-bounded worker (`run_detached_within_stall_bound`, its
+an `ExternalMode(started_by_hand=False, takes_slot=True)` like the copy) on a stall-bounded worker (`run_detached_within_stall_bound`, its
 progress reported per chunk written). **A private copy** (Codex 4608007766,
 4608936764): the archive's identity is read when it is taken; the job opens it
 through the Inbox folder's descriptor with `O_NOFOLLOW`, refuses it unless its

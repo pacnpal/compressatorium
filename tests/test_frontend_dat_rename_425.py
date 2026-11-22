@@ -66,7 +66,7 @@ def test_the_start_answer_stays_in_the_dialog_session_that_asked():
 
 def test_the_job_and_the_finding_have_labels():
     assert "dat_rename: 'Rename to DAT name'" in _read("lib", "stores", "jobConstants.js")
-    view = _read("lib", "components", "views", "FindingsView.svelte")
-    assert "rename_conflict: 'Rename conflict'" in view
-    # A rename conflict is about DATs, not the folder's Platform.
-    assert "row.kind !== 'rename_conflict'" in view
+    view = _read("lib", "components", "activity", "NeedsAttention.svelte")
+    # A rename conflict is about DATs, not the folder's console: its fix is
+    # the name order.
+    assert "rename_conflict: { label: 'Name unclear', tone: 'warning', fix: 'names'" in view

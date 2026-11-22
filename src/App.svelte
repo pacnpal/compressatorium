@@ -36,7 +36,6 @@
   import PatchModal from '$lib/components/modals/PatchModal.svelte';
   import FileInfoModal from '$lib/components/modals/FileInfoModal.svelte';
   import CancelAllJobsModal from '$lib/components/modals/CancelAllJobsModal.svelte';
-  import ClearDoneModal from '$lib/components/modals/ClearDoneModal.svelte';
   import MappingModal from '$lib/components/modals/MappingModal.svelte';
 
   let mainEl;
@@ -208,7 +207,6 @@
 <PatchModal />
 <FileInfoModal />
 <CancelAllJobsModal />
-<ClearDoneModal />
 <MappingModal />
 
 <a class="skip-link" href="#main-content" onclick={handleSkip}>Skip to main content</a>
