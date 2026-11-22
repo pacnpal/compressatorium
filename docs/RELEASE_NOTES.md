@@ -388,6 +388,9 @@
   denied: path outside configured volumes*. When the connection comes back
   the tab now reads the Volumes, the version and which converters are ready
   again; a Volume that's gone gives way to the first one left.
+- **The browser tab names the page** (#578): *Activity · Compressatorium*,
+  not *Compressatorium* everywhere, so tabs, Back and history tell pages
+  apart.
 - **Delete keeps a file a sheet, playlist or set reaches through a link**
   (#555). A `.cue` in one folder can name a track in another through a folder
   link inside the Volume (`other/A.cue` naming `link/Shared.bin`). Deleting or

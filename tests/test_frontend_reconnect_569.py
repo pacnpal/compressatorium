@@ -86,3 +86,10 @@ def test_app_reads_the_version_tools_and_volumes_again_on_a_reconnect():
     effect = effect[:effect.index("});")]
     for call in ("ui.loadVersion()", "loadTools()", "fileBrowser.refreshVolumes()"):
         assert call in effect, call
+
+
+def test_the_browser_tab_names_the_page():
+    """#578: every page was titled "Compressatorium"."""
+    app = (_SRC / "App.svelte").read_text(encoding="utf-8")
+    assert "<svelte:head>" in app
+    assert "<title>{VIEW_TITLES[ui.activeView] ?" in app

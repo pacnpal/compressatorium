@@ -1,6 +1,6 @@
 <script>
   import { onMount, tick, untrack } from 'svelte';
-  import { ui } from '$lib/stores/ui.svelte.js';
+  import { ui, VIEW_TITLES } from '$lib/stores/ui.svelte.js';
   import { startRouter } from '$lib/router/hashRouter.js';
   import Sidebar from '$lib/components/layout/Sidebar.svelte';
   import MobileDrawer from '$lib/components/layout/MobileDrawer.svelte';
@@ -190,6 +190,11 @@
     };
   });
 </script>
+
+<!-- The browser tab names the page (#578). -->
+<svelte:head>
+  <title>{VIEW_TITLES[ui.activeView] ? `${VIEW_TITLES[ui.activeView]} · ` : ''}Compressatorium</title>
+</svelte:head>
 
 <!--
   mode-watcher manages the dark/light class on <html> + color-scheme. The
