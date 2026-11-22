@@ -78,6 +78,16 @@ function rowMatches(row, test) {
   return test(row) || (row.parts ?? []).some((part) => rowMatches(part, test));
 }
 
+/** *rows* and every file folded under them (discs, tracks, parts), in order. */
+function allFilesOf(rows) {
+  const out = [];
+  for (const row of rows) {
+    out.push(row);
+    if (row?.parts) out.push(...allFilesOf(row.parts));
+  }
+  return out;
+}
+
 /** Index *row* and every row folded under it by path. */
 function indexRow(row, into) {
   if (!row?.path) return;
@@ -312,6 +322,14 @@ class FileBrowserStore {
 
   get pageCount() {
     return Math.max(1, Math.ceil(this.filteredEntries.length / this.pageSize));
+  }
+
+  /**
+   * Every file on the page, folded ones included: what per-file background
+   * work (metadata, DAT matching, badges) is asked about.
+   */
+  get visibleFiles() {
+    return allFilesOf(this.visibleEntries);
   }
 
   get visibleEntries() {

@@ -212,7 +212,9 @@
   $effect(() => {
     // Track explicitly so the effect re-runs on dat_match completion.
     datMatchTerminalCount;
-    const allPaths = entries.map((e) => e?.path).filter(Boolean);
+    // Every file on the page, the discs and tracks folded under a game too.
+    const files = fileBrowser.visibleFiles;
+    const allPaths = files.map((e) => e?.path).filter(Boolean);
     if (allPaths.length === 0) {
       // Nothing visible, and this component does NOT unmount when a filter or
       // search empties the list -- so the onDestroy teardown below never runs
@@ -224,7 +226,7 @@
     }
     // Hydrate archive-summary badges (member counts, verifiable_by) for the
     // archives on this visible page. Re-runs with this effect on page / sort /
-    // filter changes because it reads the same visible `entries`.
+    // filter changes because it reads the same visible files.
     fileBrowser.hydrateVisibleArchiveSummaries();
     // chdMetadata.hydrate is cheap for any path (no jobs spawned), so
     // the full list is fine. DAT match jobs need filtering on two
@@ -258,7 +260,7 @@
       // The rows the matcher can identify, by the rule "Recognize these"
       // shares (folders, archives and folded split sets are left out).
       const matchableExts = registry.allFilterableExts();
-      const filePaths = entries
+      const filePaths = files
         .filter((e) => isDatMatchable(e, matchableExts))
         .map((e) => e.path);
       if (filePaths.length > 0) {

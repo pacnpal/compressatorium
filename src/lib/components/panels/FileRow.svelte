@@ -13,9 +13,10 @@
   import BadgeCheck from '@lucide/svelte/icons/badge-check';
   import Badge from '$lib/components/ui/Badge.svelte';
   import RowActionsMenu from './RowActionsMenu.svelte';
+  import FileRow from './FileRow.svelte';
 
-  /** @type {{ entry: any }} */
-  let { entry } = $props();
+  /** @type {{ entry: any, depth?: number }} */
+  let { entry, depth = 0 } = $props();
 
   const path = $derived(entry?.path);
   const isDirectory = $derived(entry?.type === 'directory');
@@ -32,18 +33,9 @@
   // A multi-file game (a sheet and its tracks, a RAR set, a split dump, a
   // playlist and its discs) is one row; its files fold under it (#504).
   const parts = $derived(Array.isArray(entry?.parts) ? entry.parts : []);
+  // Each file under the row is a row of its own one level in (this
+  // component), with its checkbox, badges, actions and its own files.
   let expanded = $state(false);
-  // Every file under the row, a disc's own tracks too, each with the actions
-  // it has as a row of its own.
-  function flattenParts(list, depth) {
-    const out = [];
-    for (const item of list) {
-      out.push({ part: item, depth });
-      if (Array.isArray(item.parts)) out.push(...flattenParts(item.parts, depth + 1));
-    }
-    return out;
-  }
-  const childRows = $derived(flattenParts(parts, 1));
   const partWord = $derived(
     `${entry?.part_kind === 'discs' ? 'disc' : 'file'}${parts.length === 1 ? '' : 's'}`,
   );
@@ -109,7 +101,9 @@
   // yet. The plan decides; this is the likely answer.
   const ready = $derived(ui.toolsKnown ? ui.visibleTools.map((t) => t.id) : null);
   const willBecome = $derived(
-    (isFile || isDirectory) && convertibleBy.length > 0 && readyOutputs.length === 0
+    // A track or set part is converted with its game, never alone.
+    (isFile || isDirectory) && !entry?.companion_of && convertibleBy.length > 0
+      && readyOutputs.length === 0
       ? likelyFormat(entry, ready) : null,
   );
 
@@ -152,6 +146,7 @@
 
 <tr
   class="row"
+  class:part={depth > 0}
   class:selected
   class:dir={isDirectory}
   class:archive={isArchive}
@@ -167,7 +162,7 @@
     {/if}
   </td>
   <td class="name">
-    <div class="name-cell">
+    <div class="name-cell" style:padding-left={depth ? `${depth * 1.25}rem` : null}>
     {#if parts.length}
       <button
         type="button"
@@ -247,32 +242,8 @@
   </td>
 </tr>
 {#if expanded}
-  {#each childRows as child (child.part.path)}
-    {@const part = child.part}
-    {@const ticked = fileBrowser.isRowSelected(part)}
-    <tr class="row part" class:selected={ticked}>
-      <td class="sel">
-        {#if fileBrowser.isSelectable(child.part)}
-          <input
-            type="checkbox"
-            checked={ticked}
-            onclick={(e) => { e.stopPropagation(); fileBrowser.toggleSelect(part); }}
-            aria-label={ticked ? `Deselect ${part.name}` : `Select ${part.name}`}
-          />
-        {/if}
-      </td>
-      <td class="name">
-        <span class="part-name" style:padding-left={`${(child.depth - 1) * 1.25}rem`} title={part.path}>
-          {part.name}
-        </span>
-      </td>
-      <td class="size">{formatSize(part.own_size ?? part.size)}</td>
-      <td class="ext">{registry.displayExtension(part)}</td>
-      <td class="badges"></td>
-      <td class="actions">
-        <RowActionsMenu entry={child.part} />
-      </td>
-    </tr>
+  {#each parts as part (part.path)}
+    <FileRow entry={part} depth={depth + 1} />
   {/each}
 {/if}
 
@@ -363,14 +334,6 @@
   .chevron:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   .chevron.open { transform: rotate(90deg); }
   .part td { color: var(--text-2); }
-  .part-name {
-    display: flex;
-    flex-direction: column;
-    padding-left: calc(20px + var(--space-6));
-    font-size: var(--text-xs);
-    overflow-wrap: anywhere;
-    min-width: 0;
-  }
   .archive-summary {
     color: var(--text-3);
     font-size: var(--text-xs);

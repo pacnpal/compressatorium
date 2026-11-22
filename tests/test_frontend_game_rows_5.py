@@ -333,17 +333,17 @@ process.stdout.write(JSON.stringify({ byDisc, byName }));
 
 
 def test_every_folded_file_keeps_its_own_actions():
-    """Codex 4655722988: a disc, a track or a part shown under its game has
-    the same actions menu (Info, Verify, Rename, Delete...) it had as a row,
-    nested tracks included, and a disc can still be ticked on its own."""
+    """Codex 4655722988 / 4655978936: a disc, a track or a part shown under its
+    game is a row of its own (the same FileRow, one level in), so it has its
+    actions menu, its checkbox, its badges and its own files under it."""
     row = (_LIB / "components" / "panels" / "FileRow.svelte").read_text(encoding="utf-8")
-    children = row.split("{#if expanded}", 1)[1].split("{/if}\n\n<style>", 1)[0]
+    children = row.split("{#if expanded}", 1)[1].split("{/if}", 1)[0]
 
-    assert "{#each childRows as child (child.part.path)}" in children
-    assert "<RowActionsMenu entry={child.part} />" in children
-    assert "fileBrowser.isSelectable(child.part)" in children
-    flatten = row.split("function flattenParts(", 1)[1].split("\n  }\n", 1)[0]
-    assert "flattenParts(item.parts" in flatten
+    assert "import FileRow from './FileRow.svelte';" in row
+    assert "{#each parts as part (part.path)}" in children
+    assert "<FileRow entry={part} depth={depth + 1} />" in children
+    assert "<RowActionsMenu {entry} />" in row
+    assert "childRows" not in row
 
 
 def test_a_disc_is_ticked_on_its_own_and_unticking_one_drops_its_playlist(tmp_path):
@@ -387,3 +387,20 @@ process.stdout.write(JSON.stringify({
 
     assert data["game"] == ["/v/Game (Track 1).bin", "/v/Game (Track 2).bin", "/v/Game.cue"]
     assert data["saga"] == ["/v/Saga (Disc 1).chd", "/v/Saga (Disc 2).chd", "/v/Saga.m3u"]
+
+
+def test_background_work_sees_every_file_folded_under_a_row(tmp_path):
+    """Codex 4655978936: metadata, DAT matching and badges are fetched for the
+    files on screen, folded discs and tracks included."""
+    data = _run(tmp_path, _LISTING + """
+process.stdout.write(JSON.stringify(fileBrowser.visibleFiles.map((e) => e.path).sort()));
+""")
+
+    assert data == sorted([
+        "/v/Game.cue", "/v/Game (Track 1).bin", "/v/Game (Track 2).bin",
+        "/v/Saga.m3u", "/v/Saga (Disc 1).chd", "/v/Saga (Disc 2).chd", "/v/Loose.iso",
+    ]), data
+    file_list = (_LIB / "components" / "panels" / "FileList.svelte").read_text(encoding="utf-8")
+    hydrate = file_list.split("// Hydrate badge stores", 1)[1].split("onDestroy(", 1)[0]
+    assert "const files = fileBrowser.visibleFiles;" in hydrate
+    assert "entries." not in hydrate
