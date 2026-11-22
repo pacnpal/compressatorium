@@ -274,6 +274,8 @@ def test_redump_urls_are_metadata_only():
         url = dat_import.redump_url(system)
         assert url == f"https://redump.org/datfile/{system}/"
         assert "bios" not in url and "keys" not in url
+        # The plain-HTTP fallback (#556) asks the same path on the same host.
+        assert dat_import.redump_url(system, "http") == f"http://redump.org/datfile/{system}/"
 
 
 class _Conn:
@@ -284,6 +286,9 @@ class _Conn:
 
     def __init__(self, host, timeout, context):
         _Conn.seen = {"host": host}
+
+    def connect(self):
+        pass
 
     def request(self, method, path, headers):
         _Conn.seen.update(method=method, path=path, headers=headers)
@@ -690,54 +695,151 @@ async def test_a_dat_imported_by_another_process_retires_the_stamp(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Redump is asked over HTTPS only
+# Redump: verified HTTPS first, plain HTTP only when HTTPS can't connect (#556)
 # ---------------------------------------------------------------------------
 
 
-class _TlsConn:
-    seen: ClassVar[dict] = {}
+class _Wire:
+    """A stand-in for http.client's connections: logs each one made.
+
+    ``fail`` maps a scheme to the error its ``connect()`` raises; ``status``
+    is the answer every request gets.
+    """
+
+    scheme = "?"
+    log: ClassVar[list] = []
+    fail: ClassVar[dict] = {}
+    status = 200
 
     def __init__(self, host, timeout, context=None):
-        _TlsConn.seen = {"host": host, "context": context}
+        self.entry = {"scheme": self.scheme, "host": host, "context": context}
+        _Wire.log.append(self.entry)
+
+    def connect(self):
+        if self.scheme in _Wire.fail:
+            raise _Wire.fail[self.scheme]
+        self.entry["connected"] = True
 
     def request(self, method, path, headers):
-        _TlsConn.seen.update(method=method, path=path)
+        self.entry.update(method=method, path=path, headers=headers)
 
     def getresponse(self):
         resp = io.BytesIO(b"PK")
-        resp.status, resp.reason = 200, "OK"
-        resp.headers = {}
+        resp.status, resp.reason = _Wire.status, "x"
+        resp.headers = {"ETag": '"e"'}
         return resp
 
     def close(self):
-        pass
+        self.entry["closed"] = True
 
 
-def test_redump_is_asked_over_verified_https_only(monkeypatch, tmp_path):
-    """Codex security P1 on PR #527: a plaintext answer could be replaced on
-    the path and land in the DAT index."""
+class _Https(_Wire):
+    scheme = "https"
+
+
+class _Http(_Wire):
+    scheme = "http"
+
+
+@pytest.fixture
+def wire(monkeypatch):
+    _Wire.log, _Wire.fail, _Wire.status = [], {}, 200
+    monkeypatch.setattr(dat_import.http.client, "HTTPSConnection", _Https)
+    monkeypatch.setattr(dat_import.http.client, "HTTPConnection", _Http)
+    return _Wire
+
+
+def test_redump_is_asked_over_verified_https_first(wire, tmp_path):
+    """Codex security P1 on PR #527 still holds where it can: verified HTTPS
+    is tried first, and when it works plain HTTP is never asked."""
     import ssl
 
-    def plaintext(*_a, **_k):
-        raise AssertionError("asked redump.org over plain HTTP")
-
-    monkeypatch.setattr(dat_import.http.client, "HTTPConnection", plaintext)
-    monkeypatch.setattr(dat_import.http.client, "HTTPSConnection", _TlsConn)
-    dat_import._fetch("psx", {}, str(tmp_path))
-    assert _TlsConn.seen["host"] == "redump.org"
-    context = _TlsConn.seen["context"]
+    path, meta = dat_import._fetch("psx", {}, str(tmp_path))
+    assert [e["scheme"] for e in wire.log] == ["https"]
+    asked = wire.log[0]
+    assert (asked["host"], asked["method"], asked["path"]) == (
+        "redump.org", "GET", "/datfile/psx/")
+    context = asked["context"]
     assert isinstance(context, ssl.SSLContext)
     assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
-    assert dat_import.redump_url("psx") == "https://redump.org/datfile/psx/"
+    assert Path(path).read_bytes() == b"PK"
+    assert meta["etag"] == '"e"'
 
 
-def test_no_https_answer_says_so(monkeypatch, tmp_path):
-    """redump.org refused port 443 when this was written: the error says why."""
+@pytest.mark.parametrize("error", [
+    ConnectionRefusedError(61, "Connection refused"),
+    OSError(51, "Network is unreachable"),
+    TimeoutError("timed out"),
+], ids=["refused", "unreachable", "timeout"])
+def test_https_that_cannot_connect_falls_back_to_plain_http(wire, tmp_path, error):
+    """redump.org refuses port 443 (#556): the same path, the same host and
+    the same headers are asked over plain HTTP instead."""
+    wire.fail = {"https": error}
+    cached = {"etag": '"old"', "last_modified": "Sat, 21 Nov 2026 00:00:00 GMT"}
+    path, meta = dat_import._fetch("psx", cached, str(tmp_path))
+    assert [e["scheme"] for e in wire.log] == ["https", "http"]
+    https, http = wire.log
+    assert https["closed"]
+    assert (http["host"], http["method"], http["path"]) == ("redump.org", "GET", "/datfile/psx/")
+    assert http["headers"] == {
+        "User-Agent": dat_import.USER_AGENT,
+        "If-None-Match": '"old"',
+        "If-Modified-Since": cached["last_modified"],
+    }
+    assert http["closed"]
+    assert Path(path).read_bytes() == b"PK"
+    assert meta["etag"] == '"e"'
 
-    class Refused(_TlsConn):
-        def request(self, method, path, headers):
-            raise ConnectionRefusedError(61, "Connection refused")
 
-    monkeypatch.setattr(dat_import.http.client, "HTTPSConnection", Refused)
+@pytest.mark.parametrize("error", [
+    "SSLCertVerificationError", "CertificateError", "SSLError",
+])
+def test_a_bad_certificate_does_not_fall_back(wire, tmp_path, error):
+    """Something answers on 443 with a certificate that doesn't check out:
+    fail closed rather than ask the same thing in plaintext."""
+    import ssl
+
+    wire.fail = {"https": getattr(ssl, error)("certificate verify failed")}
+    with pytest.raises(ValueError, match="certificate") as caught:
+        dat_import._fetch("psx", {}, str(tmp_path))
+    assert "not retried over plain HTTP" in str(caught.value)
+    assert [e["scheme"] for e in wire.log] == ["https"]
+
+
+def test_an_https_answer_that_breaks_after_connecting_does_not_fall_back(
+    wire, tmp_path, monkeypatch,
+):
+    """Only a connection that can't be made at all falls back."""
+
+    class Dropped(_Https):
+        def getresponse(self):
+            raise ConnectionResetError(54, "Connection reset by peer")
+
+    monkeypatch.setattr(dat_import.http.client, "HTTPSConnection", Dropped)
     with pytest.raises(ValueError, match="over HTTPS"):
+        dat_import._fetch("psx", {}, str(tmp_path))
+    assert [e["scheme"] for e in wire.log] == ["https"]
+
+
+def test_no_answer_on_either_transport_says_both_were_tried(wire, tmp_path):
+    wire.fail = {
+        "https": ConnectionRefusedError(61, "Connection refused"),
+        "http": TimeoutError("timed out"),
+    }
+    with pytest.raises(ValueError, match="over HTTPS .* or plain HTTP") as caught:
+        dat_import._fetch("psx", {}, str(tmp_path))
+    assert "Connection refused" in str(caught.value) and "timed out" in str(caught.value)
+
+
+def test_plain_http_keeps_the_same_caps_and_refuses_redirects(wire, tmp_path, monkeypatch):
+    """The fallback is held to the size cap (and names the URL it used), and
+    follows no redirect."""
+    wire.fail = {"https": ConnectionRefusedError(61, "Connection refused")}
+    monkeypatch.setattr(dat_import, "MAX_ZIP_SIZE", 1)
+    with pytest.raises(ValueError, match="http://redump.org/datfile/psx/"):
+        dat_import._fetch("psx", {}, str(tmp_path))
+    assert not (tmp_path / "psx.zip").exists()
+    monkeypatch.setattr(dat_import, "MAX_ZIP_SIZE", 1024)
+    wire.status = 302
+    with pytest.raises(ValueError, match="302"):
         dat_import._fetch("psx", {}, str(tmp_path))

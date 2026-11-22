@@ -54,9 +54,12 @@
 - **Sync Redump in one click** (#524). Downloads Redump's DAT for each disc
   Platform in your Libraries, one request at a time, and leaves a system
   synced in the last day alone. Only DATs: never keys, BIOS sets or games.
-  It asks over HTTPS only, with the certificate checked, so a DAT can't be
-  swapped on the way in; while redump.org answers only plain HTTP, each
-  system reports that it couldn't connect. A Redump DAT you replace by hand
+  It tries HTTPS first, with the certificate checked. redump.org serves no
+  HTTPS, so when that connection can't be made it asks over plain HTTP
+  instead (#556); a certificate that doesn't check out stops the sync rather
+  than falling back. Either way the download is held to the same size caps
+  and archive checks, and a failure says which of HTTPS and HTTP it tried.
+  A Redump DAT you replace by hand
   is fetched again on the next sync. No-Intro stays upload-only, because its
   site is gated.
 - **Online identification is a single yes/no** (#524). Until you answer, the
