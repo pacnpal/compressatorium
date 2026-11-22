@@ -295,3 +295,38 @@ def test_a_remounted_file_list_shows_the_query_still_applied():
     file_list = (_LIB / "components" / "panels" / "FileList.svelte").read_text(encoding="utf-8")
 
     assert "let searchInput = $state(fileBrowser.activeQuery);" in file_list
+
+
+def test_a_folded_game_shows_when_any_of_its_files_matches(tmp_path):
+    """Codex 4655464285: a playlist whose discs are CHDs stays under the
+    CHD filter; a name query keeps a game when a disc or track matches."""
+    data = _run(tmp_path, _LISTING + """
+const shown = () => fileBrowser.filteredEntries.map((e) => e.path);
+fileBrowser.filter = '.chd';
+const chd = shown();
+fileBrowser.filter = '.bin';
+const bin = shown();
+fileBrowser.filter = '';
+fileBrowser.folderQuery = 'disc 2';
+const named = shown();
+process.stdout.write(JSON.stringify({ chd, bin, named }));
+""")
+
+    assert data["chd"] == ["/v/Saga.m3u"], data
+    assert data["bin"] == ["/v/Game.cue"], data
+    assert data["named"] == ["/v/Saga.m3u"], data
+
+
+def test_everywhere_keeps_a_game_whole_when_one_file_matches(tmp_path):
+    data = _run(tmp_path, _LISTING + """
+fileBrowser.currentPath = '/v';
+api.searchFiles = async () => ({ files: [m3u, d1, d2, loose], archives: [] });
+await fileBrowser.setSearchScope('everywhere', 'disc 2');
+const byDisc = fileBrowser.filteredEntries.map((e) => [e.path, (e.parts ?? []).length]);
+await fileBrowser.setSearchScope('everywhere', 'saga.m3u');
+const byName = fileBrowser.filteredEntries.map((e) => [e.path, (e.parts ?? []).length]);
+process.stdout.write(JSON.stringify({ byDisc, byName }));
+""")
+
+    assert data["byDisc"] == [["/v/Saga.m3u", 2]], data
+    assert data["byName"] == [["/v/Saga.m3u", 2]], data

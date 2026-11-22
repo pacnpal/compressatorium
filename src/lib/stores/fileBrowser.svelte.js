@@ -73,6 +73,11 @@ function gameRow(e, folds) {
   return { ...e, size, own_size: e.size ?? 0, parts, part_kind: discs ? 'discs' : 'files' };
 }
 
+/** Whether *row* or any file folded under it passes *test*. */
+function rowMatches(row, test) {
+  return test(row) || (row.parts ?? []).some((part) => rowMatches(part, test));
+}
+
 /** Index *row* and every row folded under it by path. */
 function indexRow(row, into) {
   if (!row?.path) return;
@@ -184,10 +189,9 @@ class FileBrowserStore {
   /**
    * Entries to render. When in search mode, flattens the
    * /api/files/search response (files + archive members) into a single
-   * list and applies the client-side `searchQuery` filter (the backend
-   * search endpoint takes no query, the query is purely client-side,
-   * matching the legacy UI's behavior). Otherwise returns the current
-   * directory's `entries`.
+   * list; `rows` applies the client-side `searchQuery` after folding (the
+   * backend search endpoint takes no query, the query is purely
+   * client-side). Otherwise returns the current directory's `entries`.
    */
   get sourceEntries() {
     if (!this.searchMode) return this.entries;
@@ -210,14 +214,7 @@ class FileBrowserStore {
       ...a,
       type: a.type ?? 'file',
     }));
-    const flat = [...files, ...archived];
-    const q = (this.searchQuery ?? '').trim().toLowerCase();
-    if (!q) return flat;
-    return flat.filter((e) => {
-      const name = (e.name ?? '').toLowerCase();
-      const path = (e.path ?? '').toLowerCase();
-      return name.includes(q) || path.includes(q);
-    });
+    return [...files, ...archived];
   }
 
   /**
@@ -226,7 +223,12 @@ class FileBrowserStore {
    * `entries` stays the raw listing.
    */
   get rows() {
-    return foldGameRows(this.sourceEntries);
+    const rows = foldGameRows(this.sourceEntries);
+    const q = this.searchMode ? (this.searchQuery ?? '').trim().toLowerCase() : '';
+    if (!q) return rows;
+    // Folded first, so a game stays whole when any one of its files matches.
+    return rows.filter((row) => rowMatches(row, (e) => (e.name ?? '').toLowerCase().includes(q)
+      || (e.path ?? '').toLowerCase().includes(q)));
   }
 
   get sortedEntries() {
@@ -283,7 +285,9 @@ class FileBrowserStore {
   get filteredEntries() {
     const q = !this.searchMode ? (this.folderQuery ?? '').trim().toLowerCase() : '';
     const named = q
-      ? this.sortedEntries.filter((e) => (e.display_name || e.name || '').toLowerCase().includes(q))
+      ? this.sortedEntries.filter((row) => rowMatches(
+        row, (e) => (e.display_name || e.name || '').toLowerCase().includes(q),
+      ))
       : this.sortedEntries;
     if (!this.filter) return named;
     const f = this.filter.toLowerCase();
@@ -298,8 +302,11 @@ class FileBrowserStore {
       // rows that carry no name. A plain `.iso` filter still matches
       // `Game.nkit.iso`, exactly as it did before: that row's `extension`
       // was already `.iso`.
-      const name = (e.name ?? e.path ?? '').toLowerCase();
-      return name.endsWith(f) || (e.extension ?? '').toLowerCase() === f;
+      // A folded game shows when any of its files is in the format.
+      return rowMatches(e, (part) => {
+        const name = (part.name ?? part.path ?? '').toLowerCase();
+        return name.endsWith(f) || (part.extension ?? '').toLowerCase() === f;
+      });
     });
   }
 
