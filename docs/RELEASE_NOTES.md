@@ -136,7 +136,12 @@
   kept on its row and shown under its result; the CSV has two new last columns,
   `warning` and `message`. Delete in Needs attention opens on the file's real
   entry, so it still asks before an original whose new file isn't checked.
-- The folder console dialog is now **Set console**.
+- The folder console dialog is now **Set console**, and so is the row menu
+  item that opens it (it said **Set Platform…**, #576). The rest of the old
+  words are gone too: Files' left panel says **Drives** (as every folder
+  picker does), Rename to DAT name says *games*, Verify says *checked*, and
+  Patch picks a file **On a Drive**. Rename to DAT name's count reads inside
+  its sentence.
 - **The web UI reads its formats from the server** (#539). `GET /api/tools`
   now also lists every tool's extensions and every mode's settings, and the
   UI builds its list of converters from it at start, so it can never offer a
