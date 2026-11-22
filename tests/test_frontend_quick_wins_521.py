@@ -137,7 +137,8 @@ def test_the_main_area_draws_no_ring_when_it_takes_focus():
 def test_the_breadcrumb_has_a_row_of_its_own():
     src = _read("lib", "components", "panels", "FileList.svelte")
     crumbs = src.split("  .crumbs {", 1)[1].split("}", 1)[0]
-    assert "grid-column: 1 / -1;" in crumbs
+    # The toolbar wraps (restructure 2/6); the breadcrumb takes a full row.
+    assert "flex: 1 0 100%;" in crumbs
 
 
 # ── A3: contrast, focus and motion ─────────────────────────────────────────

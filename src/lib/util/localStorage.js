@@ -2,10 +2,6 @@
 // JSON-encoded by default, never throws on quota or access errors.
 
 const STORAGE_KEYS = Object.freeze({
-  // Once the legacy UI's "ISO handling" toggle (chdman/dolphin/z3ds); those
-  // values are tool ids, so a value left from it still loads as a tool tab.
-  PRIMARY_TOOL: 'primary_tool_preference',
-  AUTO_CONVERT: 'compressatorium_auto_convert',
   THEME: 'theme-preference',
   SIDEBAR_COLLAPSED: 'sidebar-collapsed',
   LAYOUT: 'workspace-layout',

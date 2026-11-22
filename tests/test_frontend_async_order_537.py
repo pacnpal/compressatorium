@@ -138,14 +138,11 @@ def test_add_library_confirms_once():
 def test_a_switching_romm_catalog_cannot_convert():
     """CodeRabbit 4651856950: while a new platform's catalog loads, the old
     rows can't be converted with the new platform's tools."""
-    mode = _read("components/panels/ModeSelect.svelte")
-    assert "romm.platforms.find((p) => p.id === fileBrowser.rommPlatformId)" in mode
-    assert "fileBrowser.loading" in mode
+    # Restructure 2/6: the panel's own Convert-to list replaces ModeSelect.
     panel = _read("components/panels/ConvertPanel.svelte")
-    assert (
-        "const catalogLoading = $derived("
-        "fileBrowser.rommPlatformId !== null && fileBrowser.loading);"
-    ) in panel
+    assert "romm.platforms.find((p) => p.id === fileBrowser.rommPlatformId)" in panel
+    assert "fileBrowser.rommPlatformId !== null && (!platform || fileBrowser.loading)" in panel
+    assert "catalogLoading ? [] : convertTargets({" in panel
     assert "|| catalogLoading" in panel
 
 

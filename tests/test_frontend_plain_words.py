@@ -32,7 +32,11 @@ CHECKED_FILES = [
     "modals/AddLibraryModal.svelte",
     "panels/SafetyOptions.svelte",
     "panels/CompressionPicker.svelte",
-    "panels/ModeSelect.svelte",
+    "panels/ConvertPanel.svelte",
+    "panels/ConvertPlan.svelte",
+    "panels/FileList.svelte",
+    "panels/FileRow.svelte",
+    "modals/DeletePlanModal.svelte",
     # PR 3: Libraries.
     "views/LibraryView.svelte",
     "views/LibraryPlacement.svelte",

@@ -161,6 +161,39 @@
   the panel to that converter. Every old link and bookmark (`#/workspace/…`,
   `#/dashboard`, `#/romm`, `#/rules/…`, `#/findings`, `#/ledger`, `#/dat`)
   still opens the same screen at its new address.
+- **Auto is the way to convert** (#538). Pick games and the Convert panel
+  shows the plan before anything runs: "12 PlayStation games → CHD",
+  "3 GameCube games → RVZ", and every game it leaves alone, with why. Each
+  game goes to its best format; **Convert to** names one format instead, or
+  an unpack. A game whose console is unknown or unclear gets **Pick console**.
+  **Options** holds the safety choices (they start from your defaults), one
+  compression choice per format the plan makes, and where the new files go,
+  picked from your Drives. One **Convert** button queues the plan; the Auto
+  checkbox, the tool picker and the typed output folder are gone. On a phone
+  the panel is a sheet at the foot of the screen while games are selected.
+  - `/api/jobs/auto-plan` and `/api/jobs/auto` take a `target` format (or mode)
+    and per-file `platform_overrides`; `/api/jobs/auto` also takes
+    `verify_after`, `delete_on_verify`, `container_only` and `split`, and gives
+    each group only what its format can do safely. The CLI's `--to` plans
+    through the same function.
+  - Skip reasons are plain: "Unknown console: …", "Console unclear: …",
+    "No converter here makes CHD from .rvz files", "Already CHD".
+  - An archive a converter reads whole (an eXoDOS game zip, a RAR set) can be
+    ticked under Best, so its own Convert to (Repack for RomM, Extract) can be
+    picked; Best itself leaves a dos zip alone (#294).
+- **A multi-file game is one row** (#538). A `.cue` or `.gdi` and its tracks, a
+  RAR set, a split Wii U dump and a playlist with its discs each show as one
+  row with the total size; the chevron shows the files. Ticking a playlist
+  ticks its discs, and Delete takes every file of the game. Each file under
+  the chevron keeps its own actions menu (Info, Verify, Rename, Delete…), and
+  a disc can still be ticked on its own. Deleting or renaming one file that a
+  sheet or playlist still names, or one part of a set, is refused with the
+  reason; a game's own Delete takes all of its files. The Status column
+  names the format: "CHD ✓" for a new file that is there, "→ CHD" for a game
+  that can be made smaller here, never a tool name. The search box searches
+  this folder as you type, or everywhere under it; going back to this folder
+  unticks the results it doesn't list. A file another playlist or sheet names
+  is kept, whatever code page (UTF-8, cp1252, UTF-16) that file is saved in.
 - **The top bar shows what's running**: "2 converting · 3 waiting", linking to
   Activity. The Activity item in the sidebar counts what needs you (or, when
   nothing does, what's running).

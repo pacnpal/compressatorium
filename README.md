@@ -369,16 +369,25 @@ and **Settings**, plus **Help**.
 * Tick the games you want to convert. Archives (.zip, .7z, .rar) open like folders.
 * A decrypted PS3 folder is itself selectable when **Convert to** is the PS3 ISO format.
 
-### 2. Choose what to convert to, and press Convert
+### 2. Look at the plan, and press Convert
 
-* **Convert to** lists every format a ready converter makes, grouped as
-  *Make smaller*, *Unpack* and *Other* (CHD, RVZ, CSO, 7z, NSZ, WUX, ZAR, …).
-  Or tick **Auto** and each game goes to its console's best format, with the plan
-  shown before anything runs.
-* Compression has sensible defaults; **Choose codecs** changes them
-  (see [Compression Settings](#compression-settings)).
-* Press **Start conversion**. The top bar shows what is converting and waiting;
-  click it to open **Activity**, where Running, History and anything that needs you live.
+* Each game goes to its best format: the console comes from the game's header,
+  or its folder name. The **plan** under **Convert to** shows it before anything
+  runs: "12 PlayStation games → CHD", "3 GameCube games → RVZ", and any game it
+  leaves alone, with why. **Pick console** fixes a game it couldn't place.
+* A game made of several files (a `.cue` and its tracks, a RAR set, a split Wii U
+  dump, a playlist and its discs) is one row; its chevron shows the files.
+* **Convert to** names one format instead (CHD, RVZ, CSO, 7z, NSZ, WUX, ZAR, …),
+  or unpacks one (BIN/CUE from CHD, ISO from RVZ, …).
+* **Options** has the safety choices (check each new file, delete the original
+  once it checks out), the compression for each format the plan makes
+  (see [Compression Settings](#compression-settings)) and where the new files go.
+* Press **Convert**. The top bar shows what is converting and waiting; click it
+  to open **Activity**, where Running, History and anything that needs you live.
+
+| Light | Dark |
+|-------|------|
+| ![The plan for a PlayStation drive, light](docs/screenshots/files-plan-light.png) | ![The plan for a PlayStation drive, dark](docs/screenshots/files-plan-dark.png) |
 
 ### 3. Let a Library look after a folder
 
@@ -1681,11 +1690,12 @@ selected tool understands.
   replaced unless you choose overwrite.
 * **A conversion stalls** — big files are slow; an adaptive stall timeout scales
   with input size, and the queue has a recovery action. Check temp-dir space/speed.
-* **A file didn't show up** — make sure the right tool is selected (the list filters
-  to it); try Search All or clear the extension filter.
-* **Not sure which tool an ISO needs** — tick **Auto** in the convert panel. It
-  reads each Image's header (or its folder name) and sends it to its Platform's
-  default format. Images it can't place are skipped and listed.
+* **A file didn't show up** — it may be part of a game (a `.bin` beside its `.cue`
+  folds under it; open the chevron); try **Everywhere** in the search box, or clear
+  the extension filter.
+* **Not sure which format an ISO needs** — leave **Convert to** on **Best format for
+  each game**. The plan reads each game's header (or its folder name) and shows
+  where it goes; games it can't place are listed with **Pick console**.
 * **The Switch tool is missing or jobs ask for prod.keys** — it needs your own
   keys; see [Nintendo Switch Support](#nintendo-switch-support). Without keys the
   tool is listed on the dashboard under **Not ready here** with the fix.
@@ -1737,31 +1747,51 @@ The Web UI ships with light and dark themes and is fully responsive from desktop
 
 > These screenshots are generated automatically. The [Take screenshots](.github/workflows/screenshots.yml) GitHub Actions workflow builds the UI, runs it against a throwaway fixture library, captures each surface with [shot-scraper](https://shot-scraper.datasette.io/) (definitions in [`shots.yml`](shots.yml)), optimises the PNGs with [Oxipng](https://github.com/shssoichiro/oxipng), and commits the results back to `docs/screenshots/`. To refresh them, trigger that workflow (or run it locally — see [`docs/SCREENSHOTS.md`](docs/SCREENSHOTS.md)).
 
-#### Workspace
+#### Files
 
-A three-pane layout: navigation and tool picker on the left, the volume and file browser in the middle, and a live convert panel with the job queue on the right. Selecting a tool refilters the file list and the convert options to match.
-
-| Light | Dark |
-|-------|------|
-| ![Workspace · CHDMAN, light](docs/screenshots/workspace-chdman-light.png) | ![Workspace · CHDMAN, dark](docs/screenshots/workspace-chdman-dark.png) |
-
-**Batch selection.** Tick multiple files and the convert panel arms itself, showing how many sources are queued and a one-click **Start conversion**.
+Drives on the left, the games of the open folder in the middle, and the Convert
+panel on the right. A game made of several files is one row; its chevron shows
+the files (here a playlist's discs).
 
 | Light | Dark |
 |-------|------|
-| ![Batch selection, light](docs/screenshots/workspace-batch-light.png) | ![Batch selection, dark](docs/screenshots/workspace-batch-dark.png) |
+| ![Files on a PlayStation drive, light](docs/screenshots/files-light.png) | ![Files on a PlayStation drive, dark](docs/screenshots/files-dark.png) |
 
-**Delete-on-verify confirmation.** Before anything is queued, the app lists every file it will delete after the output verifies, and each `.m3u` playlist entry it will point at the new file first.
+**First run.** With no Library and no RomM yet, Files offers to set one up.
+
+| Light | Dark |
+|-------|------|
+| ![Files on first run, light](docs/screenshots/files-first-run-light.png) | ![Files on first run, dark](docs/screenshots/files-first-run-dark.png) |
+
+**The plan.** Select games and the plan shows each one's new format, one line per
+console and format, before anything runs. A game whose console is unknown or
+unclear is listed with **Pick console**.
+
+| Light | Dark |
+|-------|------|
+| ![The plan, light](docs/screenshots/files-plan-light.png) | ![The plan, dark](docs/screenshots/files-plan-dark.png) |
+
+**Convert to one format.** Pick **CHD** (or any format) and the games it can't
+take are listed as skipped, with why.
+
+| Light | Dark |
+|-------|------|
+| ![Convert to CHD, light](docs/screenshots/files-convert-to-light.png) | ![Convert to CHD, dark](docs/screenshots/files-convert-to-dark.png) |
+
+**Options.** The safety choices, one compression choice per format the plan
+makes, and where the new files go.
+
+| Light | Dark |
+|-------|------|
+| ![Convert options, light](docs/screenshots/files-options-light.png) | ![Convert options, dark](docs/screenshots/files-options-dark.png) |
+
+**Delete the original only once the new file checks out.** Before anything is
+queued, the app lists every file it will delete, and each `.m3u` playlist entry it
+will point at the new file first.
 
 | Light | Dark |
 |-------|------|
 | ![Delete confirmation, light](docs/screenshots/delete-plan-light.png) | ![Delete confirmation, dark](docs/screenshots/delete-plan-dark.png) |
-
-**Auto.** Tick **Auto** and select a mix of files: each Image goes to its Platform's default format with your saved compression. The Platform comes from the Image's header (GameCube/Wii magic, PS1/PS2 `SYSTEM.CNF`, PSP `PARAM.SFO`, Dreamcast `IP.BIN`, Saturn, Sega CD, Xbox), or from its folder name (`ps2`, `psx`, `gc`, `dreamcast`, … as RomM, ES-DE and Batocera name them) when there is no readable header. A header that disagrees with its folder, or an Image nothing identifies, is skipped and listed in the plan you confirm before anything is queued.
-
-| Light | Dark |
-|-------|------|
-| ![Auto plan, light](docs/screenshots/workspace-auto-plan-light.png) | ![Auto plan, dark](docs/screenshots/workspace-auto-plan-dark.png) |
 
 **Create .m3u from selected discs.** Select the discs of one game and the dialog previews the playlist name and the entries in disc order before it writes anything.
 
@@ -1769,42 +1799,39 @@ A three-pane layout: navigation and tool picker on the left, the volume and file
 |-------|------|
 | ![Create .m3u preview, light](docs/screenshots/playlist-light.png) | ![Create .m3u preview, dark](docs/screenshots/playlist-dark.png) |
 
-**Dolphin (GameCube / Wii).** Compress discs to RVZ, WIA, or GCZ, with a codec and compression-level picker.
+**GameCube / Wii.** Discs go to RVZ. With **Delete the original** on, each new disc
+is compared with its original before anything is deleted; **Quick check only**
+under More skips that comparison.
 
 | Light | Dark |
 |-------|------|
-| ![Dolphin tool, light](docs/screenshots/workspace-dolphin-light.png) | ![Dolphin tool, dark](docs/screenshots/workspace-dolphin-dark.png) |
+| ![GameCube drive, light](docs/screenshots/files-gamecube-light.png) | ![GameCube drive, dark](docs/screenshots/files-gamecube-dark.png) |
 
-**Delete the source only once it's Round-tripped.** With delete-source on, a Dolphin job compares the disc it wrote with the source disc before deleting anything. **Container check only** skips that comparison.
-
-| Light | Dark |
-|-------|------|
-| ![Dolphin delete-source, light](docs/screenshots/workspace-dolphin-delete-light.png) | ![Dolphin delete-source, dark](docs/screenshots/workspace-dolphin-delete-dark.png) |
-
-**3DS.** Compress `.cci`, `.cia`, and `.3ds` ROMs with z3ds_compressor.
+**3DS.** `.cci`, `.cia` and `.3ds` ROMs go to Z3DS.
 
 | Light | Dark |
 |-------|------|
-| ![3DS tool, light](docs/screenshots/workspace-3ds-light.png) | ![3DS tool, dark](docs/screenshots/workspace-3ds-dark.png) |
+| ![3DS drive, light](docs/screenshots/files-3ds-light.png) | ![3DS drive, dark](docs/screenshots/files-3ds-dark.png) |
 
-**Wii U.** Compress `.wud` disc images to `.wux` with JWUDTool, and back again.
-
-| Light | Dark |
-|-------|------|
-| ![Wii U tool, light](docs/screenshots/workspace-wiiu-light.png) | ![Wii U tool, dark](docs/screenshots/workspace-wiiu-dark.png) |
-
-**eXoDOS.** Repack eXoDOS game zips into `.dosz` files for RomM's in-browser DOS
-player.
+**Wii U.** `.wud` disc images go to `.wux`; a split dump is one row.
 
 | Light | Dark |
 |-------|------|
-| ![eXoDOS tool, light](docs/screenshots/workspace-exodos-light.png) | ![eXoDOS tool, dark](docs/screenshots/workspace-exodos-dark.png) |
+| ![Wii U drive, light](docs/screenshots/files-wiiu-light.png) | ![Wii U drive, dark](docs/screenshots/files-wiiu-dark.png) |
 
-**RAR sets.** Unpack a multi-part RAR set from usenet to the one file inside it.
+**eXoDOS.** eXoDOS game zips are repacked into `.dosz` files for RomM's in-browser
+DOS player.
 
 | Light | Dark |
 |-------|------|
-| ![RAR sets tool, light](docs/screenshots/workspace-rar-light.png) | ![RAR sets tool, dark](docs/screenshots/workspace-rar-dark.png) |
+| ![eXoDOS drive, light](docs/screenshots/files-exodos-light.png) | ![eXoDOS drive, dark](docs/screenshots/files-exodos-dark.png) |
+
+**RAR sets.** A multi-part RAR set from usenet is one row, its volumes nested under
+it, and unpacks to the one file inside it.
+
+| Light | Dark |
+|-------|------|
+| ![RAR set as one row, light](docs/screenshots/files-rar-light.png) | ![RAR set as one row, dark](docs/screenshots/files-rar-dark.png) |
 
 #### Activity
 
@@ -1987,7 +2014,7 @@ On small screens the file list switches to a card layout. Controls use 44 to 48p
 - The inputs that can't come from an archive are CHDMAN's copy/recompress mode (recompressing an already-finished `.chd` would be a pointless round trip, though the extract modes *can* decompress a `.chd` straight out of an archive), Handheld ROM compression, whose `.7z`/`.zip` are the packed product, and PS3 ISO, whose input is a folder rather than a file (a zipped `PS3_GAME` tree can't be selected from inside an archive).
 
 **Dolphin Tools (GameCube/Wii)**
-- A plain `.iso` goes to whichever tool tab you pick, or tick **Auto** to have each one sent to the right tool from its header
+- A plain `.iso` goes to the right format from its header, or the format you pick in **Convert to**
 - Convert `.iso`, `.gcz`, `.wia`, `.rvz`, `.wbfs` with dolphin-tool (RVZ/WIA/GCZ/ISO output)
 - Disc info and verification for Dolphin formats (including batch verification)
 - Dolphin sources may be converted directly from inside ZIP/7z/RAR archives (extracted to a temp dir for the conversion, then cleaned up)
@@ -2059,7 +2086,7 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 - Requires the Docker image with Dolphin installed (default image includes `dolphin-emu` + wrapper).
 - Dolphin conversions use `dolphin-tool` (configurable via `DOLPHIN_TOOL_PATH`).
 - Compression is a single codec plus an optional level (`zstd:5`, `bzip2:5`, `lzma:5`, `lzma2:5`); `zstd:19` is the default. `dolphin_gcz` uses fixed compression (ignores the codec), and `dolphin_iso` outputs an uncompressed ISO.
-- A `.iso` converts with the tool tab you pick. **Auto** in the convert panel picks per Image from its header instead.
+- A `.iso` goes to its console's format, read from its header, unless **Convert to** names one.
 
 ---
 
@@ -2678,7 +2705,7 @@ Whether a ZAR made here boots in a current Xenia build has not been checked yet
 
 | Light | Dark |
 |-------|------|
-| ![Xbox 360 ISO to ZAR, light](docs/screenshots/workspace-rom-converto-light.png) | ![Xbox 360 ISO to ZAR, dark](docs/screenshots/workspace-rom-converto-dark.png) |
+| ![Xbox 360 ISO to ZAR, light](docs/screenshots/files-xbox360-light.png) | ![Xbox 360 ISO to ZAR, dark](docs/screenshots/files-xbox360-dark.png) |
 
 ### Xbox 360 ZAR Environment Variables
 
@@ -2723,7 +2750,7 @@ The PBP success path and encrypted retail CIA/CCI were not tested in the spike
 
 | Light | Dark |
 |-------|------|
-| ![3DS CIA to CCI with the Recognized proof, light](docs/screenshots/workspace-rom-converto-recognized-light.png) | ![3DS CIA to CCI with the Recognized proof, dark](docs/screenshots/workspace-rom-converto-recognized-dark.png) |
+| ![3DS CIA to CCI, deleting only a known good dump's original, light](docs/screenshots/files-known-dump-light.png) | ![3DS CIA to CCI, deleting only a known good dump's original, dark](docs/screenshots/files-known-dump-dark.png) |
 
 ## eXoDOS Support (.zip → .dosz)
 
@@ -3165,7 +3192,7 @@ codec it doesn't read, a warning appears, but nothing is blocked. The list lives
 in one file (`app/data/compat_presets.yaml`), and each entry cites the doc or
 source file it came from.
 
-| ![Compatible with, light](docs/screenshots/compat-picker-light.png) |
+| ![Compatible with, light](docs/screenshots/files-options-light.png) |
 | --- |
 
 ---
@@ -3697,7 +3724,7 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 **Input formats:**
 - `.gdi` - GD-ROM (Dreamcast)
-- `.iso` - game disc images (the tool tab you pick, or **Auto** from the Image's header)
+- `.iso` - game disc images (the format its header says, or the one **Convert to** names)
 - `.cue` / `.bin` - CD images with cue sheets
 - `.gcz`, `.wia`, `.rvz`, `.wbfs` - GameCube/Wii game images (Dolphin)
 - `.cci`, `.cia`, `.3ds`, `.cxi`, `.3dsx` - Nintendo 3DS ROM images (3DS compression)
