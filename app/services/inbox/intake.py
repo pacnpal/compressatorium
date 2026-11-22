@@ -1701,6 +1701,7 @@ async def _recognize(
         message="Waiting to Recognize it",
     )
     _tag(job, inbox)
+    job.platform = flight.platform or None  # its console in History (#572)
     cancel = job_manager.get_cancel_event(job.id)
     outcome, why, result = "failed", "", None
     try:
@@ -1758,7 +1759,9 @@ async def _recognize(
         # that very file.
         name = os.path.basename(path)
         state.recognized[path] = (flight.fingerprint, flight.identities.get(name), result)
-        await job_manager.finish_external_job(job.id, success=True)
+        await job_manager.finish_external_job(
+            job.id, success=True, message="Checked against the game lists",
+        )
         await _take_on(inbox, state, path, flight.fingerprint)
         return
     if outcome == "changed":
@@ -2152,6 +2155,7 @@ async def _unpack(
         os.path.basename(path), ConversionMode.INBOX_UNPACK, message="Waiting to unpack it",
     )
     _tag(job, inbox)
+    job.platform = flight.platform or None  # its console in History (#572)
     cancel = job_manager.get_cancel_event(job.id)
     outcome, why, unpacked = "failed", "", None
     try:
@@ -2188,7 +2192,10 @@ async def _unpack(
                         f"Nothing was taken from it: {why}")
             await job_manager.finish_external_job(job.id, success=False, error_message=why)
             return
-        await job_manager.finish_external_job(job.id, success=True)
+        await job_manager.finish_external_job(
+            job.id, success=True,
+            message=f"Unpacked {len(images)} game{'' if len(images) == 1 else 's'}",
+        )
         if not revoked:
             await _take_unpacked(inbox, state, path)
         return

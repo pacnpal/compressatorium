@@ -41,3 +41,35 @@ async def test_a_finished_copy_has_its_console_and_says_where_it_went(vol, db):
     assert job.status == JobStatus.COMPLETED
     assert job.platform == "ps2"
     assert job.message == f"Copied into {vol / 'ROMs' / 'ps2'}"
+
+
+@pytest.mark.asyncio
+async def test_unpack_and_recognize_jobs_say_what_they_did_with_their_console(
+        vol, db, monkeypatch):
+    """The same for a watch folder's other jobs: an archive unpacked and its
+    game checked against the game lists, both in a console's folder."""
+    from models import ConversionMode, JobStatus
+    from services.inbox import intake
+
+    from . import test_inbox_432 as inbox_432
+
+    inbox_432._verifies(monkeypatch)
+    rom = inbox_432._bytes("history")
+    await inbox_432._dat(
+        "Nintendo - Game Boy Advance (No-Intro)", {"Job Game": inbox_432._sha1(rom)},
+    )
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    inbox_432._zip(vol / "Downloads" / "gba" / "jobs.zip", {"jobs.gba": rom})
+
+    await inbox_432._polls(box)
+
+    by_mode = {j.mode: j for j in intake.job_manager.jobs.values()}
+    unpack = by_mode[ConversionMode.INBOX_UNPACK]
+    recognize = by_mode[ConversionMode.INBOX_RECOGNIZE]
+    # An archive's own console isn't worked out (it isn't a game); what it
+    # held is, and its jobs say so.
+    assert (unpack.status, unpack.message) == (JobStatus.COMPLETED, "Unpacked 1 game")
+    assert (recognize.status, recognize.platform, recognize.message) == (
+        JobStatus.COMPLETED, "gba", "Checked against the game lists",
+    )
