@@ -9,7 +9,6 @@
    *   whose default mode compresses. The conversion store saves each edited
    *   tool (`applySavedDefault`) over the server copy: its debounce outlives this section, and
    *   the saved value becomes the Convert panel's live one.
-   * - How long History keeps its rows (`/api/ledger/settings`).
    *
    * Each part loads on its own and shows its own error.
    */
@@ -23,7 +22,6 @@
   import { formatCompression, parseCompression } from '$lib/tools/compression.js';
   import SafetyOptions from '$lib/components/panels/SafetyOptions.svelte';
   import CompressionPicker from '$lib/components/panels/CompressionPicker.svelte';
-  import Select from '$lib/components/ui/Select.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
 
@@ -76,62 +74,8 @@
     conversion.applySavedDefault(p.tool.id, wire);
   }
 
-  // ─── History ────────────────────────────────────────────────────────────
-  const RETENTION = [
-    { value: '', label: 'Forever' },
-    { value: '30', label: '30 days' },
-    { value: '90', label: '90 days' },
-    { value: '365', label: '1 year' },
-  ];
-  let retention = $state(null);
-  let retentionError = $state(null);
-  // A value set through the API that isn't one of the four still shows.
-  const retentionOptions = $derived(
-    retention && !RETENTION.some((o) => o.value === retention)
-      ? [...RETENTION, { value: retention, label: `${retention} days` }]
-      : RETENTION,
-  );
-  const asOption = (r) => (r?.retention_days ? String(r.retention_days) : '');
-
-  async function loadRetention() {
-    retentionError = null;
-    try {
-      retentionStored = asOption(await api.getLedgerSettings());
-      retention = retentionStored;
-    } catch (e) {
-      retentionError = e?.message ?? 'Request failed';
-    }
-  }
-
-  // Saves go one at a time, in the order picked, and only the newest one's
-  // answer (or failure) is shown: an older save landing last never puts its
-  // value back on screen.
-  let retentionSaves = 0;
-  let retentionChain = Promise.resolve();
-  // What the server last said it stores; a failed save falls back to it.
-  let retentionStored = null;
-
-  function setRetention(value) {
-    const ticket = ++retentionSaves;
-    retention = value;
-    retentionChain = retentionChain.then(async () => {
-      try {
-        retentionStored = asOption(
-          await api.putLedgerSettings({ retention_days: value ? Number(value) : null }),
-        );
-        if (ticket === retentionSaves) retention = retentionStored;
-      } catch (e) {
-        if (ticket !== retentionSaves) return;
-        retention = retentionStored;
-        toast.error(e?.message ?? "Couldn't save the History setting");
-      }
-    });
-    return retentionChain;
-  }
-
   onMount(() => {
     loadPrefs();
-    loadRetention();
   });
 </script>
 
@@ -188,24 +132,6 @@
       </div>
     {/if}
   </section>
-
-  <section class="part" aria-labelledby="defaults-history">
-    <h3 id="defaults-history">History</h3>
-    {#if retentionError}
-      {@render failed(retentionError, loadRetention)}
-    {:else if retention == null}
-      <div class="state"><Spinner size="sm" /> Loading…</div>
-    {:else}
-      <div class="retention">
-        <Select
-          label="Keep history for"
-          value={retention}
-          options={retentionOptions}
-          onchange={setRetention}
-        />
-      </div>
-    {/if}
-  </section>
 </div>
 
 <style>
@@ -224,7 +150,6 @@
     grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
     gap: var(--space-3);
   }
-  .retention { max-width: 240px; }
   .state { display: flex; align-items: center; gap: var(--space-2); color: var(--text-2); font-size: var(--text-sm); }
   .error {
     display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2);

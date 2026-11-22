@@ -109,20 +109,6 @@ export const api = {
 
   getLedgerSavings: () =>
     fetchJson(`${API_BASE}/ledger/savings`, undefined, 'Failed to fetch savings'),
-  // How long History keeps its rows: `{ retention_days }`, null for forever.
-  getLedgerSettings: () =>
-    fetchJson(`${API_BASE}/ledger/settings`, undefined, "Couldn't load the History setting"),
-  putLedgerSettings(body) {
-    return fetchJson(
-      `${API_BASE}/ledger/settings`,
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      },
-      "Couldn't save the History setting",
-    );
-  },
 
   // ─── Volumes ──────────────────────────────────────────────────────────
   getVolumes: () => fetchJson(`${API_BASE}/volumes`, undefined, 'Failed to fetch volumes'),

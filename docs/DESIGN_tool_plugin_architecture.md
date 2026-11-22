@@ -2448,7 +2448,7 @@ retains; `_prune_jobs` deletes the oldest past the cap. The job list is a
 bounded window, not a record of the run, so no all-time count comes from it.
 The Ledger is the record: every finished job lands in it (`ledger.record`, a
 terminal listener) and its `ledger_totals` counters only ever grow, whatever
-the cap, a Clear or a retention prune removes. `GET /api/ledger/totals`
+the cap or a Clear removes. `GET /api/ledger/totals`
 answers `{"jobs": {"completed": N, "failed": N, "cancelled": N}}` from them,
 and the dashboard's Done / Failed tiles read it (`ledger.totals`). The Jobs
 panel's tab badges count the rows the list holds, and its Completed and

@@ -680,9 +680,8 @@ order** under the lists to move them. To look up games no list knows, turn on
 checks that Hasheous answers, and the first visit asks once whether you want it.
 
 **Settings → Defaults** sets what new conversions start with: check each new file,
-delete the original once it checks out, the compression for each format (the same
-one the Convert panel remembers), and how long History keeps its rows (forever,
-30 days, 90 days or a year).
+delete the original once it checks out, and the compression for each format (the
+same one the Convert panel remembers). History keeps every row.
 
 ### Rename to DAT name
 

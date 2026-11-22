@@ -194,9 +194,8 @@
     nothing.
   - **Defaults** (new): what new conversions start with (check each new file,
     delete the original once it checks out, quick check), the compression for
-    each format (the same one the Convert panel remembers), and **Keep history
-    for** forever, 30 days, 90 days or a year. Nothing in the UI set History's
-    retention before.
+    each format (the same one the Convert panel remembers). History keeps every
+    row (#542).
   - **Converters** keeps the CHD badge scan.
 - **`compressatorium convert` uses the running server** (#533). When the
   server is running on the same `/config`, the command finds it there and

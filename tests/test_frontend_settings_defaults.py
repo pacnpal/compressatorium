@@ -1,8 +1,8 @@
 """One Settings page (restructure PR 5, spec §4.5).
 
 - Settings → Defaults writes the shared ``defaults`` store (the one the Convert
-  panel and a new console row start from), the remembered per-format
-  compression, and how long History is kept.
+  panel and a new console row start from) and the remembered per-format
+  compression. History is kept forever: there is no retention setting (#542).
 - Turning Hasheous on tests it straight away (``datMatching.setHasheousEnabled``),
   so the switch says whether Hasheous answered without a Test button.
 - The page is five sections, each with its own deep link.
@@ -121,7 +121,7 @@ def test_the_defaults_section_writes_the_shared_store():
     assert "container_only: s.quickCheck" in src
 
 
-def test_the_defaults_section_edits_the_remembered_compression_and_history():
+def test_the_defaults_section_edits_the_remembered_compression():
     src = _read("settings/Defaults.svelte")
     # The same per-tool preference the Convert panel remembers. The conversion
     # store owns the save (its debounce outlives this section, Codex
@@ -137,16 +137,18 @@ def test_the_defaults_section_edits_the_remembered_compression_and_history():
     assert "{#if conversion.compressionSaveError}" in src
     assert "conversion.retryCompressionSave()" in src
     assert "<CompressionPicker" in src
-    # History retention, which nothing in the UI set before.
-    assert "api.getLedgerSettings()" in src and "api.putLedgerSettings(" in src
-    for label in ("Forever", "30 days", "90 days", "1 year"):
-        assert label in src, label
-    # Retention saves run in order and only the newest one's answer shows.
-    assert "retentionChain = retentionChain.then(" in src
-    assert "if (ticket === retentionSaves) retention = retentionStored;" in src
+
+
+def test_defaults_has_no_history_retention():
+    """The Ledger retention route is gone (#542): Defaults asks nothing of it
+    and offers no History control that could only fail."""
+    src = _read("settings/Defaults.svelte")
+    for gone in ("getLedgerSettings", "putLedgerSettings", "/ledger/settings",
+                 "retention", "Keep history for", "defaults-history"):
+        assert gone not in src, gone
     endpoints = (_SRC / "api" / "endpoints.js").read_text(encoding="utf-8")
-    assert "getLedgerSettings:" in endpoints and "putLedgerSettings(" in endpoints
-    assert "/ledger/settings" in endpoints
+    assert "LedgerSettings" not in endpoints
+    assert "/ledger/settings" not in endpoints
 
 
 def test_settings_is_five_sections_with_deep_links():
