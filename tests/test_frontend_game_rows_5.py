@@ -330,3 +330,42 @@ process.stdout.write(JSON.stringify({ byDisc, byName }));
 
     assert data["byDisc"] == [["/v/Saga.m3u", 2]], data
     assert data["byName"] == [["/v/Saga.m3u", 2]], data
+
+
+def test_every_folded_file_keeps_its_own_actions():
+    """Codex 4655722988: a disc, a track or a part shown under its game has
+    the same actions menu (Info, Verify, Rename, Delete...) it had as a row,
+    nested tracks included, and a disc can still be ticked on its own."""
+    row = (_LIB / "components" / "panels" / "FileRow.svelte").read_text(encoding="utf-8")
+    children = row.split("{#if expanded}", 1)[1].split("{/if}\n\n<style>", 1)[0]
+
+    assert "{#each childRows as child (child.part.path)}" in children
+    assert "<RowActionsMenu entry={child.part} />" in children
+    assert "fileBrowser.isSelectable(child.part)" in children
+    flatten = row.split("function flattenParts(", 1)[1].split("\n  }\n", 1)[0]
+    assert "flattenParts(item.parts" in flatten
+
+
+def test_a_disc_is_ticked_on_its_own_and_unticking_one_drops_its_playlist(tmp_path):
+    data = _run(tmp_path, _LISTING + """
+const saga = fileBrowser.rows.find((r) => r.path === '/v/Saga.m3u');
+const disc2 = saga.parts.find((d) => d.path === '/v/Saga (Disc 2).chd');
+const alone = fileBrowser.isSelectable(disc2);
+fileBrowser.toggleSelect(disc2);
+const one = [...fileBrowser.selectedFiles.keys()];
+fileBrowser.toggleSelect(disc2);
+fileBrowser.toggleSelect(saga);
+fileBrowser.toggleSelect(disc2);
+process.stdout.write(JSON.stringify({
+  alone, one,
+  after: [...fileBrowser.selectedFiles.keys()],
+  playlists: [...fileBrowser.selectedPlaylists.keys()],
+  sagaTicked: fileBrowser.isRowSelected(saga),
+}));
+""")
+
+    assert data["alone"] is True, data
+    assert data["one"] == ["/v/Saga (Disc 2).chd"], data
+    assert data["after"] == ["/v/Saga (Disc 1).chd"], data
+    assert data["playlists"] == [], data
+    assert data["sagaTicked"] is False, data

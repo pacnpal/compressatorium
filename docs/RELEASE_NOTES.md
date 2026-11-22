@@ -151,7 +151,9 @@
 - **A multi-file game is one row** (#538). A `.cue` or `.gdi` and its tracks, a
   RAR set, a split Wii U dump and a playlist with its discs each show as one
   row with the total size; the chevron shows the files. Ticking a playlist
-  ticks its discs, and Delete takes every file of the game. The Status column
+  ticks its discs, and Delete takes every file of the game. Each file under
+  the chevron keeps its own actions menu (Info, Verify, Rename, Delete…), and
+  a disc can still be ticked on its own. The Status column
   names the format: "CHD ✓" for a new file that is there, "→ CHD" for a game
   that can be made smaller here, never a tool name. The search box searches
   this folder as you type, or everywhere under it; going back to this folder

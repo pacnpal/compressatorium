@@ -33,6 +33,17 @@
   // playlist and its discs) is one row; its files fold under it (#504).
   const parts = $derived(Array.isArray(entry?.parts) ? entry.parts : []);
   let expanded = $state(false);
+  // Every file under the row, a disc's own tracks too, each with the actions
+  // it has as a row of its own.
+  function flattenParts(list, depth) {
+    const out = [];
+    for (const item of list) {
+      out.push({ part: item, depth });
+      if (Array.isArray(item.parts)) out.push(...flattenParts(item.parts, depth + 1));
+    }
+    return out;
+  }
+  const childRows = $derived(flattenParts(parts, 1));
   const partWord = $derived(
     `${entry?.part_kind === 'discs' ? 'disc' : 'file'}${parts.length === 1 ? '' : 's'}`,
   );
@@ -236,21 +247,31 @@
   </td>
 </tr>
 {#if expanded}
-  {#each parts as part (part.path)}
-    <tr class="row part">
-      <td class="sel"></td>
+  {#each childRows as child (child.part.path)}
+    {@const part = child.part}
+    {@const ticked = fileBrowser.isRowSelected(part)}
+    <tr class="row part" class:selected={ticked}>
+      <td class="sel">
+        {#if fileBrowser.isSelectable(child.part)}
+          <input
+            type="checkbox"
+            checked={ticked}
+            onclick={(e) => { e.stopPropagation(); fileBrowser.toggleSelect(part); }}
+            aria-label={ticked ? `Deselect ${part.name}` : `Select ${part.name}`}
+          />
+        {/if}
+      </td>
       <td class="name">
-        <span class="part-name" title={part.path}>
+        <span class="part-name" style:padding-left={`${(child.depth - 1) * 1.25}rem`} title={part.path}>
           {part.name}
-          {#if part.parts?.length}
-            <span class="file-name">{part.parts.length} {part.parts.length === 1 ? 'file' : 'files'}</span>
-          {/if}
         </span>
       </td>
-      <td class="size">{formatSize(part.size)}</td>
+      <td class="size">{formatSize(part.own_size ?? part.size)}</td>
       <td class="ext">{registry.displayExtension(part)}</td>
       <td class="badges"></td>
-      <td class="actions"></td>
+      <td class="actions">
+        <RowActionsMenu entry={child.part} />
+      </td>
     </tr>
   {/each}
 {/if}

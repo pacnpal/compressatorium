@@ -960,8 +960,9 @@ class FileBrowserStore {
     if (!entry) return false;
     // Part of another row's set (#504: a later RAR volume, a split dump's
     // part, a sheet's track): converted, checked and deleted with its Source,
-    // never alone. A playlist's disc is ticked through its playlist's row.
-    if (entry.companion_of || entry.disc_of) return false;
+    // never alone. A playlist's disc is a game of its own: ticked with its
+    // playlist's row, or alone from the row under it.
+    if (entry.companion_of) return false;
     if (entry.type === 'directory') {
       // Directories are navigation-only EXCEPT under a directory-input mode
       // (makeps3iso folder_to_iso), where a folder the backend marked
@@ -1006,7 +1007,8 @@ class FileBrowserStore {
       return;
     }
     if (on) this.selectedFiles.set(row.path, row);
-    else this.selectedFiles.delete(row.path);
+    // A disc unticked alone: its playlist is no longer wholly picked.
+    else this.deselect([row.path]);
   }
 
   /**
