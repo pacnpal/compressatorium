@@ -506,8 +506,10 @@ _SRC = Path(__file__).resolve().parents[1] / "src" / "lib"
 def test_confirmation_sends_the_duplicate_action():
     endpoints = (_SRC / "api" / "endpoints.js").read_text()
     assert "duplicate_action" in endpoints.split("getDeletePlan", 1)[1].split("},", 1)[0]
-    panel = (_SRC / "components" / "panels" / "ConvertPanel.svelte").read_text()
-    assert "fetchDeletePlan(planInputs, duplicateAction)" in panel
+    # The Convert panel always skips a taken output, so its preview asks for
+    # exactly that (restructure 2/6).
+    store = (_SRC / "stores" / "conversion.svelte.js").read_text()
+    assert "api.getDeletePlan(paths, mode, outputDir, 'skip')" in store
 
 
 def test_confirmation_modal_shows_referrer_changes():
@@ -518,4 +520,4 @@ def test_confirmation_modal_shows_referrer_changes():
     endpoints = (_SRC / "api" / "endpoints.js").read_text()
     assert "output_dir" in endpoints.split("getDeletePlan", 1)[1].split("},", 1)[0]
     store = (_SRC / "stores" / "conversion.svelte.js").read_text()
-    assert "filePaths, this.mode, this.outputDir || null, duplicateAction" in store
+    assert "async fetchDeletePlan(groups, outputDir = this.outputDir || null)" in store

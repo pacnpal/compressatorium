@@ -80,10 +80,10 @@ class UIStore {
   deletePlan = $state(null);
   showCancelAll = $state(false);
   showClearDone = $state(false);
-  // ConvertPanel awaits a per-submit user choice on duplicate outputs.
-  // Flag is observed by App.svelte so background refresh-on-terminal
-  // events can't swap entries out from under the open dialog.
-  duplicatePromptOpen = $state(false);
+  // ConvertPanel awaits the user on a plan shown in a dialog (a selection
+  // too big to plan live). Observed by App.svelte so background
+  // refresh-on-terminal events can't swap entries out from under it.
+  planPromptOpen = $state(false);
   // Same idea for the delete-on-verify plan confirmation.
   deletePlanPromptOpen = $state(false);
 
@@ -128,7 +128,7 @@ class UIStore {
       !!this.datRenamePaths ||
       !!this.duplicateCheck ||
       !!this.deletePlan ||
-      this.duplicatePromptOpen ||
+      this.planPromptOpen ||
       this.deletePlanPromptOpen
     );
   }

@@ -69,10 +69,10 @@ def test_both_level_controls_show_only_for_a_codec_that_takes_a_level():
     picker = (_SRC / "components" / "panels" / "CompressionPicker.svelte").read_text(
         encoding="utf-8",
     )
-    store = (_SRC / "stores" / "conversion.svelte.js").read_text(encoding="utf-8")
+    shared = (_SRC / "tools" / "compression.js").read_text(encoding="utf-8")
 
     assert "<CompressionPicker" in advanced and "value={fromRule(rule)}" in advanced
     assert "onchange={(v) => onupdate(toRule(rule.mode, v))}" in advanced
     assert "const levelRange = $derived(rangeOf(mode, value));" in picker
     assert "{#if levelRange}" in picker
-    assert "return registry.levelRangeFor(this.mode, this.singleCodec);" in store
+    assert "return registry.levelRangeFor(mode, effectiveCodec(mode, value));" in shared

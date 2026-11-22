@@ -85,11 +85,11 @@ const fileBrowser = { rommPlatformId: null, exitRomm() {}, async enterRomm(id) {
   this.rommPlatformId = id;
 } };
 const conversion = {
-  mode: 'createcd', primaryTool: 'chdman',
-  setPrimaryTool(id) { this.primaryTool = id; }, setMode(m) { this.mode = m; },
+  mode: 'createcd',
+  chooseTarget(v) { this.mode = v || null; },
 };
-const ui = { workspaceTool: 'chdman' };
-const registry = { all: () => [], forTool: () => null };
+const ui = {};
+const registry = { all: () => [], forTool: () => null, toolForMode: () => null };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 """
 

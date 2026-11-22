@@ -160,10 +160,10 @@ def test_conflicted_and_unsorted_images_are_skipped_with_a_reason(tmp_path):
     plan = _by_path(plan_auto([conflicted, unsorted]))
 
     assert plan["clash.iso"].mode is None
-    assert "conflict" in plan["clash.iso"].skip_reason.lower()
+    assert plan["clash.iso"].skip_reason.startswith("Console unclear: ")
     assert "ngc" in plan["clash.iso"].skip_reason
     assert plan["mystery.iso"].mode is None
-    assert "unsorted" in plan["mystery.iso"].skip_reason.lower()
+    assert plan["mystery.iso"].skip_reason.startswith("Unknown console: ")
 
 
 def test_platform_with_no_target_for_the_file_type_is_skipped(tmp_path):
@@ -173,7 +173,7 @@ def test_platform_with_no_target_for_the_file_type_is_skipped(tmp_path):
     [entry] = plan_auto([path])
 
     assert entry.mode is None
-    assert entry.skip_reason == "No ps2 target reads .rvz files"
+    assert entry.skip_reason == "No converter here reads .rvz files for PlayStation 2"
 
 
 def test_an_image_already_in_its_target_format_is_left_alone(tmp_path):
@@ -194,15 +194,15 @@ def test_other_dolphin_formats_still_convert_to_rvz(tmp_path):
 @pytest.mark.parametrize(
     ("folder", "name", "platform"),
     [
-        ("ngpc", "game.ngc", "neo-geo-pocket-color"),
-        ("wonderswancolor", "game.wsc", "wonderswan-color"),
+        ("ngpc", "game.ngc", "Neo Geo Pocket Color"),
+        ("wonderswancolor", "game.wsc", "WonderSwan Color"),
     ],
 )
 def test_a_platform_no_tool_converts_says_so(tmp_path, folder, name, platform):
     [entry] = plan_auto([_blank(tmp_path / folder / name)])
 
     assert entry.mode is None
-    assert entry.skip_reason == f"No tool converts {platform} Images"
+    assert entry.skip_reason == f"No converter here handles {platform} games"
 
 
 def test_saved_compression_follows_the_tool(tmp_path):

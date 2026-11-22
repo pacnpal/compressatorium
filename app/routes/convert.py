@@ -1345,6 +1345,7 @@ async def queue_prepared(batch: PreparedBatch) -> list[ConversionJob]:
             delete_on_verify=batch.request.delete_on_verify,
             container_only=batch.request.container_only,
             split=batch.request.split,
+            verify_after=batch.request.verify_after,
             skipped=claimed,
         )
     except OutputIsSourceError as exc:
@@ -1578,7 +1579,7 @@ def _checked_auto_plan(file_paths: list[str], **plan_kwargs) -> list:
     return plan_auto(file_paths, **plan_kwargs)
 
 
-async def _plan_auto(request: AutoPlanRequest) -> list:
+async def _plan_auto(request: AutoPlanRequest, *, skip_existing: bool = True) -> list:
     prefs = await preferences_store.get(CONVERSION_PREFS_KEY) or {}
     output_dir = normalize_output_dir(request.output_dir)
     # The shared, bounded readiness probe (a tool that cannot run here, such as
@@ -1590,6 +1591,11 @@ async def _plan_auto(request: AutoPlanRequest) -> list:
     plan = await off_loop_bounded(
         _checked_auto_plan, list(request.file_paths),
         compression_prefs=prefs, output_dir=output_dir, ready_tool_ids=ready,
+        target=request.target, platform_overrides=request.platform_overrides,
+        # The panel queues with duplicate action Skip: say so in the plan, so
+        # its delete preview never covers a game the queue will leave out. A
+        # queue asked to Rename or Overwrite plans the game as before.
+        skip_existing_outputs=skip_existing,
     )
     return _with_checked_compression(plan)
 
@@ -1635,6 +1641,7 @@ def _plan_item(target) -> AutoPlanItem:
         tool_id=target.tool_id,
         compression=target.compression,
         skip_reason=target.skip_reason,
+        output_name=target.output_name,
     )
 
 
@@ -1684,7 +1691,8 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
         return AutoBatchResponse(plan=[], jobs=[])
     plan = await _plan_auto(AutoPlanRequest(
         file_paths=list(confirmed), output_dir=request.output_dir,
-    ))
+        target=request.target, platform_overrides=request.platform_overrides,
+    ), skip_existing=request.duplicate_action == DuplicateAction.SKIP)
     skips: list[BatchSkip] = [
         BatchSkip(
             path=target.file_path,
@@ -1702,13 +1710,7 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
             )
 
     prepared = [
-        await prepare_batch(BatchJobCreateRequest(
-            file_paths=paths,
-            mode=ConversionMode(mode),
-            output_dir=request.output_dir,
-            duplicate_action=request.duplicate_action,
-            compression=compression,
-        ))
+        await prepare_batch(_auto_group_request(request, mode, compression, paths))
         for (mode, compression), paths in groups.items()
     ]
     _check_queue_room(sum(len(batch.plans) for batch in prepared))
@@ -1748,6 +1750,34 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
             BatchSkippedItem(path=skip.path, reason=skip.reason, code=skip.code)
             for skip in skips
         ],
+    )
+
+
+def _auto_group_request(
+    request: AutoJobCreateRequest, mode: str, compression: str | None, paths: list[str],
+) -> BatchJobCreateRequest:
+    """One Auto group's batch, with the panel's choices this mode can honour.
+
+    Delete (and its quick check) only where the mode deletes safely
+    (``supports_delete_on_verify``); the other groups keep their originals and
+    are still checked when asked, where the mode has a check. The 4 GB split
+    only for a folder mode (the one that writes split parts; other tools ignore
+    the flag). ``prepare_batch``
+    then validates and snapshots every group as it would a hand-picked batch,
+    so no check is ever weaker than the mode's own.
+    """
+    spec = registry.spec(mode)
+    delete = request.delete_on_verify and spec.supports_delete_on_verify
+    return BatchJobCreateRequest(
+        file_paths=paths,
+        mode=ConversionMode(mode),
+        output_dir=request.output_dir,
+        duplicate_action=request.duplicate_action,
+        compression=compression,
+        delete_on_verify=delete,
+        container_only=delete and request.container_only,
+        verify_after=delete or (request.verify_after and registry.mode_supports_verify(mode)),
+        split=request.split and InputKind.DIRECTORY in spec.input_kinds,
     )
 
 

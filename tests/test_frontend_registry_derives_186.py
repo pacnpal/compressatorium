@@ -166,10 +166,15 @@ def test_every_filter_option_can_match_a_row(tmp_path):
     body = browser_src[start:end].replace("get filteredEntries() {", "", 1)
     body = body[: body.rindex("}")]
     body = body.replace("this.sortedEntries", "rows").replace("this.filter", "filter")
+    body = body.replace("this.searchMode", "false").replace("this.folderQuery", "''")
+    # The getter's module helper (a folded game matches by any of its files).
+    helper_at = browser_src.index("function rowMatches(")
+    helper = browser_src[helper_at:browser_src.index("\n}\n", helper_at) + 3]
 
     script = tmp_path / "filter_eval.mjs"
     script.write_text(
         registry_src
+        + "\n" + helper
         + "\nfunction filteredEntries(rows, filter) {" + body + "}\n"
         + "const exts = registry.allFilterableExts();\n"
         # One row per option, named the way the app would see it, with the
