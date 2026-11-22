@@ -181,9 +181,9 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     # #386's 0016 sits on 0015, #388's 0017 on that, #387's 0018 on that and
     # #389's 0019 on that, #391's 0020 on that, #392's 0021 on that,
     # #424's 0022 on that, #430's 0023 on that, #423's 0024 on that, #426's
-    # 0025 on that, #428's 0026 on that, #431's 0027 on that and #544's 0028
-    # on that; see their own tests below.
-    assert script.get_heads() == ["0028"]
+    # 0025 on that, #428's 0026 on that, #431's 0027 on that, #560's 0028 on
+    # that and #544's 0029 on that; see their own tests below.
+    assert script.get_heads() == ["0029"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
     assert script.get_revision("0012").down_revision == "0011"
@@ -565,9 +565,52 @@ def test_0027_adds_the_inboxes_table(fresh_db_path: str):
     assert _current_rev(engine) == "0027"
 
 
-def test_0028_gives_ledger_rows_a_warning(fresh_db_path: str):
-    """#544's 0028, on #431's 0027: what a job warned about as it ended. A row
-    written before it keeps every value and reads as having warned of nothing."""
+def test_0029_gives_ledger_rows_a_warning(fresh_db_path: str):
+    """#544's 0029, on #560's 0028: what a job warned about as it ended, and its
+    closing message. A row written before it keeps every value and reads as
+    having neither."""
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0029").down_revision == "0028"
+
+    command.upgrade(cfg, "0028")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO ledger (job_id, finished_at, mode, source_path, status, "
+            "check_passed, source_deleted, deleted_paths, referrers_updated) VALUES "
+            "('j1', '2026-11-22T00:00:00.000000Z', 'exodos_repack', '/v/Game.zip', "
+            "'completed', 'none', 0, '[]', '[]')",
+        )
+    command.upgrade(cfg, "0029")
+
+    columns = {c["name"]: c for c in inspect(engine).get_columns("ledger")}
+    assert columns["warning"]["nullable"] is True
+    assert columns["message"]["nullable"] is True
+    with engine.connect() as conn:
+        row = conn.exec_driver_sql("SELECT job_id, warning, message FROM ledger").one()
+    assert tuple(row) == ("j1", None, None)
+    assert _current_rev(engine) == "0029"
+
+
+# ---------------------------------------------------------------------------
+# Called-before-init guard
+# ---------------------------------------------------------------------------
+
+
+def test_0028_records_how_each_dat_arrived(fresh_db_path: str):
+    """0028, on #431's 0027 (Codex 4659176015 on #557): each DAT records how
+    it arrived. An existing DAT that could have come over #557's plain-HTTP
+    fallback is marked ``http`` and can't vouch for a delete (Codex 4659261220:
+    the sync cache is not a complete history, since a partly failed sync never
+    records its DATs). That is any DAT imported once #557's code could exist
+    (or whose import time can't be read), any Redump DAT, and any DAT the
+    cache names. Only an older, non-Redump DAT is left unset, read as before.
+    """
+    import json
+
     from alembic import command
     from alembic.script import ScriptDirectory
 
@@ -578,25 +621,52 @@ def test_0028_gives_ledger_rows_a_warning(fresh_db_path: str):
     command.upgrade(cfg, "0027")
     with engine.begin() as conn:
         conn.exec_driver_sql(
-            "INSERT INTO ledger (job_id, finished_at, mode, source_path, status, "
-            "check_passed, source_deleted, deleted_paths, referrers_updated) VALUES "
-            "('j1', '2026-11-22T00:00:00.000000Z', 'exodos_repack', '/v/Game.zip', "
-            "'completed', 'none', 0, '[]', '[]')",
+            "INSERT INTO dats (id, name, description, version, imported_at, file_count, "
+            "family) VALUES "
+            # Named by the sync cache.
+            "('sync', 'Sony - PlayStation', '', '1', '2026-01-01T00:00:00Z', 1, 'other'), "
+            # A Redump DAT the cache doesn't name (a partly failed sync).
+            "('partial', 'Sega - Saturn', '', '1', '2026-01-01T00:00:00Z', 1, 'Redump'), "
+            # Imported once #557's fallback could have run, whatever its header.
+            "('recent', 'Forged', '', '1', '2026-11-22T16:00:00.000000Z', 1, 'other'), "
+            # An import time that can't be read.
+            "('odd', 'Odd', '', '1', 't', 1, 'other'), "
+            # An older hand import of a non-Redump DAT.
+            "('hand', 'Nintendo - Game Boy', '', '1', '2026-11-20T12:00:00.000000Z', 1, "
+            "'No-Intro')",
+        )
+        cache = {"psx": {"dat_ids": ["sync", "gone"]}, "gc": {"etag": "x"}, "bad": "x"}
+        conn.exec_driver_sql(
+            "INSERT INTO preferences (key, value, updated_at) VALUES (?, ?, 't')",
+            ("redump_sync", json.dumps(cache)),
         )
     command.upgrade(cfg, "0028")
 
-    columns = {c["name"]: c for c in inspect(engine).get_columns("ledger")}
-    assert columns["warning"]["nullable"] is True
-    assert columns["message"]["nullable"] is True
-    with engine.connect() as conn:
-        row = conn.exec_driver_sql("SELECT job_id, warning, message FROM ledger").one()
-    assert tuple(row) == ("j1", None, None)
+    columns = {c["name"]: c for c in inspect(engine).get_columns("dats")}
+    assert columns["transport"]["nullable"] is True
+    with engine.begin() as conn:
+        assert conn.exec_driver_sql(
+            "SELECT id, transport FROM dats ORDER BY id",
+        ).all() == [
+            ("hand", None), ("odd", "http"), ("partial", "http"),
+            ("recent", "http"), ("sync", "http"),
+        ]
     assert _current_rev(engine) == "0028"
 
 
-# ---------------------------------------------------------------------------
-# Called-before-init guard
-# ---------------------------------------------------------------------------
+def test_0028_runs_without_a_redump_sync_cache(fresh_db_path: str):
+    from alembic import command
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    command.upgrade(cfg, "0027")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO preferences (key, value, updated_at) "
+            "VALUES ('redump_sync', 'not json', 't')",
+        )
+    command.upgrade(cfg, "0028")
+    assert _current_rev(engine) == "0028"
 
 
 def test_apply_migrations_without_engine_raises():

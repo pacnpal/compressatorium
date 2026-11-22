@@ -6,8 +6,8 @@ archive is waiting for room. And its closing message: an external job's
 outcome (a check run's "2 Intact, 1 inconclusive, 3 skipped"). Rows written
 before this had neither, so both columns are nullable and read as None.
 
-Revision ID: 0028
-Revises: 0027
+Revision ID: 0029
+Revises: 0028
 Create Date: 2026-11-22 12:00:00
 """
 
@@ -18,8 +18,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0028'
-down_revision: str | Sequence[str] | None = '0027'
+revision: str = '0029'
+down_revision: str | Sequence[str] | None = '0028'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

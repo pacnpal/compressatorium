@@ -100,6 +100,12 @@ class DAT(Base):
     # The user's place for this DAT in the one ranked list (0 is first); NULL
     # until they rank it, when its family's default order applies (#424).
     rank = Column(Integer, nullable=True)
+    # How it arrived: "https", "http" (the Redump sync's plain-HTTP fallback,
+    # #557) or "manual" (imported by hand). NULL for a DAT imported before
+    # this was recorded, read as before (migration 0028). A DAT that came over
+    # plain HTTP never vouches for a delete (services.recognized, Codex
+    # 4659176015).
+    transport = Column(String, nullable=True)
 
 
 class DATHash(Base):
@@ -382,10 +388,10 @@ class LedgerEntry(Base):
     # patch file (#428). Empty for a conversion.
     extra_inputs = Column(JSON, nullable=False, default=list, server_default=text("'[]'"))
     # What the job warned about as it ended, whatever its status (#544,
-    # migration 0028): an eXoDOS repack that may not start, the reason a
+    # migration 0029): an eXoDOS repack that may not start, the reason a
     # waiting archive waits. None when it warned of nothing.
     warning = Column(String, nullable=True)
-    # The job's closing message (#544, migration 0028): an external job's
+    # The job's closing message (#544, migration 0029): an external job's
     # outcome, a check run's "2 Intact, 1 inconclusive, 3 skipped".
     message = Column(String, nullable=True)
     __table_args__ = (

@@ -4137,6 +4137,28 @@ declares a different delete proof on the mode contract:
   put first is the one named), then with `hasheous.lookup` when Hasheous is on,
   and passes only on a hit. A miss, an unreachable Hasheous, a hash that did
   not finish or DATs that could not be read all keep the Source.
+- **A DAT that came over plain HTTP never vouches for a delete** (Codex
+  4659176015 on #557). Each DAT records how it arrived in `dats.transport`
+  (`dat_store.TRANSPORTS`: `https`, `http` from the Redump sync's plain-HTTP
+  fallback, or `manual` for a hand import; migration 0028), and
+  `_lookup_hash` returns it on every match in the same query. `recognize`
+  sets the `http` matches aside before ranking: a trusted DAT that also knows
+  the hash still proves it (and is the one named), and an output only
+  plain-HTTP DATs know is treated as if no DAT knew it, so Hasheous is asked
+  when it is on, and otherwise it is a miss whose `keep_reason` names those
+  DATs and says they came over plain HTTP. Only the delete proof sets them
+  aside: matching, the Library's badges and the Inbox's naming use them as
+  any other DAT. Existing rows fail closed (Codex 4659261220): no existing
+  row can prove it came over HTTPS, and the `redump_sync` cache is no complete
+  history (a partly failed sync imports DATs it never records). 0028 marks
+  `http` every existing DAT whose family is Redump (whoever imported it), every
+  one imported on or after `FALLBACK_POSSIBLE_FROM` (a day before the fallback
+  was written; an unreadable import time counts too), whatever its header,
+  since a swapped DAT could claim any name, and every one the cache names.
+  Only an older non-Redump DAT stays NULL and vouches as before.
+  `recognized._may_vouch` also refuses a NULL Redump match, whatever wrote it.
+  A Redump DAT imported by hand before the upgrade vouches again once it is
+  imported again.
 - `JobManager._delete_check` returns a `_DeleteCheck`: the check passed, plus a
   `fail_reason` (a failed Round-trip: the job fails, as before) or a
   `keep_reason` (not Recognized: the output is Intact and placed, its record
@@ -7214,7 +7236,7 @@ the sweep's own `sweep_finished` message does not count it.
 Inbox archive with no room to unpack, `result["waiting"]` and a `warning`) is
 recorded with status `waiting` (`ledger.WAITING`), never as `completed`: it did
 nothing yet, so it counts toward no savings or conversion, and History shows
-"Waiting:" and why. Every row keeps the job's `warning` (migration 0028), whatever
+"Waiting:" and why. Every row keeps the job's `warning` (migration 0029), whatever
 its status (an eXoDOS repack that may not start), beside a failure's `error`,
 and its closing `message` (an external job's outcome, a check run's counts);
 History shows both under the result. A relative `since` (`24h`, `7d`) is resolved
@@ -10609,7 +10631,15 @@ Redump sync (`POST /dat/redump/sync`) and the CLI (`dat import`, `dat sync`):
   `save_capped`/`MAX_ZIP_SIZE` cap; the zip then goes through every archive
   and DAT check below unchanged. `redump_url(system, scheme)` names the URL
   actually used, and a failure says which transports were tried. Plain HTTP
-  is allowed for redump.org only. One system at a time with
+  is allowed for redump.org only, and each DAT it imports records the
+  transport used (`_fetch`'s `transport`, `dats.transport`; a fetch that
+  doesn't say counts as `http`), so a DAT fetched over plain HTTP never
+  vouches for a delete (the Recognized proof, §3.3.12). A system whose DAT
+  isn't recorded as `https` is asked unconditionally (a 304 can't show its
+  bytes were genuine); when the answer comes over HTTPS byte-identical to the
+  stored download, `dat_store.upgrade_to_https` marks that system's `http`
+  rows `https` without re-importing (Codex 4659261223). It never touches an
+  `https`, `manual` or NULL row, so nothing is ever downgraded. One system at a time with
   `REQUEST_GAP_SECONDS` between requests, at most one sync at once. The cache
   (preference `redump_sync`) skips a system synced within `FRESH_FOR` whose
   DATs are still installed, sends `If-None-Match`/`If-Modified-Since` when it
