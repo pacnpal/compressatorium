@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from starlette.datastructures import Headers
 
 from app.routes import files as files_routes
@@ -565,3 +566,152 @@ def test_every_entry_splits_on_cr_and_lf_only(data):
     found = m3u.every_entry(data)
 
     assert "A" not in found and "B.chd" not in found, found
+
+
+# --- One file deleted or renamed from its own menu (captain, 8984601e) ---------
+
+def _one():
+    return _confirmed()
+
+
+@pytest.fixture(autouse=True)
+def _no_stores(monkeypatch):
+    """The path bookkeeping a delete or rename does has no database here."""
+    async def noop(*_a, **_k):
+        return None
+
+    for store in (files_routes.verification_store, files_routes.chd_metadata_store):
+        monkeypatch.setattr(store, "clear", noop)
+        monkeypatch.setattr(store, "move", noop)
+
+
+def _rename_ok():
+    return SimpleNamespace(headers=Headers({"x-chd-action-confirm": "rename-file"}))
+
+
+def _playlist_and_disc(folder: Path) -> Path:
+    disc = _write(folder / "Saga (Disc 1).chd")
+    _write(folder / "Saga.m3u", b"Saga (Disc 1).chd\n")
+    return disc
+
+
+@pytest.mark.asyncio
+async def test_deleting_one_disc_a_playlist_names_keeps_it(vol):
+    disc = _playlist_and_disc(vol / "psx")
+
+    with pytest.raises(HTTPException) as err:
+        await files_routes.delete_file(_one(), path=str(disc), recursive=False)
+
+    assert err.value.status_code == 409
+    assert "Saga.m3u" in err.value.detail
+    assert disc.exists()
+
+
+@pytest.mark.asyncio
+async def test_deleting_one_track_its_sheet_names_keeps_it(vol):
+    a, _b, shared, own = _two_sheets_one_track(vol / "psx")
+
+    for track in (shared, own):
+        with pytest.raises(HTTPException) as err:
+            await files_routes.delete_file(_one(), path=str(track), recursive=False)
+        assert err.value.status_code == 409, track
+        assert track.exists()
+    assert a.exists()
+
+
+@pytest.mark.asyncio
+async def test_one_part_of_a_split_set_is_never_deleted_or_renamed_alone(vol):
+    """A set goes whole or not at all; the game's row deletes it whole."""
+    first = _write(vol / "ps3" / "Game.iso.0")
+    second = _write(vol / "ps3" / "Game.iso.1")
+
+    for part in (first, second):
+        with pytest.raises(HTTPException) as err:
+            await files_routes.delete_file(_one(), path=str(part), recursive=False)
+        assert err.value.status_code == 409, part
+        with pytest.raises(HTTPException) as err:
+            await files_routes.rename_file(_rename_ok(), path=str(part), new_name="X.iso.0")
+        assert err.value.status_code == 409, part
+    assert first.exists() and second.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_single_delete_keeps_a_file_whose_owners_are_unknown(vol, monkeypatch):
+    from services import image_sets
+
+    loose = _write(vol / "psx" / "Loose.iso")
+
+    def unknown(*_a, **_k):
+        raise image_sets.SheetOwnerUnknown("X.cue could not be read")
+
+    monkeypatch.setattr(image_sets, "owners_naming", unknown)
+    with pytest.raises(HTTPException) as err:
+        await files_routes.delete_file(_one(), path=str(loose), recursive=False)
+
+    assert err.value.status_code == 409
+    assert "unknown" in err.value.detail
+    assert loose.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_single_delete_of_a_loose_file_still_goes(vol):
+    loose = _write(vol / "psx" / "Loose.iso")
+
+    result = await files_routes.delete_file(_one(), path=str(loose), recursive=False)
+
+    assert result["success"] is True
+    assert not loose.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_single_delete_outside_the_volume_is_refused_before_any_scan(
+    split_roots, monkeypatch,
+):
+    from services import image_sets
+
+    _volume, outside = split_roots
+    target = _write(outside / "Out.chd")
+    asked = []
+    monkeypatch.setattr(image_sets, "owners_naming", lambda p, **kw: asked.append(p) or [])
+
+    with pytest.raises(HTTPException) as err:
+        await files_routes.delete_file(_one(), path=str(target), recursive=False)
+
+    assert err.value.status_code == 403
+    assert asked == []
+    assert target.exists()
+
+
+@pytest.mark.asyncio
+async def test_renaming_a_disc_a_playlist_names_is_refused(vol):
+    disc = _playlist_and_disc(vol / "psx")
+
+    with pytest.raises(HTTPException) as err:
+        await files_routes.rename_file(_rename_ok(), path=str(disc), new_name="Other.chd")
+
+    assert err.value.status_code == 409
+    assert "Saga.m3u" in err.value.detail
+    assert disc.exists() and not (disc.parent / "Other.chd").exists()
+
+
+@pytest.mark.asyncio
+async def test_renaming_a_track_its_sheet_names_is_refused(vol):
+    _a, _b, _shared, own = _two_sheets_one_track(vol / "psx")
+
+    with pytest.raises(HTTPException) as err:
+        await files_routes.rename_file(_rename_ok(), path=str(own), new_name="Other.bin")
+
+    assert err.value.status_code == 409
+    assert own.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_and_a_loose_file_can_still_be_renamed(vol):
+    a, _b, _shared, _own = _two_sheets_one_track(vol / "psx")
+    loose = _write(vol / "psx" / "Loose.iso")
+
+    await files_routes.rename_file(_rename_ok(), path=str(a), new_name="Renamed.cue")
+    await files_routes.rename_file(_rename_ok(), path=str(loose), new_name="Moved.iso")
+
+    assert (vol / "psx" / "Renamed.cue").exists()
+    assert (vol / "psx" / "Moved.iso").exists()

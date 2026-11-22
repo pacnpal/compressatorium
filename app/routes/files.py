@@ -1019,6 +1019,8 @@ async def rename_file(
 
     is_dir = await run_in_threadpool(os.path.isdir, path)
     await _assert_path_not_in_use(path, is_dir=is_dir)
+    if not is_dir:
+        await _assert_not_named_elsewhere(path, renaming=True)
 
     # Validate new name (no path separators, no empty, no special chars that could be problematic)
     if not new_name or "/" in new_name or "\\" in new_name or new_name in (".", ".."):
@@ -1116,6 +1118,8 @@ async def delete_file(
     # For a recursive directory delete this also rejects the request if any
     # active job's path lives under the directory (see _assert_path_not_in_use).
     await _assert_path_not_in_use(path, is_dir=is_dir)
+    if not is_dir:
+        await _assert_not_named_elsewhere(path, renaming=False)
 
     try:
         if is_dir:
@@ -1214,6 +1218,40 @@ def set_members(path: str) -> tuple[list[str] | None, str | None]:
         name = os.path.basename(path)
         return None, f"the files {name} is made of can't be told ({exc}); it is kept"
     return [os.path.normcase(os.path.realpath(m)) for m in dict.fromkeys(members)], None
+
+
+async def _assert_not_named_elsewhere(path: str, *, renaming: bool) -> None:
+    """Refuse (409) to delete or rename one file another file still names.
+
+    The single-file routes' share of the batch's check, after containment:
+    a sheet's track, a playlist's disc or a set's later part (``owners_of``),
+    and, for a delete, a set's first file without the rest (``set_members``;
+    the game's row deletes the set whole). Renaming a sheet leaves its tracks
+    reachable, so only a set whose parts follow its name refuses a rename.
+    Fails closed: when the owners can't be told, the file stays as it is.
+    """
+    name = os.path.basename(path)
+    owners, why = await off_loop_bounded(owners_of, path)
+    if owners is None:
+        raise HTTPException(status_code=409, detail=why)
+    if owners:
+        owner = os.path.basename(next(iter(owners.values())))
+        if renaming:
+            detail = f"{owner} names {name}; renaming it would break {owner}, so it keeps its name"
+        else:
+            detail = _still_needed_by(owner, name)
+        raise HTTPException(status_code=409, detail=detail)
+    if renaming and path.lower().endswith(image_sets.SHEET_EXTENSIONS):
+        return
+    members, why = await off_loop_bounded(set_members, path)
+    if members is None:
+        raise HTTPException(status_code=409, detail=why)
+    if members:
+        part = os.path.basename(members[0])
+        verb = "renamed" if renaming else "deleted"
+        raise HTTPException(status_code=409, detail=(
+            f"{name} and {part} are one set and can't be {verb} apart; the set is kept"
+        ))
 
 
 def _still_needed_by(owner: str, name: str) -> str:

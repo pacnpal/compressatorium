@@ -1519,8 +1519,12 @@ split dump's part). It fails closed, raising `SheetOwnerUnknown` when a folder,
 a sheet, a playlist or a set can't be read. `/files/delete-batch` keeps a file
 with an owner outside the request (`still_owned`). `build_delete_plan` blocks a
 delete-on-verify whose track or companion another file names (`_other_owner`).
+The single-file `/files/delete` and `/files/rename` ask the same question after
+containment (`_assert_not_named_elsewhere`): a file something names, or one part
+of a set, answers 409 and stays as it is (renaming a sheet is allowed: its
+tracks keep their names). A game row's Delete goes through the batch, whole.
 The next companion type only has to answer through the registry hook to be
-covered by both.
+covered by all of them.
 
 **Every RAR header read is bounded and detached.** `archive_members` reads a
 RAR header in one way only, `_bounded_header_read`: the listing

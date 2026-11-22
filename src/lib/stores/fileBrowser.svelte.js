@@ -1094,6 +1094,13 @@ class FileBrowserStore {
    * a set: a folded split output (`split_parts`) and an archive member are
    * left out, with everything under them.
    */
+  /** The files a Delete of *row* takes: it and every file folded under it. */
+  filesOfRow(row) {
+    const found = { seen: {}, out: [] };
+    addDeletable(row, found);
+    return found.out;
+  }
+
   filesToDelete() {
     // Each ticked game as the listing has it now: a refresh can change its
     // files, and a game no longer listed is left alone.

@@ -153,7 +153,9 @@
   row with the total size; the chevron shows the files. Ticking a playlist
   ticks its discs, and Delete takes every file of the game. Each file under
   the chevron keeps its own actions menu (Info, Verify, Rename, Delete…), and
-  a disc can still be ticked on its own. The Status column
+  a disc can still be ticked on its own. Deleting or renaming one file that a
+  sheet or playlist still names, or one part of a set, is refused with the
+  reason; a game's own Delete takes all of its files. The Status column
   names the format: "CHD ✓" for a new file that is there, "→ CHD" for a game
   that can be made smaller here, never a tool name. The search box searches
   this folder as you type, or everywhere under it; going back to this folder

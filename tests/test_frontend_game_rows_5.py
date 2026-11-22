@@ -369,3 +369,21 @@ process.stdout.write(JSON.stringify({
     assert data["after"] == ["/v/Saga (Disc 1).chd"], data
     assert data["playlists"] == [], data
     assert data["sagaTicked"] is False, data
+
+
+def test_delete_from_a_games_menu_takes_the_whole_game(tmp_path):
+    """A row with files folded under it deletes through the batch, whole."""
+    menu = (_LIB / "components" / "panels" / "RowActionsMenu.svelte").read_text(encoding="utf-8")
+    body = menu.split("function handleDelete() {", 1)[1].split("\n  }\n", 1)[0]
+    assert "ui.bulkDeleteEntries = fileBrowser.filesOfRow(entry);" in body
+    data = _run(tmp_path, _LISTING + """
+const game = fileBrowser.rows.find((r) => r.path === '/v/Game.cue');
+const saga = fileBrowser.rows.find((r) => r.path === '/v/Saga.m3u');
+process.stdout.write(JSON.stringify({
+  game: fileBrowser.filesOfRow(game).map((e) => e.path).sort(),
+  saga: fileBrowser.filesOfRow(saga).map((e) => e.path).sort(),
+}));
+""")
+
+    assert data["game"] == ["/v/Game (Track 1).bin", "/v/Game (Track 2).bin", "/v/Game.cue"]
+    assert data["saga"] == ["/v/Saga (Disc 1).chd", "/v/Saga (Disc 2).chd", "/v/Saga.m3u"]
