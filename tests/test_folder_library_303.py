@@ -1858,8 +1858,9 @@ def test_the_folder_libraries_migration_stacks_on_the_ledger_totals_one(tmp_path
     # that, #386's 0016 on that, #388's 0017 on that, #387's 0018 on that
     # #389's 0019 on that, #391's 0020 on that, #392's 0021 on that, #424's
     # 0022 on that, #430's 0023 on that, #423's 0024 on that, #426's 0025 on
-    # that, #428's 0026 on that and #431's 0027 on that: one head, 0027.
-    assert script.get_heads() == ["0027"]
+    # that, #428's 0026 on that, #431's 0027 on that and #544's 0028 on that:
+    # one head, 0028.
+    assert script.get_heads() == ["0028"]
     assert script.get_revision("0012").down_revision == "0011"
     assert script.get_revision("0011").down_revision == "0010"
 

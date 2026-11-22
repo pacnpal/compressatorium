@@ -293,3 +293,31 @@ async def test_a_sheet_naming_a_track_in_another_folder_moves_nothing(vol, db):
     assert "sheet" in caught.value.message
     assert cue.exists() and track.exists()
     assert not (vol / "Downloads" / "psx").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_track_another_sheet_now_names_is_not_moved(vol, db):
+    """Codex 4658906849: B.cue arrives after A's problem was recorded and names
+    the same Shared.bin. Placing A would take the track B still needs, so Place
+    it runs intake's ownership check under its locks and refuses with nothing
+    moved."""
+    box = _watch_folder(vol)
+    a_cue = _drop(
+        vol / "Downloads" / "A.cue",
+        b'FILE "Shared.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n',
+    )
+    shared = _drop(vol / "Downloads" / "Shared.bin", b"\0" * 2352 * 4)
+    row = await _problem(box)
+    assert row["path"] == str(a_cue.resolve())
+    b_cue = _drop(
+        vol / "Downloads" / "B.cue",
+        b'FILE "Shared.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n',
+    )
+
+    with pytest.raises(intake.PlaceRefused) as caught:
+        await _place(row, "psx")
+
+    assert caught.value.status == 409
+    assert "B.cue" in caught.value.message
+    assert a_cue.exists() and shared.exists() and b_cue.exists()
+    assert not (vol / "Downloads" / "psx").exists()

@@ -112,8 +112,10 @@
   by Done, Failed, Checked, Cancelled or Waiting (a watch folder's archive
   that's waiting for room, with why), by format and by console;
   `#/activity/history?status=failed` opens it on the failures.
-  `GET /api/ledger` and its CSV export take `since` (`24h`, `7d` or an ISO time)
-  and `checked=true`.
+  `GET /api/ledger` and its CSV export take `since` (`24h`, `7d` or an ISO time,
+  fixed once for a whole export) and `checked=true`. A job's warning (an eXoDOS
+  game that may not start) is kept on its row and shown under its result; the
+  CSV has a new last column, `warning`.
 - The folder console dialog is now **Set console**.
 - **One page per Library** (#541). **Libraries** lists every Library as a
   card with its consoles, games, whether it converts on its own, its watch

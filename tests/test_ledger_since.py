@@ -127,7 +127,7 @@ async def test_a_job_that_only_waited_is_recorded_as_waiting_with_why():
 
     [row] = await ledger.recent(5)
     assert row["status"] == "waiting"
-    assert row["error"] == "Waiting for room: 2 GB free, 9 GB needed"
+    assert row["warning"] == "Waiting for room: 2 GB free, 9 GB needed"
     assert _ids(await ledger.list_page(ledger.LedgerFilter(status="waiting"))) == [job.id]
     # Waiting saved nothing and counts as no conversion.
     assert (await ledger.savings())["conversions"] == 0
@@ -140,4 +140,58 @@ def test_history_shows_a_waiting_row_as_waiting_with_its_reason():
            / "HistoryList.svelte").read_text(encoding="utf-8")
     assert "{ value: 'waiting', label: 'Waiting' }" in src
     assert "row.status === 'waiting'" in src
-    assert "`Waiting: ${row.error" in src
+    assert "`Waiting: ${row.warning" in src
+
+
+@pytest.mark.asyncio
+async def test_every_finished_job_keeps_its_warning():
+    """Codex 4658906850: a job that ends with a warning (an eXoDOS repack whose
+    config names files outside the game) keeps it on its row, whatever its
+    status, beside a failure's own error."""
+    now = datetime.now(timezone.utc)
+    for job_id, status, error in (
+        ("done", JobStatus.COMPLETED, None), ("broke", JobStatus.FAILED, "exit 1"),
+    ):
+        await ledger.record(ConversionJob(
+            id=job_id, file_path=f"/data/{job_id}.zip", filename=f"{job_id}.zip",
+            mode=ConversionMode.CREATEDVD, status=status, created_at=now,
+            started_at=now, completed_at=now, output_path=f"/data/{job_id}.out",
+            output_size=1, input_bytes=2, check_passed=None, deleted_paths=[],
+            error_message=error, warning="The game may not start: dosbox.conf names C:\\X",
+        ))
+    rows = {r["job_id"]: r for r in await ledger.recent(5)}
+    assert rows["done"]["warning"] == "The game may not start: dosbox.conf names C:\\X"
+    assert rows["done"]["error"] is None
+    assert rows["broke"]["warning"] == rows["done"]["warning"]
+    assert rows["broke"]["error"] == "exit 1"
+    assert "warning" in ledger.CSV_COLUMNS
+
+
+def test_history_shows_a_jobs_warning():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "src" / "lib" / "components" / "activity"
+           / "HistoryList.svelte").read_text(encoding="utf-8")
+    assert "{#if row.warning && row.status !== 'waiting'}" in src
+    assert "`Waiting: ${row.warning" in src
+
+
+@pytest.mark.asyncio
+async def test_a_relative_since_is_fixed_once_for_a_whole_export(monkeypatch):
+    """Codex 4658906854: `since=24h` is resolved once, when the export starts.
+    With a clock that moves an hour between pages, a row near the cutoff that
+    matched the first page is still exported on the last."""
+    from routes import ledger as routes
+
+    start = datetime.now(timezone.utc)
+    clock = iter(start + timedelta(hours=h) for h in range(100))
+    monkeypatch.setattr(ledger, "_now", lambda: next(clock))
+    monkeypatch.setattr(ledger, "_CSV_PAGE", 1)
+    for i, age in enumerate((1, 5, 22, 23.5)):
+        await _row(f"r{i}", start - timedelta(hours=age))
+
+    resp = await routes.ledger_export(
+        q="", status="", tool="", platform="", since="24h", checked=False,
+    )
+    body = "".join([chunk async for chunk in resp.body_iterator])
+    assert [f"r{i}.iso" in body for i in range(4)] == [True] * 4

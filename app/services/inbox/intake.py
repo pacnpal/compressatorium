@@ -3032,6 +3032,34 @@ def _place_files(inbox: inbox_store.Inbox, path: str) -> list[str]:
     return files
 
 
+def _ownership_problem(inbox: inbox_store.Inbox, path: str) -> str | None:
+    """Why the Image at *path* may not be moved on its own now, or None: the
+    ownership holds a poll applies (`_sharing`, `_behind_unreadable_sheets`),
+    read from the watch folder as it is now. A sheet dropped after the
+    problem was recorded may name the same track (Codex 4658906849), and
+    moving that track would break it. Run under the move's locks.
+    ponytail: walks the whole watch folder; scope it to the Image's folder
+    and its ancestors if that ever proves slow. Blocking."""
+    files, _unlisted = _walk([inbox.folder], inbox.folder, lambda *_args: None)
+    images = dict.fromkeys(group_images(sorted(files), members=_members), "")
+    images.setdefault(path, "")
+    sharing = _sharing(images)
+    if path in sharing:
+        others = ", ".join(os.path.basename(p) for p in sharing[path])
+        return (
+            f"It shares files with {others}, so it can't be moved on its own: take them "
+            "in by hand, or give each its own copy of the files"
+        )
+    blocked = _behind_unreadable_sheets(images, within=[inbox.folder])
+    if path in blocked:
+        return (
+            f"The track sheet {os.path.basename(blocked[path])} can't be read, or names a "
+            "track it may not use, so this may be one of its tracks: fix or remove that "
+            "sheet first"
+        )
+    return None
+
+
 def _place_blocking(
     inbox: inbox_store.Inbox, path: str, files: list[str], slug: str,
 ) -> tuple[str, str]:
@@ -3040,6 +3068,9 @@ def _place_blocking(
     ``processed/`` is, and never over another file (``FileExistsError``,
     nothing moved). Its caller holds the exclusive locks on every one of
     *files*. Returns its new path and fingerprint. Blocking."""
+    problem = _ownership_problem(inbox, path)
+    if problem:
+        raise PlaceRefused(409, problem)
     identities = _identities(inbox, files)
     src, names = _folder_beneath(inbox, files)
     try:

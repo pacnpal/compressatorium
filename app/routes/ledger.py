@@ -39,10 +39,14 @@ class LedgerSettings(BaseModel):
 def _filter(
     q: str, status: str, tool: str, platform: str, since: str, checked: bool,
 ) -> ledger.LedgerFilter:
-    """The filter both the list and the export read; 400 for a bad ``since``."""
+    """The filter both the list and the export read; 400 for a bad ``since``.
+
+    A relative ``since`` (24h, 7d) is resolved here, once per request, to the
+    time it stands for: every page of a CSV export then reads the same
+    cutoff (Codex 4658906854)."""
     if since:
         try:
-            ledger.since_cutoff(since)
+            since = ledger.since_cutoff(since)
         except ValueError:
             raise HTTPException(
                 status_code=400, detail="since takes 24h, 7d or an ISO time",

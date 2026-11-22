@@ -199,7 +199,7 @@
     if (row.status === 'failed') return `Failed: ${row.error || 'no reason given'}`;
     if (row.status === 'cancelled') return 'Cancelled';
     // Ended only to wait (a watch folder's archive with no room yet): why.
-    if (row.status === 'waiting') return `Waiting: ${row.error || 'it will be tried again'}`;
+    if (row.status === 'waiting') return `Waiting: ${row.warning || 'it will be tried again'}`;
     const did = DID[row.mode];
     if (!row.output_path) return did ?? registry.specFor(row.mode)?.label ?? 'Done';
     const ext = row.output_path.match(/(\.xiso\.iso|\.[^./\\]+)$/)?.[0] ?? '';
@@ -289,6 +289,10 @@
                   {#if row.status === 'completed' && row.output_path && !row.source_deleted}
                     <span class="muted">original kept</span>
                   {/if}
+                  {#if row.warning && row.status !== 'waiting'}
+                    <!-- What the job warned about as it ended (an eXoDOS game that may not start). -->
+                    <span class="warn">{row.warning}</span>
+                  {/if}
                 </td>
                 <td class="check">
                   {CHECK[row.check_passed] ?? '—'}
@@ -342,6 +346,7 @@
   .result { max-width: 320px; overflow-wrap: anywhere; }
   .result.failed { color: var(--error); }
   .result.waiting { color: var(--warning-text); }
+  .warn { display: block; color: var(--warning-text); font-size: var(--text-xs); }
   .check { white-space: nowrap; }
 
   .foot { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); margin-top: var(--space-3); flex-wrap: wrap; }

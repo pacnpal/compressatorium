@@ -181,9 +181,9 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     # #386's 0016 sits on 0015, #388's 0017 on that, #387's 0018 on that and
     # #389's 0019 on that, #391's 0020 on that, #392's 0021 on that,
     # #424's 0022 on that, #430's 0023 on that, #423's 0024 on that, #426's
-    # 0025 on that, #428's 0026 on that and #431's 0027 on that; see their own
-    # tests below.
-    assert script.get_heads() == ["0027"]
+    # 0025 on that, #428's 0026 on that, #431's 0027 on that and #544's 0028
+    # on that; see their own tests below.
+    assert script.get_heads() == ["0028"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
     assert script.get_revision("0012").down_revision == "0011"
@@ -563,6 +563,34 @@ def test_0027_adds_the_inboxes_table(fresh_db_path: str):
             "created_at) VALUES ('/in', 'romm', 60, 0, '2026-11-17T00:00:00Z')",
         )
     assert _current_rev(engine) == "0027"
+
+
+def test_0028_gives_ledger_rows_a_warning(fresh_db_path: str):
+    """#544's 0028, on #431's 0027: what a job warned about as it ended. A row
+    written before it keeps every value and reads as having warned of nothing."""
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0028").down_revision == "0027"
+
+    command.upgrade(cfg, "0027")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO ledger (job_id, finished_at, mode, source_path, status, "
+            "check_passed, source_deleted, deleted_paths, referrers_updated) VALUES "
+            "('j1', '2026-11-22T00:00:00.000000Z', 'exodos_repack', '/v/Game.zip', "
+            "'completed', 'none', 0, '[]', '[]')",
+        )
+    command.upgrade(cfg, "0028")
+
+    columns = {c["name"]: c for c in inspect(engine).get_columns("ledger")}
+    assert columns["warning"]["nullable"] is True
+    with engine.connect() as conn:
+        row = conn.exec_driver_sql("SELECT job_id, warning FROM ledger").one()
+    assert tuple(row) == ("j1", None)
+    assert _current_rev(engine) == "0028"
 
 
 # ---------------------------------------------------------------------------

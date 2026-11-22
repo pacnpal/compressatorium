@@ -17,7 +17,7 @@ import io
 import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 import anyio
@@ -104,7 +104,10 @@ def row_from_job(job: ConversionJob) -> dict:
         "library_id": None,
         "image_key": None,
         "platform": platform,
-        "error": job.warning if waited else job.error_message,
+        "error": job.error_message,
+        # What the job warned about as it ended, whatever its status (an
+        # eXoDOS repack that may not start, a waiting archive's reason).
+        "warning": job.warning,
         "extra_inputs": [dict(item) for item in job.extra_inputs],
     }
 
@@ -294,12 +297,17 @@ CSV_COLUMNS = (
     "source_deleted", "deleted_paths", "referrers_updated", "library_id",
     "image_key", "platform", "error",
     # Last, so a script reading the columns by position before #423 (then
-    # #428) still works.
-    "check_dat", "extra_inputs",
+    # #428, then #544) still works.
+    "check_dat", "extra_inputs", "warning",
 )
 _CSV_PAGE = 500
 # Always exported so a scrape sees a zero, not a missing series.
 _METRIC_STATUSES = ("completed", "failed", "cancelled")
+
+
+def _now() -> datetime:
+    """The clock a relative ``since`` is measured from (tests replace it)."""
+    return datetime.now(timezone.utc)
 
 
 _SINCE_RELATIVE = re.compile(r"(\d{1,6})([hd])")
@@ -312,7 +320,7 @@ def since_cutoff(since: str, *, now: datetime | None = None) -> str:
     if relative:
         amount, unit = int(relative.group(1)), relative.group(2)
         delta = timedelta(hours=amount) if unit == "h" else timedelta(days=amount)
-        return _iso((now or datetime.now(timezone.utc)) - delta)
+        return _iso((now or _now()) - delta)
     text = since.strip()
     if text.endswith(("Z", "z")):
         text = text[:-1] + "+00:00"
@@ -451,6 +459,11 @@ async def export_csv(flt: LedgerFilter):
     a retention prune committing mid-export can neither repeat, skip nor drop
     a row. Only one page is in memory at a time.
     """
+    if flt.since:
+        # A relative `since` (24h, 7d) is fixed once, as the export starts:
+        # measured again for each page, a row near the cutoff would age out
+        # of the middle of the download (Codex 4658906854).
+        flt = replace(flt, since=since_cutoff(flt.since))
     session = await run_in_threadpool(_open_snapshot)
     try:
         after = None
