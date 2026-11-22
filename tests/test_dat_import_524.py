@@ -890,7 +890,7 @@ def test_https_that_cannot_connect_falls_back_to_plain_http(wire, tmp_path, erro
     assert http["closed"]
     assert Path(path).read_bytes() == b"PK"
     assert meta["etag"] == '"e"'
-    # Recorded with the DAT, so it can never vouch for a delete (4659176015).
+    # Recorded with the DAT, so it can never vouch for a delete.
     assert meta["transport"] == "http"
 
 

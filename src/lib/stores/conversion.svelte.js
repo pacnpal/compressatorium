@@ -151,8 +151,8 @@ class ConversionStore {
   // a late boot read can't put old values over a newer edit.
   #prefsGeneration = 0;
   // The tools whose compression changed here and isn't on the server yet. A
-  // save sends only these over the server's current copy (CodeRabbit
-  // 4652269814), so it never writes back what another tab saved meanwhile.
+  // save sends only these over the server's current copy, so it never
+  // writes back what another tab saved meanwhile.
   #dirtyTools = {};
   // Only the newest delete-plan ask may answer; an older one, landing late or
   // failing late, is dropped (null) instead of replacing or clearing it.

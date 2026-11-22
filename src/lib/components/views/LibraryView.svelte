@@ -91,8 +91,8 @@
 
   /**
    * Put the shared file browser back to the Drives. Whatever entered RomM
-   * mode (this view's load, or a Connection save's reload, CodeRabbit
-   * 4652729369), so the view needs no flag for it. Both calls are no-ops
+   * mode (this view's load, or a Connection save's reload), so the view
+   * needs no flag for it. Both calls are no-ops
    * when nothing is in RomM mode. The platform load is cancelled first: one
    * still in flight ends by selecting a console, which would re-enter it.
    */

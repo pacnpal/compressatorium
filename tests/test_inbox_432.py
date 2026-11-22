@@ -1498,7 +1498,7 @@ def test_the_dat_name_of_a_split_part_keeps_its_logical_extension():
     assert dat_file_name("Canonical Game", "Game.iso") == "Canonical Game.iso"
 
 
-# ---- Codex security review at b9073a61 (4608936764) ------------------------
+# ---- Codex security review at b9073a61 -------------------------------------
 
 
 @pytest.mark.asyncio

@@ -2831,10 +2831,10 @@ async def _sweep_locked(
             # Stamped with the moment the sweep found each Rule due, not when
             # the run finished: a night's run that ends past midnight still
             # counts for the window that picked it, so the next one keeps its
-            # own run (4577171597). The reservation covers the time between.
+            # own run. The reservation covers the time between.
             # With *attempted*, only a Rule whose picked Images the run all
             # reached is recorded: one it never got to (a stop on an abandoned
-            # verifier, a cancel) stays due (4578054443). Each carries the walk
+            # verifier, a cancel) stays due. Each carries the walk
             # generation its pick listed at, compared now, as it is recorded:
             # conversions that finished while the job checked leave it due (#360).
             for platform_id, summary, manual, at, keys, listed_at in check_runs:
@@ -3184,7 +3184,7 @@ async def _sweep_check(
         # A Platform whose tool is missing waits for the next tick, not a day.
         # Nor is a pick that came up empty only because its Images are held
         # elsewhere for now (another check run, a conversion queued or running,
-        # a writer's lock) the night's run (4578116078, 4578154650): once they
+        # a writer's lock) the night's run: once they
         # are free, the Rule must still be due. *listed_at* goes with the run:
         # a listing a finished job made out of date, before the pick ended or
         # while the job checks, leaves it unrecorded (`_record_run`, #353,

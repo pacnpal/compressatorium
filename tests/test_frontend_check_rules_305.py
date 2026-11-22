@@ -98,7 +98,7 @@ process.stdout.write(JSON.stringify({{
 
 
 def test_editing_the_window_drops_a_stale_invalid_window_flag(tmp_path) -> None:
-    """4577383258: the server owns invalid_window. The store drops it once the window
+    """The server owns invalid_window. The store drops it once the window
     or Enabled changes, and never sends it back."""
     data = _run_store(tmp_path, f"""
 const source = new FolderRulesSource({_FOLDER});

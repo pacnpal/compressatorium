@@ -1535,7 +1535,7 @@ async def test_a_conversion_that_finishes_during_a_check_keeps_its_source(
 async def test_a_passing_check_keeps_what_made_the_file(
     tree: Path, ready, verifier, sent,
 ) -> None:
-    """4577114954: a check refreshes the Verify record and keeps its provenance."""
+    """A check refreshes the Verify record and keeps its provenance."""
     from services.verification_store import verification_store
 
     from .test_platform_detect import _ps2
@@ -1566,7 +1566,7 @@ async def test_a_passing_check_keeps_what_made_the_file(
 
 @pytest.mark.asyncio
 async def test_a_check_asks_whether_the_verifier_is_ready(db: Path, monkeypatch) -> None:
-    """4577114957: verify readiness decides, not conversion readiness.
+    """Verify readiness decides, not conversion readiness.
 
     JWUDTool (conversion) missing still leaves WUX Images checkable by its pure
     Python verifier; zstd missing makes z3ds Images not ready to check.
@@ -1604,7 +1604,7 @@ async def test_a_check_asks_whether_the_verifier_is_ready(db: Path, monkeypatch)
 async def test_an_archive_the_safety_rules_refuse_is_no_verdict(
     db: Path, ready, sent, monkeypatch,
 ) -> None:
-    """4577114961: "uncheckable" is server policy, not damage: no Finding, the
+    """An "uncheckable" verdict is server policy, not damage: no Finding, the
     Intact badge stays, no notification; only an attempt time for ordering."""
     import zipfile
 
@@ -1639,7 +1639,7 @@ async def test_an_archive_the_safety_rules_refuse_is_no_verdict(
 async def test_a_writer_waits_until_the_verdict_is_recorded(
     tree: Path, ready, verifier, sent, monkeypatch,
 ) -> None:
-    """4577134005: the locks are held until the verdict is written, so an overwrite
+    """The locks are held until the verdict is written, so an overwrite
     conversion cannot replace the file the recorded verdict describes."""
     from services import image_checks
     from services.lock_manager import LockManager, lock_manager
@@ -1684,7 +1684,7 @@ async def test_a_writer_waits_until_the_verdict_is_recorded(
 async def test_a_check_waiting_for_a_verify_slot_can_be_cancelled(
     tree: Path, ready, verifier, sent, monkeypatch,
 ) -> None:
-    """4577171591: Cancel ends a run that is queued for a verify slot, at once."""
+    """Cancel ends a run that is queued for a verify slot, at once."""
     import asyncio
 
     from routes import libraries as routes
@@ -1722,7 +1722,7 @@ async def test_a_check_waiting_for_a_verify_slot_can_be_cancelled(
 async def test_a_scheduled_check_is_stamped_with_the_moment_it_was_due(
     tree: Path, ready, verifier, sent, monkeypatch,
 ) -> None:
-    """4577171597: a pick that runs past midnight still counts for the day it began."""
+    """A pick that runs past midnight still counts for the day it began."""
     from routes import libraries as routes
     from services import libraries
     from services.rules import check as checks
@@ -1797,7 +1797,7 @@ async def test_a_check_run_cancelled_before_it_starts_ends_once(
 
 @pytest.mark.asyncio
 async def test_a_check_rule_with_a_corrected_window_runs_again(tree: Path, ready) -> None:
-    """4577383258: the server recomputes invalid_window from the window it is sent,
+    """The server recomputes invalid_window from the window it is sent,
     so a check Rule paused for half a window resumes once the window is whole,
     even if a client still sends the old flag back."""
     from routes import libraries as routes

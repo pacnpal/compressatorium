@@ -1454,7 +1454,7 @@ def test_a_stalled_lock_release_neither_holds_the_sweep_nor_the_pool(
 
 
 # --------------------------------------------------------------------------- #
-# The retry asks the sweep's own plan (Codex security review 4580012814)
+# The retry asks the sweep's own plan (Codex security review)
 # --------------------------------------------------------------------------- #
 
 
@@ -2269,8 +2269,7 @@ def test_a_retry_cancelled_during_its_first_unlink_is_finished_later(
 
 # --------------------------------------------------------------------------- #
 # Codex on ee7142ac: a Rule change, a removed Library, a stop and a cancel
-# during the off-lock part of a delete (4580441297, 4580441301, 4580441303,
-# 4580441305)
+# during the off-lock part of a delete
 # --------------------------------------------------------------------------- #
 
 

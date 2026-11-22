@@ -27,8 +27,8 @@ class VerificationStore {
   progress = new SvelteMap();
   batchRun = $state(null);
   _batchAbort = null;
-  // One ordering for every write into `statuses` / `checks` (#298, codex
-  // 4578598280, 4579128146). `_seq` grows with each live write and each
+  // One ordering for every write into `statuses` / `checks` (#298).
+  // `_seq` grows with each live write and each
   // request start; `_versions` holds, per path, the number of the write that
   // set it. A server answer carries its request's number and only replaces a
   // path set before that request, so neither an older full reload nor an

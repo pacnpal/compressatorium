@@ -69,8 +69,7 @@ export function newRuleSafety(spec, defaults) {
  * The consoles "Re-check games every night" covers: every one with games or
  * a conversion Rule, since games already compressed need no format to be
  * re-checked. With none, the re-checks left behind
- * ("Don't convert" keeps them), so they can be turned off (CodeRabbit
- * 4652729352).
+ * ("Don't convert" keeps them), so they can be turned off.
  */
 export function nightlyConsoles(platforms, rules, checkRules, imageCount) {
   const ids = platforms.map((p) => String(p.id));

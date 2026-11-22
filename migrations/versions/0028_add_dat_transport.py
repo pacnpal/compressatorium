@@ -1,10 +1,10 @@
 """add_dat_transport
 
-Each DAT records how it arrived: "https", "http" or "manual" (Codex
-4659176015 on #557). A DAT that came over plain HTTP never vouches for a
+Each DAT records how it arrived: "https", "http" or "manual" (#557's
+Codex security review). A DAT that came over plain HTTP never vouches for a
 delete (services.recognized).
 
-Existing rows fail closed (Codex 4659261220): no existing row can prove it
+Existing rows fail closed: no existing row can prove it
 came over HTTPS, and the ``redump_sync`` cache is not a complete history (a
 partly failed sync imports DATs it never records). A row is marked "http"
 when it could have come over #557's plain-HTTP fallback:

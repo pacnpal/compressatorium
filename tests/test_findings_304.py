@@ -1417,7 +1417,7 @@ async def test_a_mapping_landing_after_the_write_still_walks_again(
 async def test_stuck_mapping_saves_are_capped_and_leave_probes_for_others(
     db: Path, monkeypatch,
 ) -> None:
-    """Codex on PR #322 (4577281879): mapping saves go through #303's admission control.
+    """Codex on PR #322: mapping saves go through #303's admission control.
 
     Two saves stuck on a dead mount time out (504) but keep their slots until
     their workers return. A third is refused at once (503) and starts nothing,
