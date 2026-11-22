@@ -1966,9 +1966,14 @@ class JobManager:
         success: bool,
         error_message: Optional[str] = None,
         event_extra: dict[str, object] | None = None,
+        message: Optional[str] = None,
     ) -> None:
         """Mark an externally-managed job as complete or failed, notify
         subscribers, and archive it.
+
+        *message* replaces the job's last progress line with what it did (a
+        watch folder's copy: "Copied into …", #572); a failure's line is its
+        error.
 
         *event_extra* rides on that terminal event: a check run's
         ``verification_paths`` (#305), the files whose check state it changed,
@@ -1988,6 +1993,8 @@ class JobManager:
         if not success:
             # The status line says why it stopped, not its last progress (#466).
             job.message = job.error_message or "Failed"
+        elif message is not None:
+            _set_status_message(job, message)
         # Clean up any spurious cancel state that may have been set by
         # cancel_all while the external task was still running.
         self._cancel_events.pop(job_id, None)

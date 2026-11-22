@@ -382,6 +382,11 @@
 
 ### Fixed
 
+- **A watch folder's copy shows its console in History** (#572). A game a
+  watch folder took in as it is (no Rule to convert it) was filed under no
+  console, and its row still read *Copying into …* after it was done. It's
+  now filed under the console its folder, or **Place it**, gave it, and says
+  *Copied into …*.
 - **Delete keeps a file a sheet, playlist or set reaches through a link**
   (#555). A `.cue` in one folder can name a track in another through a folder
   link inside the Volume (`other/A.cue` naming `link/Shared.bin`). Deleting or
