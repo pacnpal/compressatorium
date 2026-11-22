@@ -849,33 +849,48 @@ async def test_a_late_removal_updates_the_ledger_row_already_written(
     loop = asyncio.get_running_loop()
     running = asyncio.create_task(manager._process_job(job.id))
     real_settle = swap_referrer._settle_repin
+    # Events, not polls (#559): the swap's bookkeeping holds until the row is
+    # in, and the test reads the row only once the record, the amend and the
+    # bookkeeping have all ended.
+    row_written = threading.Event()
+    settled = threading.Event()
+    amended = asyncio.Event()
     written_first: list[bool] = []
 
+    async def record(ended):
+        await ledger.record(ended)
+        if ended.id == job.id:
+            row_written.set()
+
+    async def amend(ended):
+        await ledger.amend(ended)
+        if ended.id == job.id:
+            amended.set()
+
     def shut_down_then_settle(output, rom_id):
-        loop.call_soon_threadsafe(running.cancel)
-        for _ in range(200):
-            if row() is not None:
-                written_first.append(True)
-                break
-            time.sleep(0.02)
-        return real_settle(output, rom_id)
+        try:
+            loop.call_soon_threadsafe(running.cancel)
+            # Still inside the swap: it ends only once the row is written.
+            if row_written.wait(timeout=10):
+                written_first.append(row() is not None)
+            return real_settle(output, rom_id)
+        finally:
+            settled.set()
 
     monkeypatch.setattr(swap_referrer, "_settle_repin", shut_down_then_settle)
-    manager.add_terminal_listener(ledger.record)
-    manager.add_amend_listener(ledger.amend)
+    manager.add_terminal_listener(record)
+    manager.add_amend_listener(amend)
     try:
         with pytest.raises(asyncio.CancelledError):
             await running
-        for _ in range(100):
-            written = await asyncio.to_thread(row)
-            if written and written["deleted_paths"]:
-                break
-            await asyncio.sleep(0.05)
+        await asyncio.wait_for(amended.wait(), timeout=10)
+        assert await asyncio.to_thread(settled.wait, 10), "the swap's bookkeeping ended"
     finally:
-        manager.remove_terminal_listener(ledger.record)
-        manager.remove_amend_listener(ledger.amend)
+        manager.remove_terminal_listener(record)
+        manager.remove_amend_listener(amend)
 
     assert written_first == [True], "the row was written before the swap ended"
+    written = await asyncio.to_thread(row)
     assert written is not None
     assert written["deleted_paths"] == [str(platform / "Game.iso")]
     assert written["source_deleted"] is True
