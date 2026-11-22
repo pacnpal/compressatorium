@@ -263,7 +263,6 @@ class ChdmanTool(BaseTool):
         _CD_PLATFORMS | _DVD_PLATFORMS | _HD_PLATFORMS | _LD_PLATFORMS
     )
     default_compression = "zlib"
-    policy_owner = "chdman"
     display_name = "CHDMAN"
     modes = _build_modes()
     # All extensions chdman produces: .chd from create/copy, plus the extract

@@ -37,7 +37,6 @@ from .spec import ModeKind, ModeSpec
 class ExodosTool(BaseTool):
     id = "exodos"
     platform_slugs = frozenset({EXODOS.platform_slug})
-    policy_owner = "exodos"
     display_name = "eXoDOS"
     # File info is the size and the extension's format; nothing is run.
     info_needs_tool = False

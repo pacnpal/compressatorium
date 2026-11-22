@@ -726,3 +726,14 @@ process.stdout.write(JSON.stringify({{
 }}));
 """)
     assert data["contains"] == [], data
+
+
+def test_the_romm_screenshots_stage_rules_on_the_library_endpoint():
+    """Codex 4659289887: the RomM store reads /api/libraries/romm/rules, so the
+    shots must read and can that path; the old /api/romm/rules is gone (#542)."""
+    store = (_SRC / "lib" / "stores" / "romm.svelte.js").read_text(encoding="utf-8")
+    assert "api.getLibraryRules('romm')" in store
+    shots = (_SRC.parent / "shots.yml").read_text(encoding="utf-8")
+    assert "live('/api/libraries/romm/rules')" in shots
+    assert "'/api/libraries/romm/rules': {" in shots
+    assert "/api/romm/rules" not in shots

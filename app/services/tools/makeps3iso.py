@@ -27,7 +27,6 @@ from .spec import InputKind, ModeKind, ModeSpec
 class MakePs3IsoTool(BaseTool):
     id = "makeps3iso"
     platform_slugs = frozenset({"ps3"})
-    policy_owner = "makeps3iso"
     display_name = "PS3 ISO"
     # File info reads PARAM.SFO and sizes the folder in Python; makeps3iso isn't run.
     info_needs_tool = False

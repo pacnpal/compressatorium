@@ -109,20 +109,6 @@ export const api = {
 
   getLedgerSavings: () =>
     fetchJson(`${API_BASE}/ledger/savings`, undefined, 'Failed to fetch savings'),
-  // How long History keeps its rows: `{ retention_days }`, null for forever.
-  getLedgerSettings: () =>
-    fetchJson(`${API_BASE}/ledger/settings`, undefined, "Couldn't load the History setting"),
-  putLedgerSettings(body) {
-    return fetchJson(
-      `${API_BASE}/ledger/settings`,
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      },
-      "Couldn't save the History setting",
-    );
-  },
 
   // ─── Volumes ──────────────────────────────────────────────────────────
   getVolumes: () => fetchJson(`${API_BASE}/volumes`, undefined, 'Failed to fetch volumes'),
@@ -707,11 +693,8 @@ export const api = {
   discoverRomm: () =>
     fetchJson(`${API_BASE}/romm/discover`, undefined, 'Could not look for RomM'),
 
-  getRommRules: () =>
-    fetchJson(`${API_BASE}/romm/rules`, undefined, 'Failed to load RomM rules'),
-
   // The Rules importing RomM's converter targets would create (#385). Read
-  // only: the store saves them through saveRommRules like any edit.
+  // only: the store saves them through saveLibraryRules like any edit.
   getRommConverterImportPlan: () =>
     fetchJson(
       `${API_BASE}/romm/converter/import-plan`,
@@ -719,38 +702,17 @@ export const api = {
       "Failed to read RomM's converter targets",
     ),
 
-  // The consoles changed (#541): `{id: rule | null}`, merged by the server.
-  // `checkRules` (#305) is sent when given; without it the server keeps them.
-  saveRommRules: (rules, checkRules) =>
-    fetchJson(
-      `${API_BASE}/romm/rules`,
-      {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(
-          checkRules === undefined ? { rules } : { rules, check_rules: checkRules },
-        ),
-      },
-      'Failed to save RomM rules',
-    ),
+  // One-time notices any rule editor shows (#302). Not RomM-specific.
+  getRuleNotices: () =>
+    fetchJson(`${API_BASE}/rules/notices`, undefined, 'Failed to load rule notices'),
 
-  // Clears the "already converted by this rule" history that stops overwrite
-  // and rename rules from reconverting the same sources every interval.
-  // `failedOnly` releases the failed holds and keeps what was converted (#541).
-  forgetRommConverted: (platformIds = null, failedOnly = false) =>
+  dismissCheckLevelNotice: () =>
     jsonPost(
-      `${API_BASE}/romm/rules/forget-converted`,
-      { ...(platformIds ? { platform_ids: platformIds } : {}), ...(failedOnly ? { failed_only: true } : {}) },
+      `${API_BASE}/rules/notices/check-level/dismiss`,
       {},
-      'Failed to clear the conversion history',
+      {},
+      'Failed to dismiss the notice',
     ),
-
-  // Shows what a sweep would queue, without queueing it.
-  previewRommAutoConvert: (body = {}) =>
-    jsonPost(`${API_BASE}/romm/auto-convert/preview`, body, {}, 'Preview failed'),
-
-  runRommAutoConvert: (body = {}) =>
-    jsonPost(`${API_BASE}/romm/auto-convert/run`, body, {}, 'Auto-convert run failed'),
 
   // ── Libraries (#303): RomM plus every folder registered as one ──────────
   // A Library id goes in the path (`romm`, `folder:3`), so it is encoded.

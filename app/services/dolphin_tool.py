@@ -133,7 +133,7 @@ class DolphinToolService:
         policy, and an unkillable child reported into any open
         ``collect_abandonment()`` sink (issue #268).
         """
-        timeout = info_timeout(self._runner.owner)
+        timeout = info_timeout()
         with abandonment_checkpoint() as abandoned:
             returncode, stdout, stderr = await self._runner.run_capture(
                 [self.dolphin_tool_path, "header", "-i", path],
@@ -227,7 +227,7 @@ class DolphinToolService:
         # walking a list stops too.
         with abandonment_checkpoint() as probe_abandoned:
             timeout = await resolve_verify_timeout(
-                path, self._runner.owner, cancel_event=cancel_event,
+                path, cancel_event=cancel_event,
             )
         if probe_abandoned:
             logger.warning(

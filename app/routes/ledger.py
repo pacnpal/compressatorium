@@ -1,12 +1,10 @@
-"""Ledger routes (#292): recent rows, savings summary, retention setting."""
+"""Ledger routes (#292): recent rows and the savings summary."""
 
 import anyio
 from fastapi import APIRouter, Query
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel, Field
 from services import ledger
 from services.job_manager import job_manager
-from services.preferences_store import preferences_store
 
 router = APIRouter()
 
@@ -27,13 +25,6 @@ class ClosingStreamingResponse(StreamingResponse):
             if aclose is not None:
                 with anyio.CancelScope(shield=True):
                     await aclose()
-
-
-class LedgerSettings(BaseModel):
-    # None/0 keeps rows forever (the default).
-    retention_days: int | None = Field(
-        default=None, ge=0, le=ledger.MAX_RETENTION_DAYS,
-    )
 
 
 @router.get("/ledger")
@@ -93,12 +84,3 @@ async def ledger_savings() -> dict:
     return await ledger.savings()
 
 
-@router.get("/ledger/settings")
-async def get_ledger_settings() -> dict:
-    return {"retention_days": await ledger.retention_days()}
-
-
-@router.put("/ledger/settings")
-async def put_ledger_settings(body: LedgerSettings) -> dict:
-    await preferences_store.put(ledger.PREF_KEY, body.model_dump())
-    return {"retention_days": await ledger.retention_days()}

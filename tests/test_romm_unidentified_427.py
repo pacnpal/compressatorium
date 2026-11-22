@@ -61,10 +61,10 @@ HASHEOUS_RESPONSE = {
 
 
 def _app() -> FastAPI:
-    from routes import dat, romm
+    from routes import dat, libraries, romm
 
     app = FastAPI()
-    for router in (romm.router, dat.router):
+    for router in (romm.router, dat.router, libraries.router):
         app.include_router(router, prefix="/api")
     return app
 
@@ -266,11 +266,11 @@ async def test_recognize_these_starts_the_match_job_for_the_filtered_rows(client
 
 
 async def _candidates(client, rule: dict) -> list[str]:
-    saved = await client.put("/api/romm/rules", json={"rules": {"7": {
+    saved = await client.put("/api/libraries/romm/rules", json={"rules": {"7": {
         "mode": "dolphin_rvz", "enabled": True, **rule,
     }}})
     assert saved.status_code == 200, saved.text
-    preview = await client.post("/api/romm/auto-convert/preview", json={})
+    preview = await client.post("/api/libraries/romm/preview", json={})
     assert preview.status_code == 200, preview.text
     (platform,) = preview.json()["platforms"]
     return sorted(platform.get("candidates") or [])

@@ -477,10 +477,10 @@ def test_priority_is_a_command_wrapper_never_a_preexec_fn(tmp_path, monkeypatch)
     assert wrapper
     # Two distinct stand-ins: `env` runs `env IO=1 <cmd>`, so both wrappers
     # must be there, in order, for the payload to run.
-    monkeypatch.setattr(runner_module, "nice_prefix", lambda _owner=None: [wrapper])
-    monkeypatch.setattr(runner_module, "ioprio_prefix", lambda _owner=None: [wrapper, "IO=1"])
+    monkeypatch.setattr(runner_module, "nice_prefix", lambda: [wrapper])
+    monkeypatch.setattr(runner_module, "ioprio_prefix", lambda: [wrapper, "IO=1"])
     # The verdict path's post-spawn renice is its own test's concern.
-    monkeypatch.setattr(runner_module, "_prioritize_child", lambda _owner, _pid: None)
+    monkeypatch.setattr(runner_module, "_prioritize_child", lambda _pid: None)
     spawns: list[tuple[list, dict]] = []
     real_exec = runner_module.asyncio.create_subprocess_exec
 
@@ -587,24 +587,24 @@ def test_a_negative_nice_this_process_cannot_apply_is_left_off(monkeypatch):
     import resource
 
     monkeypatch.setattr(runner_module, "_WRAPPERS", {"nice": "/usr/bin/nice"})
-    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: -5)
+    monkeypatch.setattr(runner_module, "nice_value", lambda: -5)
     # macOS has no RLIMIT_NICE; the fake value stands in so getrlimit is reached.
     monkeypatch.setattr(resource, "RLIMIT_NICE", 13, raising=False)
     monkeypatch.setattr(runner_module.os, "geteuid", lambda: 0)  # root, but...
     monkeypatch.setattr(runner_module, "_CAP_SYS_NICE", False)  # ...no capability
     monkeypatch.setattr(resource, "getrlimit", lambda _which: (0, 0))
-    assert runner_module.nice_prefix("test") == []
+    assert runner_module.nice_prefix() == []
     # RLIMIT_NICE that reaches the level, or the capability, lets it through.
     monkeypatch.setattr(runner_module.os, "getpriority", lambda *_a: 0)
     monkeypatch.setattr(resource, "getrlimit", lambda _which: (25, 25))
-    assert runner_module.nice_prefix("test")[1:] == ["-n", "-5"]
+    assert runner_module.nice_prefix()[1:] == ["-n", "-5"]
     monkeypatch.setattr(resource, "getrlimit", lambda _which: (0, 0))
     monkeypatch.setattr(runner_module, "_CAP_SYS_NICE", True)
-    assert runner_module.nice_prefix("test")[1:] == ["-n", "-5"]
+    assert runner_module.nice_prefix()[1:] == ["-n", "-5"]
     # Raising niceness always applies.
     monkeypatch.setattr(runner_module, "_CAP_SYS_NICE", False)
-    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 5)
-    assert runner_module.nice_prefix("test")[1:] == ["-n", "5"]
+    monkeypatch.setattr(runner_module, "nice_value", lambda: 5)
+    assert runner_module.nice_prefix()[1:] == ["-n", "5"]
 
 
 def test_a_verifier_that_cant_start_is_no_verdict(tmp_path, monkeypatch):
@@ -613,7 +613,7 @@ def test_a_verifier_that_cant_start_is_no_verdict(tmp_path, monkeypatch):
     spawn it bare, so the direct exec raises and they report "could not run".
     run_capture for anything else still wraps, and returns the wrapper's 127
     as the exit code it is (dolphin-tool's hash read falls back to none)."""
-    monkeypatch.setattr(runner_module, "priority_prefix", lambda _owner=None: [shutil.which("env")])
+    monkeypatch.setattr(runner_module, "priority_prefix", lambda: [shutil.which("env")])
     script = tmp_path / "verifier"
     script.write_text("#!/nonexistent/interpreter\n")
     script.chmod(0o755)
@@ -649,14 +649,14 @@ def test_ionice_is_best_effort(monkeypatch):
     if not shutil.which("ionice"):
         pytest.skip("no ionice on this host")
     monkeypatch.setattr(runner_module, "_WRAPPERS", {"ionice": shutil.which("ionice")})
-    monkeypatch.setattr(runner_module, "_resolve_policy", lambda key, _owner: {
+    monkeypatch.setattr(runner_module, "_resolve_policy", lambda key: {
         "ioprio_class": 1, "ioprio_level": 0,
     }.get(key))
-    prefix = runner_module.ioprio_prefix("test")
+    prefix = runner_module.ioprio_prefix()
     assert prefix[1:] == ["-t", "-c", "1", "-n", "0"]
     # Whether or not this host may set the realtime class, the tool runs and
     # its own exit status comes back.
-    monkeypatch.setattr(runner_module, "priority_prefix", lambda _owner=None: prefix)
+    monkeypatch.setattr(runner_module, "priority_prefix", lambda: prefix)
     rc, _out, _err = asyncio.run(SubprocessRunner(owner="test").run_capture(
         [sys.executable, "-c", "raise SystemExit(3)"],
     ))
@@ -1470,7 +1470,7 @@ def test_a_wrapper_lookup_that_stalls_runs_at_normal_priority(monkeypatch):
     monkeypatch.setattr(runner_module, "_WRAPPERS", {})
     # A fresh set: the stub below never runs the lookup that would clear it.
     monkeypatch.setattr(runner_module, "_LOOKING_UP", set())
-    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 10)
+    monkeypatch.setattr(runner_module, "nice_value", lambda: 10)
     looked_up = []
 
     async def stalled(func, *args, **_kwargs):
@@ -1528,11 +1528,11 @@ def test_a_verifier_the_kernel_cant_exec_is_no_verdict(tmp_path, monkeypatch, bo
     apply the priority to the child by its pid afterwards."""
     reniced = []
 
-    def prioritize(owner, pid):
-        reniced.append((owner, pid))
+    def prioritize(pid):
+        reniced.append(pid)
 
     monkeypatch.setattr(runner_module, "_prioritize_child", prioritize)
-    monkeypatch.setattr(runner_module, "priority_prefix", lambda _owner=None: [shutil.which("env")])
+    monkeypatch.setattr(runner_module, "priority_prefix", lambda: [shutil.which("env")])
     spawned = []
     real_exec = runner_module.asyncio.create_subprocess_exec
 
@@ -1572,7 +1572,7 @@ def test_a_verifier_that_runs_gives_a_verdict_at_its_priority(tmp_path, monkeypa
     """The other half: a valid verifier, spawned bare, still gives a verdict on
     both paths, and its nice level is set on its own pid (the increment over
     this process `nice -n` would give); I/O priority goes to `ionice -p`."""
-    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 5)
+    monkeypatch.setattr(runner_module, "nice_value", lambda: 5)
     monkeypatch.setattr(runner_module, "_can_renice", lambda _value: True)
     monkeypatch.setattr(runner_module.os, "getpriority", lambda *_a: 0)
     reniced = []
@@ -1580,7 +1580,7 @@ def test_a_verifier_that_runs_gives_a_verdict_at_its_priority(tmp_path, monkeypa
         reniced.append((which, pid, level))
 
     monkeypatch.setattr(runner_module.os, "setpriority", setpriority)
-    monkeypatch.setattr(runner_module, "ioprio_prefix", lambda _owner=None: [])
+    monkeypatch.setattr(runner_module, "ioprio_prefix", lambda: [])
     async def resolved(_owner=None):
         return True
 
@@ -1620,7 +1620,7 @@ def test_one_wrapper_lookup_at_a_time(monkeypatch):
     caller gave up on it), no second one starts; the spawn runs unwrapped."""
     monkeypatch.setattr(runner_module, "_WRAPPERS", {})
     monkeypatch.setattr(runner_module, "_LOOKING_UP", {"nice"})
-    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 10)
+    monkeypatch.setattr(runner_module, "nice_value", lambda: 10)
     probes = []
 
     async def probe(*args, **_kwargs):
@@ -1635,7 +1635,7 @@ def test_a_wrapper_that_fails_to_start_is_looked_up_again(tmp_path, monkeypatch)
     """A cached `nice` removed since: the spawn fails once, and the cache is
     forgotten so the next spawn looks it up again (review 5960207187)."""
     monkeypatch.setattr(runner_module, "_WRAPPERS", {"nice": str(tmp_path / "gone" / "nice")})
-    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 10)
+    monkeypatch.setattr(runner_module, "nice_value", lambda: 10)
     monkeypatch.setattr(runner_module, "_can_renice", lambda _value: True)
     with pytest.raises(FileNotFoundError):
         asyncio.run(SubprocessRunner(owner="test").run_capture([sys.executable, "-c", "1"]))
@@ -1653,7 +1653,7 @@ def test_a_wrapped_127_forgets_a_stale_inner_wrapper(tmp_path, monkeypatch):
     fake_nice.write_text('#!/bin/sh\nshift 2\nexec "$@"\n')  # nice -n N cmd...
     fake_nice.chmod(0o755)
     monkeypatch.setenv("PATH", str(bin_dir))  # no ionice on it any more
-    monkeypatch.setattr(runner_module, "_resolve_policy", lambda key, _owner: {
+    monkeypatch.setattr(runner_module, "_resolve_policy", lambda key: {
         "nice": 0, "ioprio_class": 2, "ioprio_level": 7,
     }.get(key))
     monkeypatch.setattr(runner_module, "_WRAPPERS", {
@@ -1679,7 +1679,7 @@ def _stalled_ionice(tmp_path, monkeypatch):
     stand_in.write_text(f"#!/bin/sh\necho $$ >> {pids}\nexec sleep 30\n")
     stand_in.chmod(0o755)
     monkeypatch.setattr(runner_module, "_WRAPPERS", {"ionice": str(stand_in)})
-    monkeypatch.setattr(runner_module, "_resolve_policy", lambda key, _owner: {
+    monkeypatch.setattr(runner_module, "_resolve_policy", lambda key: {
         "ioprio_class": 2, "ioprio_level": 7,
     }.get(key))
     monkeypatch.setattr(runner_module, "_IONICE_SECONDS", 0.3)
@@ -1726,7 +1726,7 @@ def test_stalled_ionice_steps_stay_out_of_the_probe_pool(tmp_path, monkeypatch):
 
     async def many():
         for _ in range(10):  # the stand-in ignores the pid it is given
-            runner_module._prioritize_child("test", 999999)
+            runner_module._prioritize_child(999999)
             assert len(runner_module._IONICE_TASKS) <= runner_module._MAX_IONICE_TASKS
         assert runner_module._probe_slots._value == slots_before
         while runner_module._IONICE_TASKS:
@@ -1767,10 +1767,10 @@ def test_an_ionice_child_that_outlives_sigkill_turns_the_step_off(tmp_path, monk
     monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", fake_exec)
 
     async def twice():
-        runner_module._prioritize_child("test", 999999)
+        runner_module._prioritize_child(999999)
         while runner_module._IONICE_TASKS:
             await asyncio.sleep(0.05)
-        runner_module._prioritize_child("test", 999999)
+        runner_module._prioritize_child(999999)
 
     asyncio.run(twice())
     assert runner_module._IONICE_STUCK is True
