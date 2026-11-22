@@ -580,9 +580,11 @@ async def test_a_dismissed_finding_stays_dismissed_while_the_file_is_unchanged(
 
 
 @pytest.mark.asyncio
-async def test_a_run_is_one_job_in_the_queue_and_no_ledger_row(
+async def test_a_run_is_one_job_in_the_queue_and_one_history_row(
     tree: Path, ready, verifier, sent,
 ) -> None:
+    """History is everything that ran (restructure PR 4): a check run has its
+    row, named by what it checked, so Running can be the queue only."""
     from models import ConversionMode, JobStatus
     from services import ledger
     from services.job_manager import job_manager
@@ -596,27 +598,31 @@ async def test_a_run_is_one_job_in_the_queue_and_no_ledger_row(
     assert job.mode == ConversionMode.CHECK
     assert job.status == JobStatus.COMPLETED
     assert job.message == "2 Intact, 0 not Intact"
+    assert job.filename.startswith("Check 2 games in ")
     await ledger.record(job)
-    assert await ledger.recent(10) == []
+    [row] = await ledger.recent(10)
+    assert (row["job_id"], row["mode"], row["status"]) == (job.id, "check", "completed")
+    # The job's name, never the external-job placeholder path.
+    assert row["source_path"] == job.filename
 
 
 @pytest.mark.asyncio
-async def test_only_a_mode_that_says_so_stays_out_of_the_ledger(db: Path) -> None:
-    """The check mode declares it; a metadata scan still writes its row."""
-    from models import ConversionMode
+async def test_every_job_mode_has_a_history_row(db: Path) -> None:
+    """No mode stays out of History: every external job writes its row too."""
     from services import ledger
-    from services.job_manager import JobManager
+    from services.job_manager import EXTERNAL_JOB_MODES, JobManager
 
     manager = JobManager()
-    scan = manager.create_external_job("Scan", ConversionMode.METADATA_SCAN)
-    await manager.finish_external_job(scan.id, success=True)
-    check = manager.create_external_job("Check", ConversionMode.CHECK)
-    await manager.finish_external_job(check.id, success=True)
+    jobs = []
+    for mode in EXTERNAL_JOB_MODES:
+        job = manager.create_external_job(f"Run {mode.value}", mode)
+        await manager.finish_external_job(job.id, success=True)
+        await ledger.record(job)
+        jobs.append(job)
 
-    await ledger.record(scan)
-    await ledger.record(check)
-
-    assert [row["job_id"] for row in await ledger.recent(10)] == [scan.id]
+    rows = {row["job_id"]: row for row in await ledger.recent(100)}
+    assert set(rows) == {job.id for job in jobs}
+    assert {rows[job.id]["source_path"] for job in jobs} == {job.filename for job in jobs}
 
 
 @pytest.mark.asyncio

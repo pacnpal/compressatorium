@@ -4,7 +4,6 @@
 
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { api } from '$lib/api/endpoints.js';
-import { STORAGE_KEYS, readBool, writeBool } from '$lib/util/localStorage.js';
 import { verification } from './verification.svelte.js';
 import { ui } from './ui.svelte.js';
 import {
@@ -50,7 +49,9 @@ class JobsStore {
   tab = $state('queue');
   pageSize = $state(50);
   page = $state(1);
-  showExternalScanJobs = $state(readBool(STORAGE_KEYS.SHOW_METADATA_JOBS, false));
+  // The background scans (metadata, DAT match) stay out of Running for good:
+  // they run as a side effect of browsing. History still records them.
+  showExternalScanJobs = false;
 
   cancellingAll = $state(false);
   clearingCompleted = $state(false);
@@ -158,6 +159,18 @@ class JobsStore {
     return filtered;
   }
 
+  /**
+   * Activity's Running list: what is running, then what is waiting. A
+   * finished job leaves it on its own; History keeps every one.
+   */
+  get runningList() {
+    const visible = this.jobs.filter((job) => this._matchesTabFilter(job, 'queue'));
+    return [
+      ...visible.filter((job) => job.status === 'processing'),
+      ...visible.filter((job) => job.status !== 'processing'),
+    ];
+  }
+
   get pageCount() {
     return Math.max(1, Math.ceil(this.visibleJobs.length / this.pageSize));
   }
@@ -171,11 +184,6 @@ class JobsStore {
   setTab(tab) {
     this.tab = tab;
     this.page = 1;
-  }
-
-  setShowExternalScanJobs(value) {
-    this.showExternalScanJobs = !!value;
-    writeBool(STORAGE_KEYS.SHOW_METADATA_JOBS, this.showExternalScanJobs);
   }
 
   hideLocally(jobId) {

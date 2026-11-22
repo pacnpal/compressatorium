@@ -79,7 +79,6 @@ class UIStore {
   duplicateCheck = $state(null);
   deletePlan = $state(null);
   showCancelAll = $state(false);
-  showClearDone = $state(false);
   // ConvertPanel awaits the user on a plan shown in a dialog (a selection
   // too big to plan live). Observed by App.svelte so background
   // refresh-on-terminal events can't swap entries out from under it.
