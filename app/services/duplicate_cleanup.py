@@ -58,6 +58,7 @@ from services.subprocess_runner import (
     run_detached_bounded,
     run_detached_within_stall_bound,
 )
+from services.task_sets import drain_tasks
 from utils.delete_plan import build_delete_plan
 from utils.path_utils import is_within_configured_volumes, lock_boundary_root
 
@@ -547,8 +548,7 @@ async def start_delete(
 
 async def drain() -> None:
     """Wait for every running delete job (tests, shutdown)."""
-    while _tasks:
-        await asyncio.gather(*list(_tasks), return_exceptions=True)
+    await drain_tasks(_tasks)
 
 
 async def _run_delete(
