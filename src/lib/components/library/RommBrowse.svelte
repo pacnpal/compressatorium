@@ -15,7 +15,7 @@
   import { registry } from '$lib/tools/registry.js';
   import { convertTargets } from '$lib/tools/convertTargets.js';
   import { ui } from '$lib/stores/ui.svelte.js';
-  import { formatSize } from '$lib/api/format.js';
+  import { formatSize, plural } from '$lib/api/format.js';
   import FileList from '$lib/components/panels/FileList.svelte';
   import ConvertPanel from '$lib/components/panels/ConvertPanel.svelte';
   import Splitter from '$lib/components/ui/Splitter.svelte';
@@ -327,7 +327,7 @@
       {:else if summary.total > 0}
         <div class="summary" aria-live="polite">
           <span class="muted">
-            {summary.total} games. Progress isn't counted while new files go to another
+            {plural(summary.total, 'game', 'games')}. Progress isn't counted while new files go to another
             folder.
           </span>
         </div>

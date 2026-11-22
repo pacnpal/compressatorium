@@ -8,6 +8,11 @@ export function baseName(path) {
   return parts.at(-1) ?? '';
 }
 
+/** "1 game", "2 games": a count with the word that fits it (#575). */
+export function plural(n, one, many) {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
 export function formatSize(bytes) {
   if (bytes == null) return '';
   if (bytes === 0) return '0 B';

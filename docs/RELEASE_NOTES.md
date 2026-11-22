@@ -436,6 +436,8 @@
   the reason once and whole: it read *Couldn't reach RomM. Could not reach
   RomM. …*, and for a 404 cut the reason at its first colon, leaving only
   *it's the address you open RomM at.*
+- **"1 game", not "1 games"** (#575) in Settings → Game identification's list
+  of game lists and RomM's Browse summary.
 - **Sync MAMERedump no longer deletes your other DATs** (#525). It used to
   delete every DAT in the store after a successful sync, including No-Intro
   packs and Redump DATs you had imported or synced. It now replaces only the
