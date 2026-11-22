@@ -1671,10 +1671,13 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
     ]
     _check_queue_room(sum(len(batch.plans) for batch in prepared))
 
+    # The Platform the plan showed, for each job's Ledger row (#564): a console
+    # the person picked can't be found again by detection at run time.
+    planned_platform = {t.file_path: t.detection.platform for t in plan}
     jobs: list[ConversionJob] = []
     for batch in prepared:
         try:
-            jobs += await queue_prepared(batch)
+            queued = await queue_prepared(batch)
         except Exception as exc:
             if isinstance(exc, HTTPException):
                 reason = str(exc.detail)
@@ -1690,6 +1693,11 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
             # left to tell, so withdraw what this request queued.
             await _cancel_queued(jobs)
             raise
+        else:
+            # Before any await, so a job that starts at once has it.
+            for job in queued:
+                job.platform = job.platform or planned_platform.get(job.file_path)
+            jobs += queued
         skips += batch.skips
     # A file left out is reported in the plan, not shown as headed for a
     # target it never got.

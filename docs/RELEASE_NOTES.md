@@ -395,6 +395,11 @@
 - **Turning Hasheous on, then off quickly** no longer lets the first click
   finish after the second: it can't switch the screen back to on or test
   Hasheous once you've turned it off (#545 follow-up).
+- **Auto keeps the console you picked** (#564). Converting a game whose
+  console you chose with **Pick console** filed its History row under no
+  console (**Console —**), because the job was queued without it and couldn't
+  work it out again. Each job Auto queues now carries the console its plan
+  showed, as the command line's `--auto` and the Rules already did.
 - **Saving a format's compression in Settings** changes only that format on
   the server, so a change saved meanwhile from another tab is kept
   (#545 follow-up).
