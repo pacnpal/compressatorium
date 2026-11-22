@@ -247,7 +247,13 @@ class ConversionStore {
     const member = path.includes('::');
     const name = (member ? path.split('::').pop() : path).toLowerCase();
     const specs = specsForTarget(this.target);
-    if (specs.length === 0) return !this.#isArchiveName(name) || member;
+    if (specs.length === 0) {
+      if (member || !this.#isArchiveName(name)) return true;
+      // Best: an archive some mode reads whole (an eXoDOS game zip, a RAR
+      // set) is offered, so it can be ticked and its Convert to picked.
+      return registry.all().some((tool) => (tool.modes ?? [])
+        .some((spec) => (spec.inputExtensions ?? []).some((ext) => name.endsWith(ext))));
+    }
     return specs.some((spec) => (!member || spec.allowsArchiveInput)
       && (spec.inputExtensions ?? []).some((ext) => name.endsWith(ext)));
   }

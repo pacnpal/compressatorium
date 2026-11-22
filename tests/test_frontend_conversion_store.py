@@ -70,6 +70,7 @@ const registry = {
       : [{ mode: 'createcd' }],
   }),
   defaultMode: () => 'createcd',
+  all: () => [],
   specFor: () => ({ supportsCompression: true }),
   toolForMode: () => ({ id: 'chdman' }),
   maxCodecsFor: () => 4,
@@ -573,8 +574,13 @@ const best = {
   ps3Folder: gate({ type: 'directory', path: '/v/Game', convertible_by: ['makeps3iso'] }),
   plainFolder: gate({ type: 'directory', path: '/v/stuff', convertible_by: [] }),
   fileToolFolder: gate({ type: 'directory', path: '/v/x', convertible_by: ['chdman'] }),
-  archive: gate({ type: 'archive', path: '/v/a.zip' }),
+  archive: gate({ type: 'archive', path: '/v/a.7z' }),
 };
+// An archive some mode reads whole (an eXoDOS game zip): Best offers it, so
+// it can be ticked and its own Convert to picked.
+registry.all = () => [{ id: 'exodos', modes: [{ mode: 'exodos_repack', inputExtensions: ['.zip'] }] }];
+best.readArchive = gate({ type: 'archive', path: '/v/Sample Quest (1993).zip' });
+best.unreadArchive = gate({ type: 'archive', path: '/v/a.7z' });
 specsForTarget = (v) => (v === 'romz_extract' ? [{ inputExtensions: ['.zip'] }] : []);
 store.chooseTarget('romz_extract');
 process.stdout.write(JSON.stringify({ best, unpack: gate({ type: 'archive', path: '/v/a.zip' }) }));
@@ -583,6 +589,7 @@ process.stdout.write(JSON.stringify({ best, unpack: gate({ type: 'archive', path
     assert data["best"] == {
         "file": True, "ps3Folder": True, "plainFolder": False,
         "fileToolFolder": False, "archive": False,
+        "readArchive": True, "unreadArchive": False,
     }, data
     # A target that takes the archive itself offers it.
     assert data["unpack"] is True, data

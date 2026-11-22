@@ -641,7 +641,8 @@
   wait: 1800
   javascript: *js_files_wiiu
 
-# --- An eXoDOS drive, everything selected.
+# --- An eXoDOS drive, everything selected, Convert to Repack for RomM (Best
+# leaves a dos zip alone, #294).
 - url: http://127.0.0.1:8099/?s=files-exodos-light#/files
   output: docs/screenshots/files-exodos-light.png
   width: 1280
@@ -714,6 +715,7 @@
       };
       await drive('eXoDOS');
       await selectAll();
+      await convertTo('exodos_repack');
     })()
 - url: http://127.0.0.1:8099/?s=files-exodos-dark#/files
   output: docs/screenshots/files-exodos-dark.png

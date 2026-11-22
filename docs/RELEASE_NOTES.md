@@ -148,6 +148,9 @@
     through the same function.
   - Skip reasons are plain: "Unknown console: …", "Console unclear: …",
     "No converter here makes CHD from .rvz files", "Already CHD".
+  - An archive a converter reads whole (an eXoDOS game zip, a RAR set) can be
+    ticked under Best, so its own Convert to (Repack for RomM, Extract) can be
+    picked; Best itself leaves a dos zip alone (#294).
 - **A multi-file game is one row** (#538). A `.cue` or `.gdi` and its tracks, a
   RAR set, a split Wii U dump and a playlist with its discs each show as one
   row with the total size; the chevron shows the files. Ticking a playlist
