@@ -59,6 +59,16 @@
   instead (#556); a certificate that doesn't check out stops the sync rather
   than falling back. Either way the download is held to the same size caps
   and archive checks, and a failure says which of HTTPS and HTTP it tried.
+  A DAT that came over plain HTTP still names and matches your files, but
+  never vouches for deleting a Source: if only such a DAT knows a converted
+  output, the Source stays and the job says why (Codex 4659176015). DATs you
+  import by hand, and ones fetched over HTTPS, prove outputs as before, and a
+  DAT fetched over HTTP is trusted again once the same file comes back over
+  HTTPS. Because an existing DAT can't show how it arrived, after upgrading
+  every Redump DAT you already have (including one you imported by hand, and
+  the MAME Redump DATs), and any DAT imported from 21 November 2026 on, no
+  longer vouches for deletes. Import it again by hand to restore that (MAME
+  Redump DATs also come back with MAME Redump's next release).
   A Redump DAT you replace by hand
   is fetched again on the next sync. No-Intro stays upload-only, because its
   site is gated.
@@ -87,6 +97,41 @@
 
 ### Changed
 
+- **Activity (#544) is one place for what needs you, what's running and everything
+  that ran.** A strip on top shows how many problems need you, what is running,
+  the space saved and how many games passed a check; each links to its tab. The
+  dashboard cards (job queue, space saved, verification) are gone: the strip
+  replaces them.
+- **Needs attention says what's wrong in one sentence, with the one button that
+  fixes it**: Pick console, Open folder, Delete the others…, Choose name order,
+  Place it or Delete. Plain words throughout ("Unknown console", "Console
+  unclear", "Failed its check", "Original kept"), Dismiss is now Ignore, and the
+  first and last seen times moved into each row's tooltip. A Library select (or
+  `#/activity/attention/<library id>`) shows one Library's problems, and a line
+  links to the conversions that failed in the last day.
+- **Place it** (plan item 13): a file dropped in a watch folder with no console,
+  or an unclear one, gets a console select. Place it moves the file (a sheet
+  with its tracks) into a folder named after that console inside the watch
+  folder, never over another file, and it is taken in at once.
+  `POST /api/findings/{id}/place {platform}`. Watch-folder rows show "downloads ›
+  Game.iso", never an internal key.
+- **Running is the queue only**: running first, then waiting, with Cancel all.
+  The Completed and Failed tabs, Clear and the "Show metadata jobs" switch are
+  gone.
+- **History has every job that ran.** Check runs, find-duplicates runs,
+  duplicate deletes, renames and a watch folder's copies now write their row
+  too, named by what they did ("Check 12 games in Roms"). Its columns are When,
+  Game, Console, Result ("CHD · saved 312 MB") and Check ("✓ Exact copy"). Filter
+  by Done, Failed, Checked, Cancelled or Waiting (a watch folder's archive
+  that's waiting for room, with why), by format and by console;
+  `#/activity/history?status=failed` opens it on the failures.
+  `GET /api/ledger` and its CSV export take `since` (`24h`, `7d` or an ISO time,
+  fixed once for a whole export) and `checked=true`. A job's warning (an eXoDOS
+  game that may not start) and its closing summary (a check run's counts) are
+  kept on its row and shown under its result; the CSV has two new last columns,
+  `warning` and `message`. Delete in Needs attention opens on the file's real
+  entry, so it still asks before an original whose new file isn't checked.
+- The folder console dialog is now **Set console**.
 - **The web UI reads its formats from the server** (#539). `GET /api/tools`
   now also lists every tool's extensions and every mode's settings, and the
   UI builds its list of converters from it at start, so it can never offer a
@@ -206,9 +251,8 @@
     nothing.
   - **Defaults** (new): what new conversions start with (check each new file,
     delete the original once it checks out, quick check), the compression for
-    each format (the same one the Convert panel remembers), and **Keep history
-    for** forever, 30 days, 90 days or a year. Nothing in the UI set History's
-    retention before.
+    each format (the same one the Convert panel remembers). History keeps every
+    row (#542).
   - **Converters** keeps the CHD badge scan.
 - **`compressatorium convert` uses the running server** (#533). When the
   server is running on the same `/config`, the command finds it there and
@@ -306,6 +350,30 @@
     template is found for it or the folder holds a DOS program (`.exe`, `.com`
     or `.bat`). Other zips are skipped with the reason, as before.
   - Verify accepts a `.dosz` with no `dosbox.conf` when it holds a DOS program.
+- **Fewer settings** (#542). Process priority and timeouts are one value for
+  every tool now (`COMPRESSATORIUM_TOOL_*`). The 45 per-tool overrides
+  (`COMPRESSATORIUM_<TOOL>_NICE`, `_IOPRIO_CLASS`, `_IOPRIO_LEVEL`,
+  `_INFO_TIMEOUT`, `_VERIFY_TIMEOUT`) are retired. A deployment that still sets
+  one keeps working: the value sets the shared setting for every tool (when the
+  shared one isn't set; two that disagree give the largest), and startup logs
+  one warning naming it.
+  - The stall warning (300 s) and the DEBUG progress line (every 30 s) are fixed
+    timings. `CHD_DEBUG_PROGRESS_TIMEOUT`, `CHD_DEBUG_PROGRESS_INTERVAL` and (since #536) `CHD_DEBUG_HEARTBEAT` are
+    no longer read.
+  - "Back to the folder after queueing" from search results is a checkbox in
+    the Convert panel, remembered by the browser. It was the
+    `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` environment variable,
+    which is no longer read; it still starts on.
+  - Ledger rows are kept forever. The retention setting (only reachable through
+    `PUT /api/ledger/settings`) is gone, and a retention stored by an older
+    release prunes nothing.
+- **No duplicate routes** (#542). RomM's Rules use the Library routes like any
+  other Library: `/api/libraries/romm/rules`, `.../rules/forget-converted`,
+  `.../preview` and `.../run`. Removed: `/api/romm/rules`,
+  `/api/romm/rules/forget-converted`, `/api/romm/auto-convert/preview`,
+  `/api/romm/auto-convert/run`, and the uncalled `GET /api/jobs/{id}/events`
+  (use `/api/jobs/events`), `POST /api/dat/prune` and `GET/PUT
+  /api/ledger/settings`. `POST /api/dat/match` stays: ROMarr calls it.
 
 ### Fixed
 

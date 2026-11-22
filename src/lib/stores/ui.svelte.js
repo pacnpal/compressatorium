@@ -51,7 +51,18 @@ class UIStore {
 
   // Metadata from /api/version
   appVersion = $state(null);
-  searchAutoReturnToFileList = $state(true);
+  // After queueing from search results, go back to the folder (#542). This
+  // browser's choice; it was a server environment variable.
+  #searchAutoReturn = $state(readBool(STORAGE_KEYS.SEARCH_AUTO_RETURN, true));
+
+  get searchAutoReturnToFileList() {
+    return this.#searchAutoReturn;
+  }
+
+  set searchAutoReturnToFileList(on) {
+    this.#searchAutoReturn = !!on;
+    writeBool(STORAGE_KEYS.SEARCH_AUTO_RETURN, this.#searchAutoReturn);
+  }
 
   // Modal targets, one at a time
   infoTarget = $state(null);
@@ -68,7 +79,6 @@ class UIStore {
   duplicateCheck = $state(null);
   deletePlan = $state(null);
   showCancelAll = $state(false);
-  showClearDone = $state(false);
   // ConvertPanel awaits the user on a plan shown in a dialog (a selection
   // too big to plan live). Observed by App.svelte so background
   // refresh-on-terminal events can't swap entries out from under it.
@@ -216,9 +226,6 @@ class UIStore {
     try {
       const data = await api.getVersion();
       this.appVersion = data?.version ?? null;
-      if (typeof data?.search_auto_return_to_file_list === 'boolean') {
-        this.searchAutoReturnToFileList = data.search_auto_return_to_file_list;
-      }
     } catch (_e) {
       this.appVersion = null;
     }

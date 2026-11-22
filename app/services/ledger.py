@@ -3,8 +3,7 @@
 Written by a ``job_manager`` terminal listener (registered in ``main.py``), so
 every runner outcome -- completed, failed, cancelled, external -- lands here
 exactly once while the job object still says how it ended. Rows survive
-restarts and are kept forever unless a retention (days) is set through the
-``ledger`` preference, in which case older rows are pruned on each write.
+restarts and are kept forever.
 
 "Saved" bytes count only completed rows whose Source was deleted: a kept
 Source still occupies its space, so nothing was reclaimed yet.
@@ -15,8 +14,9 @@ from __future__ import annotations
 import csv
 import io
 import os
+import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 import anyio
@@ -24,16 +24,12 @@ from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from models import ConversionJob, JobStatus
 from services import db as _db
-from services.preferences_store import preferences_store
+from services.job_manager import EXTERNAL_JOB_PATH
 from services.tools import registry
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 logger = get_logger("ledger")
-
-PREF_KEY = "ledger"
-# 100 years: keeps `now - timedelta(days=…)` far inside datetime's range.
-MAX_RETENTION_DAYS = 36500
 
 
 def _iso(dt: datetime) -> str:
@@ -60,8 +56,13 @@ def _tool_and_platform(mode: str) -> tuple[str | None, str | None]:
     return tool, (next(iter(slugs)) if len(slugs) == 1 else None)
 
 
+# The Ledger status of a job that ended only to wait (no work done yet).
+WAITING = "waiting"
+
+
 def row_from_job(job: ConversionJob) -> dict:
     mode = getattr(job.mode, "value", str(job.mode))
+    waited = job.status == JobStatus.COMPLETED and bool((job.result or {}).get("waiting"))
     tool, mode_platform = _tool_and_platform(mode)
     # The Library's Platform or the detected one (#346); else the mode's own
     # when it serves only one. None files the row under "unsorted".
@@ -76,12 +77,19 @@ def row_from_job(job: ConversionJob) -> dict:
         "finished_at": _iso(finished),
         "tool": tool,
         "mode": mode,
-        "source_path": job.file_path,
+        # An external job's path is a placeholder: its name says what it was
+        # ("Check 12 games in Roms").
+        "source_path": (
+            job.filename if job.file_path.startswith(EXTERNAL_JOB_PATH) else job.file_path
+        ),
         "output_path": job.output_path,
         "input_bytes": job.input_bytes,
         "output_bytes": job.output_size,
         "duration_s": duration,
-        "status": getattr(job.status, "value", str(job.status)),
+        # A job that only had to wait (a watch-folder archive with no room to
+        # unpack, `finish_external_job_waiting`) did nothing yet: its row says
+        # "waiting" and why, never "completed" (Codex 4658826956).
+        "status": WAITING if waited else getattr(job.status, "value", str(job.status)),
         "check_passed": job.check_passed or "none",
         "check_dat": getattr(job, "check_dat", None),
         "source_deleted": bool(job.deleted_paths),
@@ -91,6 +99,11 @@ def row_from_job(job: ConversionJob) -> dict:
         "image_key": None,
         "platform": platform,
         "error": job.error_message,
+        # What the job warned about as it ended, whatever its status (an
+        # eXoDOS repack that may not start, a waiting archive's reason).
+        "warning": job.warning,
+        # Its closing message: an external job's outcome (a check run's counts).
+        "message": job.message or None,
         "extra_inputs": [dict(item) for item in job.extra_inputs],
     }
 
@@ -139,12 +152,12 @@ def _bump_totals(session, row: dict) -> None:
 _write_lock = threading.Lock()
 
 
-def _insert_job_sync(job: ConversionJob, retention_days: int | None) -> None:
+def _insert_job_sync(job: ConversionJob) -> None:
     with _write_lock:
-        _insert_sync(row_from_job(job), retention_days)
+        _insert_sync(row_from_job(job))
 
 
-def _insert_sync(row: dict, retention_days: int | None) -> None:
+def _insert_sync(row: dict) -> None:
     with _session() as session:
         # A job can be announced terminal more than once (a queued cancel is
         # notified by cancel_job and again by the runner), so the same
@@ -156,34 +169,17 @@ def _insert_sync(row: dict, retention_days: int | None) -> None:
         ).rowcount
         if inserted:
             _bump_totals(session, row)
-        if retention_days:
-            cutoff = _iso(datetime.now(timezone.utc) - timedelta(days=retention_days))
-            session.execute(
-                delete(_db.LedgerEntry).where(_db.LedgerEntry.finished_at < cutoff)
-            )
         session.commit()
-
-
-async def retention_days() -> int | None:
-    stored = await preferences_store.get(PREF_KEY) or {}
-    days = stored.get("retention_days")
-    if isinstance(days, int) and 0 < days <= MAX_RETENTION_DAYS:
-        return days
-    return None
 
 
 async def record(job: ConversionJob) -> None:
     """Terminal listener: write *job*'s row. Never raises.
 
-    Skipped only for a job mode that declares it has no row
-    (``job_manager.EXTERNAL_JOB_MODES``: a check Rule's run).
+    Every job has one, external jobs included (a check run, a duplicate
+    delete, a watch folder's copy): History is everything that ran.
     """
-    from services.job_manager import in_ledger
-
-    if not in_ledger(job.mode):
-        return
     try:
-        await run_in_threadpool(_insert_job_sync, job, await retention_days())
+        await run_in_threadpool(_insert_job_sync, job)
     except Exception:
         logger.warning("Failed to write Ledger row for job %s", job.id, exc_info=True)
 
@@ -284,12 +280,34 @@ CSV_COLUMNS = (
     "source_deleted", "deleted_paths", "referrers_updated", "library_id",
     "image_key", "platform", "error",
     # Last, so a script reading the columns by position before #423 (then
-    # #428) still works.
-    "check_dat", "extra_inputs",
+    # #428, then #544) still works.
+    "check_dat", "extra_inputs", "warning", "message",
 )
 _CSV_PAGE = 500
 # Always exported so a scrape sees a zero, not a missing series.
 _METRIC_STATUSES = ("completed", "failed", "cancelled")
+
+
+def _now() -> datetime:
+    """The clock a relative ``since`` is measured from (tests replace it)."""
+    return datetime.now(timezone.utc)
+
+
+_SINCE_RELATIVE = re.compile(r"(\d{1,6})([hd])")
+
+
+def since_cutoff(since: str, *, now: datetime | None = None) -> str:
+    """The ``finished_at`` a ``since`` filter starts at: ``24h``, ``7d`` or an
+    ISO time (a naive one reads as UTC). Raises ValueError for anything else."""
+    relative = _SINCE_RELATIVE.fullmatch(since.strip())
+    if relative:
+        amount, unit = int(relative.group(1)), relative.group(2)
+        delta = timedelta(hours=amount) if unit == "h" else timedelta(days=amount)
+        return _iso((now or _now()) - delta)
+    text = since.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    return _iso(datetime.fromisoformat(text))
 
 
 @dataclass(frozen=True)
@@ -303,10 +321,18 @@ class LedgerFilter:
     status: str = ""
     tool: str = ""
     platform: str = ""
+    # ``24h``, ``7d`` or an ISO time: rows that finished at or after it.
+    since: str = ""
+    # Only rows whose new file passed a check (Checked, Exact copy, Known good dump).
+    checked: bool = False
 
     def clauses(self) -> list:
         e = _db.LedgerEntry
         out = []
+        if self.since:
+            out.append(e.finished_at >= since_cutoff(self.since))
+        if self.checked:
+            out.append(e.check_passed != "none")
         if self.q:
             out.append(
                 e.source_path.contains(self.q, autoescape=True)
@@ -384,7 +410,7 @@ def _open_snapshot():
 
     pysqlite does not emit BEGIN for a SELECT, so without this every page
     would read the latest committed data. Under WAL the snapshot starts at
-    the first read and ignores later commits, including a retention prune.
+    the first read and ignores later commits.
     """
     session = _session()
     session.connection().exec_driver_sql("BEGIN")
@@ -412,10 +438,14 @@ async def export_csv(flt: LedgerFilter):
     """Yield the CSV for every row matching *flt*, newest first.
 
     Keyset-paged on ``(finished_at, id)`` inside one read transaction held for
-    the whole stream, so every page sees the same snapshot: a job finishing or
-    a retention prune committing mid-export can neither repeat, skip nor drop
-    a row. Only one page is in memory at a time.
+    the whole stream, so every page sees the same snapshot: a job finishing
+    mid-export can neither repeat, skip nor drop a row. Only one page is in memory at a time.
     """
+    if flt.since:
+        # A relative `since` (24h, 7d) is fixed once, as the export starts:
+        # measured again for each page, a row near the cutoff would age out
+        # of the middle of the download (Codex 4658906854).
+        flt = replace(flt, since=since_cutoff(flt.since))
     session = await run_in_threadpool(_open_snapshot)
     try:
         after = None
@@ -463,8 +493,7 @@ async def totals() -> dict:
 async def metrics_text(queue_depth: int) -> str:
     """Prometheus text exposition (v0.0.4): running totals plus the live queue.
 
-    The counters come from ``ledger_totals``, which only ever grows, so a
-    retention prune of Ledger rows never makes one go down.
+    The counters come from ``ledger_totals``, which only ever grows.
     """
     by_status, bytes_in, bytes_out = await run_in_threadpool(_metrics_sync)
     statuses = sorted(set(_METRIC_STATUSES) | set(by_status))

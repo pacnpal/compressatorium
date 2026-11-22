@@ -1,12 +1,10 @@
-"""Ledger routes (#292): recent rows, savings summary, retention setting."""
+"""Ledger routes (#292): recent rows and the savings summary."""
 
 import anyio
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel, Field
 from services import ledger
 from services.job_manager import job_manager
-from services.preferences_store import preferences_store
 
 router = APIRouter()
 
@@ -29,10 +27,23 @@ class ClosingStreamingResponse(StreamingResponse):
                     await aclose()
 
 
-class LedgerSettings(BaseModel):
-    # None/0 keeps rows forever (the default).
-    retention_days: int | None = Field(
-        default=None, ge=0, le=ledger.MAX_RETENTION_DAYS,
+def _filter(
+    q: str, status: str, tool: str, platform: str, since: str, checked: bool,
+) -> ledger.LedgerFilter:
+    """The filter both the list and the export read; 400 for a bad ``since``.
+
+    A relative ``since`` (24h, 7d) is resolved here, once per request, to the
+    time it stands for: every page of a CSV export then reads the same
+    cutoff (Codex 4658906854)."""
+    if since:
+        try:
+            since = ledger.since_cutoff(since)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="since takes 24h, 7d or an ISO time",
+            ) from None
+    return ledger.LedgerFilter(
+        q=q, status=status, tool=tool, platform=platform, since=since, checked=checked,
     )
 
 
@@ -42,11 +53,16 @@ async def ledger_list(
     status: str = Query("", max_length=40),
     tool: str = Query("", max_length=40),
     platform: str = Query("", max_length=40),
+    since: str = Query("", max_length=40),
+    checked: bool = False,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> dict:
-    """Newest-first, paged, filtered rows: ``{"items": [...], "total": N}``."""
-    flt = ledger.LedgerFilter(q=q, status=status, tool=tool, platform=platform)
+    """Newest-first, paged, filtered rows: ``{"items": [...], "total": N}``.
+
+    ``since`` (``24h``, ``7d`` or an ISO time) keeps rows that finished at or
+    after it; ``checked`` keeps rows whose new file passed a check."""
+    flt = _filter(q, status, tool, platform, since, checked)
     return await ledger.list_page(flt, limit, offset)
 
 
@@ -56,9 +72,11 @@ async def ledger_export(
     status: str = Query("", max_length=40),
     tool: str = Query("", max_length=40),
     platform: str = Query("", max_length=40),
+    since: str = Query("", max_length=40),
+    checked: bool = False,
 ) -> StreamingResponse:
     """Every row matching the same filter the list takes, as CSV."""
-    flt = ledger.LedgerFilter(q=q, status=status, tool=tool, platform=platform)
+    flt = _filter(q, status, tool, platform, since, checked)
     return ClosingStreamingResponse(
         ledger.export_csv(flt),
         media_type="text/csv",
@@ -93,12 +111,3 @@ async def ledger_savings() -> dict:
     return await ledger.savings()
 
 
-@router.get("/ledger/settings")
-async def get_ledger_settings() -> dict:
-    return {"retention_days": await ledger.retention_days()}
-
-
-@router.put("/ledger/settings")
-async def put_ledger_settings(body: LedgerSettings) -> dict:
-    await preferences_store.put(ledger.PREF_KEY, body.model_dump())
-    return {"retention_days": await ledger.retention_days()}

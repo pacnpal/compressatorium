@@ -34,7 +34,7 @@
   const current = $derived(findings.mappingState === 'loaded' ? findings.mappingCurrent : null);
 
   const options = $derived([
-    { value: '', label: 'Choose a Platform…' },
+    { value: '', label: 'Choose a console…' },
     ...findings.platforms.map((p) => ({ value: p.slug, label: p.name })),
   ]);
 
@@ -47,7 +47,7 @@
       platform = '';
       loadError = null;
       findings.loadPlatforms().catch((e) => {
-        if (mine === opening) loadError = e?.message ?? 'Could not list the Platforms';
+        if (mine === opening) loadError = e?.message ?? "Couldn't list the consoles";
       });
     });
   });
@@ -74,15 +74,15 @@
       toast.success(
         slug
           ? `${target.name} is now ${saved?.platform_name ?? slug}`
-          : `${target.name} no longer has a Platform set`,
+          : `${target.name} no longer has a console set`,
         // A walk was running: the Findings follow once it finishes.
         saved?.walk?.status && saved.walk.status !== 'ok'
-          ? { description: saved.walk.message ?? 'Findings refresh after the next listing.' }
+          ? { description: saved.walk.message ?? 'Needs attention updates after the next listing.' }
           : undefined,
       );
       findings.closeMapping();
     } catch (e) {
-      toast.error(e?.message ?? 'Could not set the Platform');
+      toast.error(e?.message ?? "Couldn't set the console");
     } finally {
       busy = false;
     }
@@ -92,9 +92,9 @@
 <BaseModal
   {open}
   onClose={close}
-  title="Set the folder's Platform"
+  title="Set console"
   description={target
-    ? `Images under ${target.name} count as this Platform, unless a nearer folder is named after or set to another Platform, or the Image's own header says otherwise. A header that disagrees shows up as a Finding.`
+    ? `Games in ${target.name} count as this console, unless a folder inside it is named after or set to another console, or a game's own data says otherwise. A game whose data disagrees shows up in Needs attention.`
     : ''}
   size="sm"
 >
@@ -104,12 +104,12 @@
     {#if loadError}
       <p class="error" role="alert">{loadError}</p>
     {:else}
-      <Select label="Platform" bind:value={platform} {options} />
+      <Select label="Console" bind:value={platform} {options} />
     {/if}
     {#if findings.mappingState === 'error'}
       <div class="read-error" role="alert">
         <p class="error">
-          Couldn't read this folder's current Platform: {findings.mappingError}
+          Couldn't read this folder's console: {findings.mappingError}
         </p>
         <Button variant="secondary" size="sm" onclick={() => findings.loadCurrentMapping()}>
           Retry
@@ -118,7 +118,7 @@
     {/if}
   {/snippet}
   {#snippet footer()}
-    <Button variant="ghost" onclick={() => save(null)} disabled={busy || !current}>Clear mapping</Button>
+    <Button variant="ghost" onclick={() => save(null)} disabled={busy || !current}>Clear console</Button>
     <Button variant="secondary" onclick={close} disabled={busy}>Cancel</Button>
     <Button variant="primary" onclick={() => save(platform)} disabled={busy || !platform} loading={busy}>
       Save

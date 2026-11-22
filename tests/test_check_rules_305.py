@@ -580,9 +580,11 @@ async def test_a_dismissed_finding_stays_dismissed_while_the_file_is_unchanged(
 
 
 @pytest.mark.asyncio
-async def test_a_run_is_one_job_in_the_queue_and_no_ledger_row(
+async def test_a_run_is_one_job_in_the_queue_and_one_history_row(
     tree: Path, ready, verifier, sent,
 ) -> None:
+    """History is everything that ran (restructure PR 4): a check run has its
+    row, named by what it checked, so Running can be the queue only."""
     from models import ConversionMode, JobStatus
     from services import ledger
     from services.job_manager import job_manager
@@ -596,27 +598,31 @@ async def test_a_run_is_one_job_in_the_queue_and_no_ledger_row(
     assert job.mode == ConversionMode.CHECK
     assert job.status == JobStatus.COMPLETED
     assert job.message == "2 Intact, 0 not Intact"
+    assert job.filename.startswith("Check 2 games in ")
     await ledger.record(job)
-    assert await ledger.recent(10) == []
+    [row] = await ledger.recent(10)
+    assert (row["job_id"], row["mode"], row["status"]) == (job.id, "check", "completed")
+    # The job's name, never the external-job placeholder path.
+    assert row["source_path"] == job.filename
 
 
 @pytest.mark.asyncio
-async def test_only_a_mode_that_says_so_stays_out_of_the_ledger(db: Path) -> None:
-    """The check mode declares it; a metadata scan still writes its row."""
-    from models import ConversionMode
+async def test_every_job_mode_has_a_history_row(db: Path) -> None:
+    """No mode stays out of History: every external job writes its row too."""
     from services import ledger
-    from services.job_manager import JobManager
+    from services.job_manager import EXTERNAL_JOB_MODES, JobManager
 
     manager = JobManager()
-    scan = manager.create_external_job("Scan", ConversionMode.METADATA_SCAN)
-    await manager.finish_external_job(scan.id, success=True)
-    check = manager.create_external_job("Check", ConversionMode.CHECK)
-    await manager.finish_external_job(check.id, success=True)
+    jobs = []
+    for mode in EXTERNAL_JOB_MODES:
+        job = manager.create_external_job(f"Run {mode.value}", mode)
+        await manager.finish_external_job(job.id, success=True)
+        await ledger.record(job)
+        jobs.append(job)
 
-    await ledger.record(scan)
-    await ledger.record(check)
-
-    assert [row["job_id"] for row in await ledger.recent(10)] == [scan.id]
+    rows = {row["job_id"]: row for row in await ledger.recent(100)}
+    assert set(rows) == {job.id for job in jobs}
+    assert {rows[job.id]["source_path"] for job in jobs} == {job.filename for job in jobs}
 
 
 @pytest.mark.asyncio
@@ -674,6 +680,7 @@ async def test_removing_the_library_drops_its_check_times(tree: Path, ready, ver
 @pytest.mark.asyncio
 async def test_check_rules_work_on_a_romm_library(db: Path, ready, verifier, sent) -> None:
     from routes import romm as romm_routes
+    from routes import libraries as lib_routes
     from services import image_checks
     from services.romm import settings as romm_settings
     from services.rules import check
@@ -690,12 +697,12 @@ async def test_check_rules_work_on_a_romm_library(db: Path, ready, verifier, sen
     ]
     verdicts, calls = verifier
     verdicts["Bolt.chd"] = {"valid": False, "message": "bad hunk"}
-    await romm_routes.put_romm_rules({
+    await lib_routes.put_library_rules("romm", {
         "rules": {}, "check_rules": {"7": {"enabled": True, "check_budget_gb": 6}},
     })
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms):
-        result = await romm_routes.run_auto_convert(romm_routes.SweepRequest(platform_ids=[7]))
+        result = await lib_routes.run_library("romm", lib_routes.SweepRequest(platform_ids=["7"]))
         await check.drain()
 
     assert result["checks"] == 2
@@ -712,6 +719,7 @@ async def test_check_rules_work_on_a_romm_library(db: Path, ready, verifier, sen
 async def test_a_rom_with_no_size_still_costs_its_file_size(db: Path, ready) -> None:
     """RomM may leave out fs_size_bytes; the budget then reads the file."""
     from routes import romm as romm_routes
+    from routes import libraries as lib_routes
     from services.romm import settings as romm_settings
 
     for name in ("Aria", "Bolt"):
@@ -724,13 +732,13 @@ async def test_a_rom_with_no_size_still_costs_its_file_size(db: Path, ready) -> 
         }
         for rom_id, name in ((1, "Aria"), (2, "Bolt"))
     ]
-    await romm_routes.put_romm_rules({
+    await lib_routes.put_library_rules("romm", {
         "rules": {}, "check_rules": {"7": {"enabled": True, "check_budget_gb": 3}},
     })
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms):
-        result = await romm_routes.preview_auto_convert(
-            romm_routes.SweepRequest(platform_ids=[7]),
+        result = await lib_routes.preview_library("romm", 
+            lib_routes.SweepRequest(platform_ids=["7"]),
         )
 
     (summary,) = result["platforms"]
@@ -1104,6 +1112,7 @@ async def test_a_new_romm_instance_drops_romms_check_times_and_findings(
     db: Path, ready, verifier, sent,
 ) -> None:
     from routes import romm as romm_routes
+    from routes import libraries as lib_routes
     from services import image_checks
     from services.romm import settings as romm_settings
     from services.rules import check
@@ -1120,11 +1129,11 @@ async def test_a_new_romm_instance_drops_romms_check_times_and_findings(
     ]
     verdicts, _calls = verifier
     verdicts["Bolt.chd"] = {"valid": False, "message": "bad hunk"}
-    await romm_routes.put_romm_rules({
+    await lib_routes.put_library_rules("romm", {
         "rules": {}, "check_rules": {"7": {"enabled": True, "check_budget_gb": 6}},
     })
     with patch.object(romm_routes.romm_client, "roms", return_value=roms):
-        await romm_routes.run_auto_convert(romm_routes.SweepRequest(platform_ids=[7]))
+        await lib_routes.run_library("romm", lib_routes.SweepRequest(platform_ids=["7"]))
         await check.drain()
     assert image_checks.last_checked("romm")
     assert _not_intact()
@@ -1391,6 +1400,7 @@ async def test_a_run_stopped_by_a_romm_change_reports_nothing_it_did_not_write(
 ) -> None:
     """M5: the identity change lands mid-check; the run ends cancelled, counting nothing."""
     from routes import romm as romm_routes
+    from routes import libraries as lib_routes
     from services import image_checks
     from services.job_manager import job_manager
     from services.romm import settings as romm_settings
@@ -1421,12 +1431,12 @@ async def test_a_run_stopped_by_a_romm_change_reports_nothing_it_did_not_write(
 
     monkeypatch.setitem(vars(tool), "verify", verify)
     monkeypatch.setitem(vars(tool), "verify_timeout", bound)
-    await romm_routes.put_romm_rules({
+    await lib_routes.put_library_rules("romm", {
         "rules": {}, "check_rules": {"7": {"enabled": True, "check_budget_gb": 6}},
     })
     before = {j.id for j in job_manager.get_all_jobs()}
     with patch.object(romm_routes.romm_client, "roms", return_value=roms):
-        await romm_routes.run_auto_convert(romm_routes.SweepRequest(platform_ids=[7]))
+        await lib_routes.run_library("romm", lib_routes.SweepRequest(platform_ids=["7"]))
         await check.drain()
 
     assert calls == ["Aria.chd"]

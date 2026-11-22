@@ -93,6 +93,13 @@ SOURCE_KEPT_FOR_READERS = "Source kept: it was being read by another job"
 CANCEL_REQUESTED = "requested"
 CANCEL_SHUTDOWN = "shutdown"
 
+# A processing job silent this long is logged as possibly stalled, and again
+# each time this long passes; it is never stopped for it (#542: was
+# CHD_DEBUG_PROGRESS_TIMEOUT).
+STALL_WARNING_SECONDS = 300
+# At DEBUG, a job's progress is logged at most this often.
+PROGRESS_LOG_SECONDS = 30
+
 # The glossary names (CONTEXT.md) for each stored check, used in job messages so
 # "verified" never stands in for which check an output passed.
 _CHECK_LABELS = {
@@ -312,12 +319,11 @@ def _source_bytes(path: str) -> Optional[int]:
 class ExternalMode:
     """What an externally-managed job mode declares about itself.
 
-    ``in_ledger``: whether its finished jobs get a Ledger row. A check Rule's
-    run (#305) verifies and converts nothing, so it says no; a metadata scan
-    and a DAT match keep the rows they have always written.
+    Every finished job, external or not, gets a History (Ledger) row
+    (restructure PR 4): History is everything that ran, so the Running list
+    can be the queue only.
     """
 
-    in_ledger: bool = True
     # Whether a failed job of this mode is "a job you started" (#293's
     # ``job_failed`` message). A check Rule's run is started by the scheduler.
     started_by_hand: bool = True
@@ -330,46 +336,44 @@ class ExternalMode:
 EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
     ConversionMode.METADATA_SCAN: ExternalMode(),
     ConversionMode.DAT_MATCH: ExternalMode(),
-    ConversionMode.CHECK: ExternalMode(in_ledger=False, started_by_hand=False),
+    ConversionMode.CHECK: ExternalMode(started_by_hand=False),
     # A find-duplicates run (#388) reads and converts nothing; a person starts it.
-    ConversionMode.FIND_DUPLICATES: ExternalMode(in_ledger=False),
+    ConversionMode.FIND_DUPLICATES: ExternalMode(),
     # A duplicate delete (#389): a person confirmed it; each copy's delete goes
     # through the job's own delete step, so it converts nothing to record.
-    ConversionMode.DELETE_DUPLICATES: ExternalMode(in_ledger=False),
+    ConversionMode.DELETE_DUPLICATES: ExternalMode(),
     # A patch applied to a cartridge Image (#428): a person started it, and it
     # writes an output, so it has a Ledger row naming the patch file.
     ConversionMode.PATCH: ExternalMode(),
     # A rename to DAT names (#425): a person confirmed it; it renames, so it
     # converts nothing to record.
-    ConversionMode.DAT_RENAME: ExternalMode(in_ledger=False),
+    ConversionMode.DAT_RENAME: ExternalMode(),
     # An Inbox's copy of an Image no Rule converts (#431): the scheduler starts
     # it, and it converts nothing, so it has no Ledger row.
     ConversionMode.INBOX_COPY: ExternalMode(
-        in_ledger=False, started_by_hand=False, takes_slot=True,
+        started_by_hand=False, takes_slot=True,
     ),
     # An Inbox unpacking an archive, and Recognizing an Image before it is
     # named (#432): the scheduler starts them, they read and write as much as
     # a copy, and convert nothing.
     ConversionMode.INBOX_UNPACK: ExternalMode(
-        in_ledger=False, started_by_hand=False, takes_slot=True,
+        started_by_hand=False, takes_slot=True,
     ),
     ConversionMode.INBOX_RECOGNIZE: ExternalMode(
-        in_ledger=False, started_by_hand=False, takes_slot=True,
+        started_by_hand=False, takes_slot=True,
     ),
 }
 _EXTERNAL_JOB_MODES = frozenset(EXTERNAL_JOB_MODES)
+# Where an external job's placeholder ``file_path`` lives: no Volume path ever
+# starts with it, so no in-use check can match one. History names such a job
+# by its ``filename`` instead (``ledger.row_from_job``).
+EXTERNAL_JOB_PATH = "/__external_jobs__/"
 
 
 def started_by_hand(mode) -> bool:
     """Whether a job of *mode* is one a person started (every conversion may be)."""
     declared = EXTERNAL_JOB_MODES.get(mode)
     return declared is None or declared.started_by_hand
-
-
-def in_ledger(mode) -> bool:
-    """Whether a finished job of *mode* gets a Ledger row (every conversion does)."""
-    declared = EXTERNAL_JOB_MODES.get(mode)
-    return declared is None or declared.in_ledger
 
 
 def is_external_mode(mode) -> bool:
@@ -1753,7 +1757,7 @@ class JobManager:
             id=job_id,
             # Use a sentinel path that will never resolve to a real volume path
             # so that path-in-use checks cannot accidentally match this job.
-            file_path=f"/__external_jobs__/{job_id}",
+            file_path=f"{EXTERNAL_JOB_PATH}{job_id}",
             filename=filename,
             mode=mode,
             status=JobStatus.PROCESSING,
@@ -3229,8 +3233,6 @@ class JobManager:
         already carries bytes written and rate for tools using the size-growth
         fallback.
         """
-        if settings.debug_progress_timeout <= 0:
-            return
         now = time.monotonic()
         for job in list(self.jobs.values()):
             if job.status != JobStatus.PROCESSING:
@@ -3243,13 +3245,13 @@ class JobManager:
                 verifying_since if verifying_since is not None
                 else self._last_progress_at.get(job.id, now)
             )
-            if idle_for < settings.debug_progress_timeout:
+            if idle_for < STALL_WARNING_SECONDS:
                 continue
             # None, not 0, for "never logged": monotonic() counts from boot, so
             # a 0 sentinel reads as "logged at boot" and suppressed the first
-            # warning for the first debug_progress_timeout seconds of uptime.
+            # warning for the first STALL_WARNING_SECONDS of uptime.
             last_stall = self._last_stall_log_at.get(job.id)
-            if last_stall is not None and now - last_stall < settings.debug_progress_timeout:
+            if last_stall is not None and now - last_stall < STALL_WARNING_SECONDS:
                 continue
             self._last_stall_log_at[job.id] = now
             if verifying_since is not None:
@@ -5927,7 +5929,7 @@ class JobManager:
             job.started_at = datetime.now(timezone.utc)
             # Restart the progress clock at the moment work actually begins. It was
             # last set when the job was created, so a job that waited in the queue
-            # longer than debug_progress_timeout -- routine on a deep queue -- would
+            # longer than STALL_WARNING_SECONDS -- routine on a deep queue -- would
             # otherwise be reported stalled the instant it started running.
             self._last_progress_at[job_id] = time.monotonic()
             # The jobs holding a conversion slot, by the dispatcher's own rule:
@@ -6182,7 +6184,7 @@ class JobManager:
                     job.warning = job.message
                 if logger.isEnabledFor(logging.DEBUG):
                     last_log = self._last_progress_log_at.get(job_id, 0)
-                    if now - last_log >= settings.debug_progress_interval:
+                    if now - last_log >= PROGRESS_LOG_SECONDS:
                         self._last_progress_log_at[job_id] = now
                         logger.debug(
                             "Job %s progress=%s message=%s",

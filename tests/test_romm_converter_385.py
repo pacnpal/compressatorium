@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 import pytest_asyncio
 from routes import romm as romm_routes
+from routes import libraries as lib_routes
 from services import db as _db
 from services.romm import RommClient
 from services.romm import repin as romm_repin
@@ -240,7 +241,7 @@ async def test_a_failed_config_read_still_reports_the_converter_on(romm_db) -> N
 
 @pytest.mark.asyncio
 async def test_import_plan_covers_only_platforms_with_no_rule(romm_env) -> None:
-    await romm_routes.put_romm_rules({"rules": {"10": {"mode": "dolphin_wia"}}})
+    await lib_routes.put_library_rules("romm", {"rules": {"10": {"mode": "dolphin_wia"}}})
 
     plan = await romm_routes.romm_converter_import_plan()
 
@@ -260,13 +261,13 @@ async def test_import_plan_covers_only_platforms_with_no_rule(romm_env) -> None:
 
 @pytest.mark.asyncio
 async def test_importing_through_the_rules_api_creates_the_planned_rules(romm_env) -> None:
-    """The planned Rules saved through PUT /api/romm/rules, off until turned on."""
-    await romm_routes.put_romm_rules({"rules": {"10": {"mode": "dolphin_wia"}}})
+    """The planned Rules saved through PUT /api/libraries/romm/rules, off until turned on."""
+    await lib_routes.put_library_rules("romm", {"rules": {"10": {"mode": "dolphin_wia"}}})
     plan = await romm_routes.romm_converter_import_plan()
 
-    current = (await romm_routes.get_romm_rules())["rules"]
+    current = (await lib_routes.get_library_rules("romm"))["rules"]
     merged = {**current, **{pid: {"mode": e["mode"]} for pid, e in plan["rules"].items()}}
-    saved = await romm_routes.put_romm_rules({"rules": merged})
+    saved = await lib_routes.put_library_rules("romm", {"rules": merged})
 
     assert saved["rules"]["7"]["mode"] == "dolphin_rvz"
     assert saved["rules"]["8"]["mode"] == "createcd"
@@ -279,14 +280,14 @@ async def test_importing_through_the_rules_api_creates_the_planned_rules(romm_en
 @pytest.mark.asyncio
 async def test_reading_the_converter_changes_no_rule(romm_env) -> None:
     """The warnings alone block and change nothing: no Rule is written."""
-    await romm_routes.put_romm_rules({"rules": {"7": {"mode": "dolphin_wia"}}})
-    before = await romm_routes.get_romm_rules()
+    await lib_routes.put_library_rules("romm", {"rules": {"7": {"mode": "dolphin_wia"}}})
+    before = await lib_routes.get_library_rules("romm")
 
     with patch.object(romm_repin, "count_pending", return_value=0):
         await romm_routes.romm_status()
     await romm_routes.romm_converter_import_plan()
 
-    assert await romm_routes.get_romm_rules() == before
+    assert await lib_routes.get_library_rules("romm") == before
 
 
 @pytest.mark.asyncio

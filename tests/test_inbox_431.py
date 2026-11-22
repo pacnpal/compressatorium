@@ -567,7 +567,7 @@ def test_the_libraries_view_lists_inboxes_with_their_status():
     view = (root / "src/lib/components/library/LibraryAutomation.svelte").read_text()
     panel = (root / "src/lib/components/library/WatchFolders.svelte").read_text()
     endpoints = (root / "src/lib/api/endpoints.js").read_text()
-    findings_view = (root / "src/lib/components/views/FindingsView.svelte").read_text()
+    findings_view = (root / "src/lib/components/activity/NeedsAttention.svelte").read_text()
     assert "<WatchFolders" in view
     assert "api.listInboxes" in panel and "api.createInbox" in panel
     # The status line (#541): last checked, still downloading, need you, taken in.

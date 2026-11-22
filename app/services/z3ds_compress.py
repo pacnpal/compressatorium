@@ -417,7 +417,7 @@ class Z3DSCompressService:
             # unwinds this generator with zstd already running and tracked, but
             # with nothing to reap or untrack it.
             overall_timeout = await resolve_verify_timeout(
-                file_path, "z3ds", cancel_event=cancel_event,
+                file_path, cancel_event=cancel_event,
             )
 
             if cancel_event is not None and cancel_event.is_set():

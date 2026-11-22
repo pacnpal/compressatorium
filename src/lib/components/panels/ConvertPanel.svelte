@@ -458,6 +458,13 @@
         description="For FAT32 drives."
       />
     {/if}
+    {#if fileBrowser.searchMode}
+      <Checkbox
+        bind:checked={ui.searchAutoReturnToFileList}
+        label="Back to the folder after queueing"
+        description="Leaves these search results once the files are queued."
+      />
+    {/if}
 {/snippet}
 
 <BaseModal

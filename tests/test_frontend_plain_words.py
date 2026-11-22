@@ -54,6 +54,12 @@ CHECKED_FILES = [
     "settings/Identification.svelte",
     "settings/Defaults.svelte",
     "views/NotificationSettings.svelte",
+    # PR 4: Activity.
+    "activity/ActivitySummary.svelte",
+    "activity/NeedsAttention.svelte",
+    "activity/RunningList.svelte",
+    "activity/HistoryList.svelte",
+    "modals/MappingModal.svelte",
 ]
 
 OLD_WORDS = re.compile(

@@ -248,8 +248,7 @@ class ToolPlugin(Protocol):
                       cancel_event: asyncio.Event | None = None
                       ) -> AsyncGenerator[dict, None]: ...
     # Wall-clock bound for verifying this path (0 = unbounded). Default:
-    # BaseTool resolves the shared size-scaled policy for `policy_owner`, so a
-    # per-tool COMPRESSATORIUM_<OWNER>_VERIFY_TIMEOUT applies. Exposed so
+    # BaseTool resolves the shared size-scaled policy. Exposed so
     # job_manager can bound the whole verify() call — including a tool whose
     # verify spawns nothing (jwud's container walk, makeps3iso's PARAM.SFO
     # readback) — without re-deriving which knob that tool reads.
@@ -354,12 +353,9 @@ class BaseTool:
 
     def __init__(self, binary_path: str):
         self.binary_path = binary_path
-        # `policy_owner or id`, never bare `id`: the owner keys the shared
-        # nice/ioprio/timeout policy's per-tool overrides, and it differs from
-        # the plugin id wherever the service kept its historical name
-        # (dolphin/dolphin_tool, cso/maxcso). In the tree today each *service*
-        # constructs its own runner with that owner as a literal.
-        self._runner = SubprocessRunner(owner=self.policy_owner or self.id)
+        # The owner names the runner's logger. In the tree today each
+        # *service* constructs its own runner with its owner as a literal.
+        self._runner = SubprocessRunner(owner=self.id)
 
     # derived sets (no per-tool duplication)
     @property
@@ -372,19 +368,11 @@ class BaseTool:
                 return m
         raise KeyError(mode)
 
-    # The SubprocessRunner "owner" this tool's service runs under, which keys
-    # the shared nice/ioprio/timeout policy's per-tool overrides. NOT always
-    # `id`: the plugin id is the routing/UI name ("dolphin", "cso") while the
-    # owner is the historical service name ("dolphin_tool", "maxcso").
-    policy_owner: str | None = None
-
-    # Default: the shared size-scaled verify bound for this tool's owner.
+    # Default: the shared size-scaled verify bound.
     async def verify_timeout(
         self, path: str, *, cancel_event: asyncio.Event | None = None,
     ) -> int:
-        return await resolve_verify_timeout(
-            path, self.policy_owner, cancel_event=cancel_event,
-        )
+        return await resolve_verify_timeout(path, cancel_event=cancel_event)
 
     # verify() is the same drain-verify_stream()-and-keep-the-terminal-event
     # wrapper in every service, so it lives once in subprocess_runner as the
@@ -615,10 +603,9 @@ kernel refuses (empty, a bare `#!`) to `/bin/sh`, and its exit 0 would read
 as a pass (CodeRabbit 4616898119, 4617217666).
 
 - **Wrapped** (`run`, and `run_capture` for info and header reads): the argv
-  is `priority_prefix(owner) + cmd`, built in one place (`_wrapped_command`):
+  is `priority_prefix() + cmd`, built in one place (`_wrapped_command`):
   `nice -n <level>` then `ionice -t -c <class> -n <level>`, resolved from the
-  `COMPRESSATORIUM_TOOL_*` settings and any `COMPRESSATORIUM_<OWNER>_*`
-  override. Their exit codes are no verdict on their own (a conversion's
+  `COMPRESSATORIUM_TOOL_*` settings, one value for every tool (#542). Their exit codes are no verdict on their own (a conversion's
   output is checked after it).
 - **Bare, then reniced** (`capture_verify` through `run_capture(verdict=True)`,
   `run_verify`, and `hash_stdout`, whose digest is the Round-trip's): the tool
@@ -882,7 +869,7 @@ member cache. Progress callers:
   through `off_loop_until_stalled`, one report per record, and answer 503 on
   a stalled Volume like the routes above: `GET /api/verified` (prune, then
   each record's containment), `POST /api/verified/lookup`, the CHD badge
-  lookup `POST /api/chd-metadata`, and `POST /api/dat/prune`. The stores give
+  lookup `POST /api/chd-metadata`. The stores give
   them blocking, progress-aware forms (`prune_missing_blocking(progress)`,
   `all_records_blocking()`, `cached_media_type_blocking(path)`) and read the
   paths and delete the rows in separate sessions, so no session is held open
@@ -2481,7 +2468,7 @@ retains; `_prune_jobs` deletes the oldest past the cap. The job list is a
 bounded window, not a record of the run, so no all-time count comes from it.
 The Ledger is the record: every finished job lands in it (`ledger.record`, a
 terminal listener) and its `ledger_totals` counters only ever grow, whatever
-the cap, a Clear or a retention prune removes. `GET /api/ledger/totals`
+the cap or a Clear removes. `GET /api/ledger/totals`
 answers `{"jobs": {"completed": N, "failed": N, "cancelled": N}}` from them,
 and the dashboard's Done / Failed tiles read it (`ledger.totals`). The Jobs
 panel's tab badges count the rows the list holds, and its Completed and
@@ -2547,10 +2534,9 @@ it and counted in the totals, and anything evicted after is named in
 `evicted_ids` and dropped. Skip the overflow read entirely if the list read
 failed: the halves are only coherent together.
 
-Where retained rows exist but the total exceeds them, say so in the UI rather
-than let a badge and a list disagree — `JobsPanel` renders *"Showing the 500
-most recent of 1,153"*, and a distinct empty state for a tab whose jobs have all
-aged out.
+The UI no longer lists finished jobs from this list (restructure PR 4):
+Activity's Running list (`activity/RunningList.svelte`, `jobs.runningList`) is
+the queue only, and History reads the Ledger, which has every job.
 
 ### 3.3.8 Output-conflict resolution (`services/output_conflicts.py`)
 
@@ -2869,7 +2855,7 @@ a sweep running concurrently finishes by writing its own ids and schedule stamp
 under the same key. `routes/romm.py` also clears it when `url` or `library_root`
 changes, because a different RomM database reuses the same integer ids for
 different games. `forget_converted()` (exposed as
-`POST /api/romm/rules/forget-converted`, with a per-platform button in the
+`POST /api/libraries/romm/rules/forget-converted`, with a per-platform button in the
 automation editor) is the operator's escape hatch after restoring a backup.
 `_record_run` merges into the entry rather than replacing it, or every run would
 forget the history it shares a key with.
@@ -3046,21 +3032,21 @@ negative (an RVZ replaced by its larger ISO). A job announced terminal twice
 (a queued cancel) writes one row: `(job_id, finished_at)` is unique and the
 insert is `ON CONFLICT DO NOTHING`. The dashboard reads the Ledger through
 `stores/ledger.svelte.js`, refreshed on each terminal job and once more after
-a short settle delay, since the row is written after the completion event. A `retention_days`
-in the `ledger` preference prunes older rows on each write; unset keeps them
-forever. Recording never raises: a failure is logged and the job is unaffected.
+a short settle delay, since the row is written after the completion event. Rows
+are kept forever (#542 removed the `retention_days` setting, which nothing in the UI
+set; a value stored by an older release is ignored). Recording never raises: a failure is logged and the job is unaffected.
 
 Reads all go through `services/ledger.py` so the routes stay thin. A
 `LedgerFilter` (path substring on Source or output, status, tool, Platform)
 builds one set of SQL clauses used by `list_page` (newest first, with a total),
 by `export_csv` (the same filter, keyset-paged on `(finished_at, id)` inside one
 explicit read transaction held for the stream, so every page reads the same SQLite
-snapshot and a job finishing or a prune mid-export neither repeats, skips nor drops
+snapshot and a job finishing mid-export neither repeats, skips nor drops
 a row) and by `facets` (distinct values for the filter
 menus). The Prometheus counters are not computed from the `ledger` table: the
 `ledger_totals` table (migration `0011`, seeded from the Ledger) holds per-status
 job counts and completed-job byte sums, bumped in the same transaction as each
-new row and never decremented, so retention cannot lower a counter. `q` is escaped, so
+new row and never decremented. `q` is escaped, so
 `%` and `_` match literally. CSV cells starting with `=`, `+`, `-`, `@`, tab or
 CR get a leading `'` so a spreadsheet doesn't run them. `metrics_text` renders the
 Prometheus exposition (jobs by status, bytes of completed jobs, plus the live
@@ -3351,11 +3337,10 @@ called on the event loop and must not touch the disk.
 
 **Editor helpers** (`rules/editor.py`): `editor_payload(library)` (Rules,
 state, defaults, options), `save_rules` (strict), `forget_converted`,
-`sweep_now`. RomM's `/api/romm/rules` and `/api/romm/auto-convert/*` and the
-Library routes are thin wrappers over them; `routes/rules.py` holds the shared
-route pieces (422 mapping, the `platform_ids` reading where an empty list means
-none). RomM's forget route still calls `romm_auto.forget_converted`, which is
-the same engine call.
+`sweep_now`. The Library routes (RomM is `/api/libraries/romm/...`; its old
+`/api/romm/rules` and `/api/romm/auto-convert/*` copies are gone, #542) are thin
+wrappers over them; `routes/rules.py` holds the shared route pieces (422
+mapping, the `platform_ids` reading where an empty list means none).
 
 **What `recognized` and `identified` mean.** `recognized` says whether the
 Image is Recognized, and `only_matched` reads it; `identified` is the
@@ -3617,8 +3602,8 @@ job-owner index, then deletes the row. No file is touched.
 `GET /api/libraries/{id}/platforms` (folder only; also `tool_ids`, `mode_ids`
 and `automatable_modes`, as RomM's platform list carries),
 `GET/PUT /api/libraries/{id}/rules`, `POST .../rules/forget-converted`,
-`POST .../preview` and `POST .../run`. RomM's own `/api/romm/rules` and
-`/api/romm/auto-convert/*` are unchanged.
+`POST .../preview` and `POST .../run`, RomM's (`romm`) included. An
+unconfigured RomM answers a sweep with `stopped_reason: "not_configured"`.
 `GET /api/libraries/{id}/placements` (any Library, #430) lists, for each of
 the Library's `platforms()` (one listing, passed to every row as `known`),
 the Platform's own `id` (the row's key: two RomM platforms can share a slug),
@@ -4152,6 +4137,28 @@ declares a different delete proof on the mode contract:
   put first is the one named), then with `hasheous.lookup` when Hasheous is on,
   and passes only on a hit. A miss, an unreachable Hasheous, a hash that did
   not finish or DATs that could not be read all keep the Source.
+- **A DAT that came over plain HTTP never vouches for a delete** (Codex
+  4659176015 on #557). Each DAT records how it arrived in `dats.transport`
+  (`dat_store.TRANSPORTS`: `https`, `http` from the Redump sync's plain-HTTP
+  fallback, or `manual` for a hand import; migration 0028), and
+  `_lookup_hash` returns it on every match in the same query. `recognize`
+  sets the `http` matches aside before ranking: a trusted DAT that also knows
+  the hash still proves it (and is the one named), and an output only
+  plain-HTTP DATs know is treated as if no DAT knew it, so Hasheous is asked
+  when it is on, and otherwise it is a miss whose `keep_reason` names those
+  DATs and says they came over plain HTTP. Only the delete proof sets them
+  aside: matching, the Library's badges and the Inbox's naming use them as
+  any other DAT. Existing rows fail closed (Codex 4659261220): no existing
+  row can prove it came over HTTPS, and the `redump_sync` cache is no complete
+  history (a partly failed sync imports DATs it never records). 0028 marks
+  `http` every existing DAT whose family is Redump (whoever imported it), every
+  one imported on or after `FALLBACK_POSSIBLE_FROM` (a day before the fallback
+  was written; an unreadable import time counts too), whatever its header,
+  since a swapped DAT could claim any name, and every one the cache names.
+  Only an older non-Redump DAT stays NULL and vouches as before.
+  `recognized._may_vouch` also refuses a NULL Redump match, whatever wrote it.
+  A Redump DAT imported by hand before the upgrade vouches again once it is
+  imported again.
 - `JobManager._delete_check` returns a `_DeleteCheck`: the check passed, plus a
   `fail_reason` (a failed Round-trip: the job fails, as before) or a
   `keep_reason` (not Recognized: the output is Intact and placed, its record
@@ -7225,13 +7232,25 @@ up to `MAX_LISTED_FAILURES` of them, with `data = {library_id, failed: [{image,
 path, error}]}`, through `notifications.notify`. The run's job is external, so
 the sweep's own `sweep_finished` message does not count it.
 
-**Ledger.** Each external job mode declares itself in
-`job_manager.EXTERNAL_JOB_MODES` (`ExternalMode`). `CHECK` sets
-`in_ledger=False`, since a check run converts nothing, and `ledger.record`
-skips a job only when `job_manager.in_ledger(mode)` says so. Metadata scans and
-DAT matches keep their rows. `CHECK` also sets `started_by_hand=False`, so a
-failed run is not #293's "A job you started failed"
-(`notifications._started_by_hand`).
+**Ledger.** A job that ended only to wait (`finish_external_job_waiting`: an
+Inbox archive with no room to unpack, `result["waiting"]` and a `warning`) is
+recorded with status `waiting` (`ledger.WAITING`), never as `completed`: it did
+nothing yet, so it counts toward no savings or conversion, and History shows
+"Waiting:" and why. Every row keeps the job's `warning` (migration 0029), whatever
+its status (an eXoDOS repack that may not start), beside a failure's `error`,
+and its closing `message` (an external job's outcome, a check run's counts);
+History shows both under the result. A relative `since` (`24h`, `7d`) is resolved
+to a time once per request (`routes.ledger._filter`, and again in `export_csv`
+for a direct caller), so every page of a CSV export reads the same cutoff.
+
+Every finished job writes its Ledger row, external jobs included
+(restructure PR 4: History is everything that ran, so Activity's Running list
+can be the queue only). An external job's `file_path` is a placeholder under
+`job_manager.EXTERNAL_JOB_PATH`, so `ledger.row_from_job` records its
+`filename` ("Check 12 games in Roms") as the row's `source_path` instead. Each
+external job mode still declares itself in `job_manager.EXTERNAL_JOB_MODES`
+(`ExternalMode`): `CHECK` sets `started_by_hand=False`, so a failed run is not
+#293's "A job you started failed" (`notifications._started_by_hand`).
 ### 3.3.19 Editing a zip (`services/archive_edit.py`) and the eXoDOS repack
 
 `rewrite_zip(src, dst, *, rename, add, is_cancelled, on_progress)` is the shared
@@ -7483,8 +7502,8 @@ from before 0019 has no device or inode and is read again. The DAT match cache i
 for this: its rows carry no size or mtime to tie a SHA1 to the file.
 
 **The run.** `duplicates.start(library)` creates an external job of
-`ConversionMode.FIND_DUPLICATES` (`ExternalMode(in_ledger=False)`, so never a
-conversion and never a slot) and runs it as a task; one per Library at a time
+`ConversionMode.FIND_DUPLICATES` (`ExternalMode()`, so never a conversion and
+never a slot; its History row names the run) and runs it as a task; one per Library at a time
 (409 otherwise). It:
 
 1. lists the Library with `Library.all_images()`, a new Library contract method
@@ -7711,8 +7730,7 @@ snapshots taken before it, so the route only does the quick, database-only
 checks (`duplicate_cleanup._offered`: the Finding as shown, the keeper one of
 its copies, `not_deletable`; one delete per Finding at a time, 409 otherwise)
 and answers `{job_id}`. The job is an external job
-(`ConversionMode.DELETE_DUPLICATES`, `ExternalMode(in_ledger=False)`, as
-find-duplicates): progress and message through `update_external_job`, cancel
+(`ConversionMode.DELETE_DUPLICATES`, `ExternalMode()`, as find-duplicates): progress and message through `update_external_job`, cancel
 through its cancel event, its outcome on the job's new `result` field
 (`{finding_id, keep, keeper_changed, results}`, also its `deleted_paths`,
 `warning` and message), and a refusal as a failed job whose `error_message`
@@ -8455,8 +8473,8 @@ Platform, or whose tool isn't ready, holds the file with a Finding. A tool
 that isn't ready gives its own reason, `not_ready_message(tool)` read after
 `tool_is_ready` (§3.4, #484), followed by ", so the Rule can't run".
 
-**Copying** (`ConversionMode.INBOX_COPY`, an `ExternalMode(in_ledger=False,
-started_by_hand=False, takes_slot=True)`: it converts nothing). One background
+**Copying** (`ConversionMode.INBOX_COPY`, an `ExternalMode(started_by_hand=False,
+takes_slot=True)`: it converts nothing, and History still has it). One background
 task per Image, each an external job. Its file work runs in one of the same
 `max_concurrent` slots conversions take: `job_manager.hold_slot(job_id,
 cancel_event)` acquires the dispatcher's own semaphore. With the dispatcher
@@ -8561,6 +8579,41 @@ processed_count = processed_count + 1` (a copy and a conversion can finish at
 once; the cached total only grows to what the database answers) and the file's
 Findings cleared.
 
+**Place it** (plan item 13, `intake.place`, `POST /api/findings/{id}/place`).
+An `inbox_unsorted` or `inbox_conflict` Finding (`intake.PLACEABLE_KINDS`; any
+other kind is a 400) names its Inbox in `cause.inbox`. Its file, a sheet with
+its tracks (`_members`), moves into `<inbox>/<canonical slug>/` through the same
+all-or-none anchored move `_move_to_processed` uses (`_move_all`, over
+`move_anchored`): both folders opened beneath the Inbox with no link followed,
+each file's identity checked, a no-replace rename each, the ones already moved
+put back on a failure. The file set is worked out first (`_place_files`):
+a sheet's references go through `sheet_reference_problems` exactly as `_take`
+checks them, since the confined track resolver drops a `../Tracks/Game.bin`
+and the sheet would otherwise look trackless and move alone. The move then runs
+under the lock manager's exclusive locks on every file (`_place_locked`, the
+`_lock_all` that `_finish` takes before `processed/`): a job reading any of them
+(a conversion from Files holds shared input locks) makes it a 409, and the locks
+go on every outcome. Under those locks the watch folder's ownership holds are
+read again as a poll applies them (`_ownership_problem`: `_sharing` and
+`_behind_unreadable_sheets` over the folder as it is now), so a sheet dropped
+after the Finding that names the same track, or that names the selected file
+itself (a loose track a sheet now owns), makes it a 409 and nothing moves. The
+file set and its fingerprint as checked are compared again there too: a sheet
+rewritten since the check makes it a 409, so a stale set is never moved. The move runs owned
+(`_owned`, `_MOVE_SECONDS`), as `_move_to_processed` does: one past its bound may still
+land, so the locks stay held and its outcome is waited for until the worker ends. Refused, with nothing moved: a path outside the Inbox (or
+in `processed/`) or not confirmed inside a Volume (403), a folder Image or a
+sheet intake wouldn't take as it is (400), files in more than one folder, a
+file in use by a job, or a name already taken in the console folder (409,
+checked before anything moves). A file already gone is a 404 that
+clears its Finding. Then its Finding is cleared and it is marked settled
+(`state.seen[new] = _Seen(fingerprint, now - settle_seconds)`), so the next poll
+takes it through the normal path; the route starts that poll in the background.
+`GET /api/findings` adds `inbox_name` (the Inbox folder's basename) and
+`relative` (the path inside it) to every `inbox_*` row, so the UI never shows an
+`inbox:<id>/` key. A console the file's own header disagrees with stays a
+conflict after the move: the header wins over a folder (§ detection).
+
 **A cancel's reason** (#433). `ConversionJob.cancel_reason` records why a
 cancel was taken: `job_manager.cancel_job(job_id, reason=...)` and
 `cancel_all_jobs(reason=...)` default to `CANCEL_REQUESTED` (the UI and API
@@ -8607,8 +8660,7 @@ while the archive is still that file; it then goes down the ordinary path
 folder can't tell is unpacked: its Images say.
 
 Otherwise it is unpacked as an `inbox_unpack` job (`ConversionMode.INBOX_UNPACK`,
-an `ExternalMode(in_ledger=False, started_by_hand=False, takes_slot=True)` like
-the copy) on a stall-bounded worker (`run_detached_within_stall_bound`, its
+an `ExternalMode(started_by_hand=False, takes_slot=True)` like the copy) on a stall-bounded worker (`run_detached_within_stall_bound`, its
 progress reported per chunk written). **A private copy** (Codex 4608007766,
 4608936764): the archive's identity is read when it is taken; the job opens it
 through the Inbox folder's descriptor with `O_NOFOLLOW`, refuses it unless its
@@ -9636,7 +9688,7 @@ an Auto target whose saved preference the mode refuses runs on the tool default
 (`checked_compression`).
 
 Rules go through the same check (#474). A Rule submission (`PUT
-/api/libraries/{id}/rules`, `PUT /api/romm/rules`, both `editor.save_rules`
+/api/libraries/{id}/rules`, through `editor.save_rules`
 with `set_rules(strict=True)`; an Inbox runs its Library's Rules) is refused
 400 with `compression_problem`'s message when the Rule's mode refuses its
 compression (`rules.refuse_unusable_compression`, raising
@@ -10579,7 +10631,15 @@ Redump sync (`POST /dat/redump/sync`) and the CLI (`dat import`, `dat sync`):
   `save_capped`/`MAX_ZIP_SIZE` cap; the zip then goes through every archive
   and DAT check below unchanged. `redump_url(system, scheme)` names the URL
   actually used, and a failure says which transports were tried. Plain HTTP
-  is allowed for redump.org only. One system at a time with
+  is allowed for redump.org only, and each DAT it imports records the
+  transport used (`_fetch`'s `transport`, `dats.transport`; a fetch that
+  doesn't say counts as `http`), so a DAT fetched over plain HTTP never
+  vouches for a delete (the Recognized proof, §3.3.12). A system whose DAT
+  isn't recorded as `https` is asked unconditionally (a 304 can't show its
+  bytes were genuine); when the answer comes over HTTPS byte-identical to the
+  stored download, `dat_store.upgrade_to_https` marks that system's `http`
+  rows `https` without re-importing (Codex 4659261223). It never touches an
+  `https`, `manual` or NULL row, so nothing is ever downgraded. One system at a time with
   `REQUEST_GAP_SECONDS` between requests, at most one sync at once. The cache
   (preference `redump_sync`) skips a system synced within `FRESH_FOR` whose
   DATs are still installed, sends `If-None-Match`/`If-Modified-Since` when it

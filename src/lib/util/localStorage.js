@@ -2,11 +2,11 @@
 // JSON-encoded by default, never throws on quota or access errors.
 
 const STORAGE_KEYS = Object.freeze({
-  SHOW_METADATA_JOBS: 'compressatorium_show_metadata_jobs',
   THEME: 'theme-preference',
   SIDEBAR_COLLAPSED: 'sidebar-collapsed',
   LAYOUT: 'workspace-layout',
   PAGE_SIZE: 'compressatorium_file_list_page_size',
+  SEARCH_AUTO_RETURN: 'compressatorium_search_auto_return',
 });
 
 function safe() {

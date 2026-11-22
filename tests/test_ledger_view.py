@@ -117,10 +117,13 @@ async def test_routes_call_the_same_query_layer():
 
     await _seed()
     page = await routes.ledger_list(
-        q="", status="failed", tool="", platform="", limit=50, offset=0,
+        q="", status="failed", tool="", platform="", since="", checked=False,
+        limit=50, offset=0,
     )
     assert page["total"] == 1
-    resp = await routes.ledger_export(q="", status="failed", tool="", platform="")
+    resp = await routes.ledger_export(
+        q="", status="failed", tool="", platform="", since="", checked=False,
+    )
     assert resp.headers["content-disposition"].startswith('attachment; filename="ledger')
     assert resp.media_type == "text/csv"
     assert (await routes.metrics()).media_type.startswith("text/plain")
@@ -143,7 +146,9 @@ async def test_export_route_streams_the_csv_body():
     from routes import ledger as routes
 
     await _seed()
-    resp = await routes.ledger_export(q="", status="", tool="", platform="")
+    resp = await routes.ledger_export(
+        q="", status="", tool="", platform="", since="", checked=False,
+    )
     body = "".join([c async for c in resp.body_iterator])
     assert body.startswith("job_id,finished_at,tool")
     assert len(body.strip().splitlines()) == 4
@@ -165,26 +170,6 @@ async def test_csv_cells_with_formula_prefixes_are_neutralised(prefix):
     rows = list(csv.reader(io.StringIO(text, newline="")))
     err = rows[1][rows[0].index("error")]
     assert err.startswith("'" + prefix)
-
-
-@pytest.mark.asyncio
-async def test_prune_never_lowers_the_counters(monkeypatch):
-    from services.preferences_store import preferences_store
-
-    old = datetime.now(timezone.utc) - timedelta(days=40)
-    for i in range(3):
-        await ledger.record(_done(f"old{i}", old))
-    before = await ledger.metrics_text(0)
-    assert 'compressatorium_jobs_total{status="completed"} 3' in before
-    await preferences_store.put(ledger.PREF_KEY, {"retention_days": 30})
-    await ledger.record(_done("new", datetime.now(timezone.utc)))
-    # The three old rows are gone from the table...
-    assert [r["job_id"] for r in await ledger.recent(10)] == ["new"]
-    # ...but the counters only went up.
-    after = await ledger.metrics_text(0)
-    assert 'compressatorium_jobs_total{status="completed"} 4' in after
-    assert "compressatorium_input_bytes_total 4000" in after
-    assert "compressatorium_output_bytes_total 1600" in after
 
 
 @pytest.mark.asyncio
@@ -260,7 +245,7 @@ async def test_export_reads_one_snapshot_while_a_prune_commits(monkeypatch):
     async for chunk in ledger.export_csv(ledger.LedgerFilter()):
         chunks.append(chunk)
         if len(chunks) == 1:
-            # A retention prune commits from another connection mid-export.
+            # Rows are deleted from another connection mid-export.
             with _db.SessionLocal() as other:
                 other.execute(_db.LedgerEntry.__table__.delete())
                 other.commit()
@@ -306,7 +291,9 @@ async def test_a_failed_send_closes_the_export_stream(monkeypatch):
     for i in range(5):
         await ledger.record(_done(f"j{i}", base + timedelta(days=i)))
     closed = _track_snapshot_close(monkeypatch)
-    resp = await routes.ledger_export(q="", status="", tool="", platform="")
+    resp = await routes.ledger_export(
+        q="", status="", tool="", platform="", since="", checked=False,
+    )
 
     async def receive():
         await asyncio.sleep(3600)
@@ -393,8 +380,9 @@ def test_migrations_have_a_single_head():
     # and #430's 0023 (a folder Library's layout) on that, and #423's 0024
     # (the DAT that Recognized an output) on that, and #426's 0025 (each
     # DAT's file list) on that, and #428's 0026 (the Ledger's extra inputs)
-    # on that, and #431's 0027 (Inboxes) on that.
-    assert heads == ["0027"]
+    # on that, and #431's 0027 (Inboxes) on that, and #560's 0028 (a DAT's
+    # transport) on that, and #544's 0029 (the Ledger's warning) on that.
+    assert heads == ["0029"]
 
 
 def test_upgrade_from_0010_seeds_totals_from_populated_ledger(tmp_path):

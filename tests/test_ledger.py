@@ -55,12 +55,13 @@ async def test_rows_survive_restart_and_count_savings(db_path, reset_db_engine):
 
 
 @pytest.mark.asyncio
-async def test_retention_prunes_old_rows():
+async def test_a_retention_stored_by_an_older_release_prunes_nothing():
+    """The retention setting is gone (#542): rows are kept forever."""
     old = datetime.now(timezone.utc) - timedelta(days=40)
     await ledger.record(_job(id="old", done=old))
-    await preferences_store.put(ledger.PREF_KEY, {"retention_days": 30})
+    await preferences_store.put("ledger", {"retention_days": 30})
     await ledger.record(_job(id="new"))
-    assert [r["job_id"] for r in await ledger.recent(10)] == ["new"]
+    assert [r["job_id"] for r in await ledger.recent(10)] == ["new", "old"]
 
 
 @pytest.mark.asyncio
@@ -136,12 +137,3 @@ def test_timestamps_have_fixed_precision():
     whole = ledger._iso(datetime(2026, 11, 14, 12, 0, 0, tzinfo=timezone.utc))
     later = ledger._iso(datetime(2026, 11, 14, 12, 0, 0, 500000, tzinfo=timezone.utc))
     assert whole < later
-
-
-def test_retention_above_the_bound_is_refused():
-    from pydantic import ValidationError
-    from routes.ledger import LedgerSettings
-
-    LedgerSettings(retention_days=ledger.MAX_RETENTION_DAYS)
-    with pytest.raises(ValidationError):
-        LedgerSettings(retention_days=1_000_000_000)

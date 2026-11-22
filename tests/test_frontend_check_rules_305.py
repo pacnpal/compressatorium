@@ -22,7 +22,7 @@ _HELPER = _SRC / "lib" / "rules" / "checkRule.js"
 # The console table (#541): a console's re-check sits in its More settings.
 _TABLE = _SRC / "lib" / "components" / "library" / "RuleTable.svelte"
 _ADVANCED = _SRC / "lib" / "components" / "library" / "RuleAdvanced.svelte"
-_FINDINGS = _SRC / "lib" / "components" / "views" / "FindingsView.svelte"
+_FINDINGS = _SRC / "lib" / "components" / "activity" / "NeedsAttention.svelte"
 _JOB_ROW = _SRC / "lib" / "components" / "panels" / "JobRow.svelte"
 _ENDPOINTS = _SRC / "lib" / "api" / "endpoints.js"
 _SHOTS = Path(__file__).resolve().parents[1] / "shots.yml"
@@ -327,7 +327,8 @@ def test_the_jobs_stream_hands_its_job_events_to_the_verification_store() -> Non
 
 def test_the_endpoints_send_the_check_rules() -> None:
     src = _ENDPOINTS.read_text(encoding="utf-8")
-    assert src.count("check_rules: checkRules") == 2
+    # One Rules save for every Library, RomM (`romm`) included (#542).
+    assert src.count("check_rules: checkRules") == 1
 
 
 def test_the_editor_offers_a_check_rule_beside_the_conversion_rule() -> None:
@@ -376,8 +377,8 @@ def test_only_the_check_form_offers_an_equal_window_as_all_day() -> None:
 
 def test_a_not_intact_finding_has_a_label_and_no_set_platform() -> None:
     src = _FINDINGS.read_text(encoding="utf-8")
-    assert "not_intact: 'Not Intact'" in src
-    assert "row.kind !== 'not_intact'" in src
+    # Restructure PR 4: in plain words, and its fix is the folder, not a console.
+    assert "not_intact: { label: 'Failed its check', tone: 'error', fix: 'folder'" in src
 
 
 def test_a_check_job_shows_its_name_and_result() -> None:
@@ -397,7 +398,7 @@ def test_shots_capture_a_not_intact_finding_and_a_check_job() -> None:
     shots = _SHOTS.read_text(encoding="utf-8")
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
     section = readme.split("### Check Rules", 1)[1].split("\n### ", 1)[0]
-    for name in ("findings-not-intact", "jobs-check"):
+    for name in ("activity-not-intact", "activity-running"):
         for theme in ("light", "dark"):
             image = f"docs/screenshots/{name}-{theme}.png"
             assert image in shots, image

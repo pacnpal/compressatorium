@@ -197,8 +197,9 @@ def test_reduced_motion_keeps_busy_feedback():
 
 
 def test_cards_and_callouts_have_no_accent_stripe():
-    card = _read("lib", "components", "dashboard", "StatCard.svelte")
-    assert "border-top: 3px" not in card
+    # The dashboard cards became Activity's summary strip (restructure PR 4).
+    card = _read("lib", "components", "activity", "ActivitySummary.svelte")
+    assert "border-top: 3px" not in card and "border-left: 3px" not in card
     help_view = _read("lib", "components", "views", "HelpView.svelte")
     assert "border-left: 3px" not in help_view
 
