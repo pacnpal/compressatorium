@@ -36,7 +36,6 @@ def _swap_for_link(folder, outside) -> None:
 
 def test_a_rule_sweep_job_refuses_a_folder_swapped_for_a_link(env, dolphin, tmp_path):
     from models import JobStatus
-    from services.concurrency_manager import concurrency_manager
     from services.job_manager import job_manager
     from services.rules import sweep as rules_sweep
 
@@ -47,10 +46,7 @@ def test_a_rule_sweep_job_refuses_a_folder_swapped_for_a_link(env, dolphin, tmp_
         await rules_sweep.sweep(env["shelf"], platform_ids=["gc"])
         [job] = [j for j in job_manager.jobs.values() if j.file_path == str(iso)]
         _swap_for_link(iso.parent, tmp_path / "outside")
-        try:
-            await job_manager._process_job(job.id)
-        finally:
-            concurrency_manager.release(job.id)
+        await job_manager._process_job(job.id)
         return job
 
     job = asyncio.run(run())

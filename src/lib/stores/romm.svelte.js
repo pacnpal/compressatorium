@@ -10,7 +10,6 @@
 import { api } from '$lib/api/endpoints.js';
 import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
 import { conversion } from '$lib/stores/conversion.svelte.js';
-import { ui } from '$lib/stores/ui.svelte.js';
 import { registry } from '$lib/tools/registry.js';
 import { RulesSource } from '$lib/rules/rulesSource.svelte.js';
 import { LatestSaveQueue } from '$lib/stores/latestSaveQueue.js';
@@ -63,9 +62,10 @@ class RommStore extends RulesSource {
     super({
       getRules: () => api.getRommRules(),
       saveRules: (rules, checkRules) => api.saveRommRules(rules, checkRules),
-      forgetConverted: (platformIds) => api.forgetRommConverted(platformIds),
+      forgetConverted: (platformIds, failedOnly) => api.forgetRommConverted(platformIds, failedOnly),
       preview: (body) => api.previewRommAutoConvert(body),
       run: (body) => api.runRommAutoConvert(body),
+      recommended: () => api.getRecommendedRules('romm'),
       loadError: 'Failed to load automation rules',
     });
   }
@@ -231,7 +231,7 @@ class RommStore extends RulesSource {
 
   imageNouns = ['ROM', 'ROMs'];
   emptyTitle = 'No platforms yet';
-  emptyHint = 'Connect RomM in Settings, then your platforms appear here.';
+  emptyHint = 'Connect RomM on the RomM page, Settings tab, then your platforms appear here.';
   // Recognized (#427): identified by RomM, or matched by the app's own DAT or
   // Hasheous lookup. The other filter still reads RomM's verdict alone.
   matchedLabel = 'Only Recognized ROMs (identified by RomM, or by a DAT or Hasheous)';
@@ -389,11 +389,17 @@ class RommStore extends RulesSource {
     // and discards a listing that was still correct, because none of those
     // settings changes which server or which files are being described.
     //
-    // Keyed off what the *patch* carried rather than off a diff of the saved
-    // settings, because the token is never returned to the browser: a
-    // credential change is only ever visible here as a submitted field.
-    const identityKeys = ['url', 'library_root', 'token', 'clear_token'];
-    const changesIdentity = identityKeys.some((key) => key in (patch ?? {}));
+    // A submitted `url` or `library_root` counts when it differs from the
+    // stored one (the one form sends both on every Save). The token is never
+    // returned to the browser, so a credential change is only ever visible
+    // here as a submitted field: `token`, `clear_token` and `paired` count
+    // whenever they are sent.
+    const sent = patch ?? {};
+    const stored = this.settings ?? {};
+    const changesIdentity = ['token', 'clear_token', 'paired'].some((key) => key in sent)
+      || ['url', 'library_root'].some(
+        (key) => key in sent && (sent[key] ?? '') !== (stored[key] ?? ''),
+      );
     let saved;
     try {
       saved = await api.saveRommSettings(patch);
@@ -446,6 +452,21 @@ class RommStore extends RulesSource {
       this.selectedPlatformId = null;
       fileBrowser.exitRomm();
     }
+  }
+
+  /**
+   * Trade a RomM pairing code for a token (#532). The backend holds the
+   * token for that URL, saving nothing: a test or Save sent with
+   * `paired: true` uses it, so the new connection is committed whole. The
+   * answer names the scopes the token lacks.
+   */
+  pair(url, code) {
+    return api.pairRomm(url, code);
+  }
+
+  /** RomM at its usual addresses (#532): `{ url, version, library_root }`. */
+  discover() {
+    return api.discoverRomm();
   }
 
   async testConnection(patch = {}) {
@@ -588,25 +609,14 @@ class RommStore extends RulesSource {
     // offering it, but the Convert panel would still submit it, and a catalog
     // row with a matching extension would be converted to the other console's
     // format. The mode has to be re-checked, not just its tool.
-    const modeAllowed = !Array.isArray(allowedModes)
-      || allowedModes.includes(conversion.mode);
-    if (allowed.includes(conversion.primaryTool) && modeAllowed) return;
-
-    if (!allowed.includes(conversion.primaryTool)) {
-      const next = registry.all().find((t) => allowed.includes(t.id));
-      if (next) {
-        conversion.setPrimaryTool(next.id);
-        ui.workspaceTool = next.id;
-      }
-    }
-    // setPrimaryTool resets to the tool's default mode, which may itself be
-    // one this platform disallows; and when the tool did not change, nothing
-    // has moved off the stale mode yet. Either way, land on an allowed one.
-    if (Array.isArray(allowedModes) && !allowedModes.includes(conversion.mode)) {
-      const tool = registry.forTool(conversion.primaryTool);
-      const fallback = (tool?.modes ?? []).find((m) => allowedModes.includes(m.mode));
-      if (fallback) conversion.setMode(fallback.mode);
-    }
+    // A mode picked for another console is dropped back to each game's best
+    // format, which the plan works out per game.
+    const mode = conversion.mode;
+    if (!mode) return;
+    const tool = registry.toolForMode(mode);
+    const toolAllowed = !tool || allowed.includes(tool.id);
+    const modeAllowed = !Array.isArray(allowedModes) || allowedModes.includes(mode);
+    if (!toolAllowed || !modeAllowed) conversion.chooseTarget('');
   }
 
   // ─── re-pin queue ─────────────────────────────────────────────────────

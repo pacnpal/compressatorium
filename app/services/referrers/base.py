@@ -451,16 +451,14 @@ def _keep_owner(tmp: str, original: os.stat_result) -> None:
 
 
 def _hidden_slot(directory: str):
-    """A staging slot (#398) beside *directory*'s files when its Library hides
-    in-progress files from its own scanner (``HIDDEN_STAGING``, RomM), else
-    None. A Library that can't be found, or has no such scanner, keeps the
-    temp file beside the target as before. A slot that can't be made raises:
-    the write never falls back to a temp file RomM could index."""
+    """A staging slot (#398) beside *directory*'s files when a Library holding
+    it hides in-progress files from its own scanner (``HIDDEN_STAGING``, RomM,
+    whose folder may hold a folder Library, #514), else None. No such Library
+    keeps the temp file beside the target as before. A slot that can't be made
+    raises: the write never falls back to a temp file RomM could index."""
     from services import libraries, staging
-    from services.rules.library import HIDDEN_STAGING
 
-    library = libraries.library_for(directory)
-    if library is None or HIDDEN_STAGING not in library.capabilities:
+    if not libraries.hidden_staging(directory):
         return None
     return staging.open_slot(directory)
 

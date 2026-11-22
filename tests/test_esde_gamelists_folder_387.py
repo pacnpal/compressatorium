@@ -627,18 +627,19 @@ async def test_a_broken_esde_gamelist_keeps_the_source_in_a_job(volume, db):
 # ---- the view -----------------------------------------------------------------
 
 
-def test_the_rules_editor_offers_the_folder_beside_the_switch():
+def test_the_game_list_app_picks_es_des_folder():
+    """ES-DE is the switch with its gamelists folder, picked from the Drives."""
     root = Path(__file__).resolve().parents[1]
-    editor = (root / "src/lib/components/views/RuleEditor.svelte").read_text()
-    assert "ES-DE gamelists folder" in editor
-    assert "source.setGamelistsFolder" in editor
+    picker = (root / "src/lib/components/library/FrontendSelect.svelte").read_text()
+    assert "gamelists folder" in picker
+    assert "source.setGamelistsFolder" in picker and "<FolderPickerModal" in picker
     for store in ("libraries.svelte.js", "romm.svelte.js"):
         assert "gamelists_folder" in (root / "src/lib/stores" / store).read_text()
     shots = (root / "shots.yml").read_text()
     readme = (root / "README.md").read_text()
     for theme in ("light", "dark"):
-        assert f"output: docs/screenshots/rules-esde-gamelists-{theme}.png" in shots
-        assert f"docs/screenshots/rules-esde-gamelists-{theme}.png" in readme
+        assert f"output: docs/screenshots/library-frontend-{theme}.png" in shots
+        assert f"docs/screenshots/library-frontend-{theme}.png" in readme
 
 
 # ---- review round (CodeRabbit) ----------------------------------------------
@@ -714,9 +715,9 @@ def test_the_folder_draft_follows_saves_without_losing_edits(tmp_path):
     }
 
 
-def test_the_editor_drives_the_draft_through_follow_saved():
-    editor = (
-        Path(__file__).resolve().parents[1] / "src/lib/components/views/RuleEditor.svelte"
-    ).read_text()
-    assert "followSaved(" in editor
-    assert "$derived(source.gamelistsFolder" not in editor
+def test_the_folder_is_picked_never_typed():
+    """The typed draft (and its follow-the-saved-value guard) is gone (#541):
+    the folder comes from the Drive picker, so there is no draft to lose."""
+    picker = (Path(__file__).resolve().parents[1] / "src/lib/components/library/FrontendSelect.svelte").read_text()
+    assert "<input" not in picker
+    assert "onpick={useFolder}" in picker

@@ -43,9 +43,11 @@ export class FolderRulesSource extends RulesSource {
     super({
       getRules: () => api.getLibraryRules(this.id),
       saveRules: (rules, checkRules) => api.saveLibraryRules(this.id, rules, checkRules),
-      forgetConverted: (platformIds) => api.forgetLibraryConverted(this.id, platformIds),
+      forgetConverted: (platformIds, failedOnly) =>
+        api.forgetLibraryConverted(this.id, platformIds, failedOnly),
       preview: (body) => api.previewLibrary(this.id, body),
       run: (body) => api.runLibrary(this.id, body),
+      recommended: () => api.getRecommendedRules(this.id),
       loadError: 'Failed to load the Rules',
     });
     this.library = library;
@@ -139,9 +141,15 @@ export class FolderRulesSource extends RulesSource {
 class LibrariesStore {
   list = $state([]);
   loading = $state(false);
+  // True once a list load has answered (or failed): an id not in the list
+  // then means the Library is gone, not "still loading".
+  loaded = $state(false);
   error = $state(null);
   selectedId = $state(ROMM_LIBRARY_ID);
   registering = $state(false);
+  // Library id -> the facts its card shows (`{ consoles, games, watchFolders }`),
+  // null while they load. Read lazily, once per card; see `loadFacts`.
+  facts = $state({});
   // One source per folder Library, kept while the app runs so unsaved edits
   // survive switching Libraries in the picker.
   #sources = new Map();
@@ -164,6 +172,11 @@ class LibrariesStore {
   #catalogueEpoch = 0;
   // Library id -> the catalogue epoch it was registered at.
   #registeredAt = new Map();
+  // Catalogue reads in the order they were sent, and the newest one applied:
+  // a read answering after a newer one was applied is dropped, so it can't
+  // restore stale nesting (`contains`, `within`) over it (CodeRabbit PR #551).
+  #loadsSent = 0;
+  #loadApplied = 0;
 
   get selected() {
     return this.list.find((lib) => lib.id === this.selectedId) ?? null;
@@ -171,6 +184,23 @@ class LibrariesStore {
 
   get folders() {
     return this.list.filter((lib) => lib.kind === 'folder');
+  }
+
+  /** The folder Library *path* is in (its root or below it), or null. */
+  folderLibraryFor(path) {
+    if (!path) return null;
+    // Libraries may nest (#514): the nearest root owns the path.
+    let owner = null;
+    let ownerLength = -1;
+    for (const lib of this.folders) {
+      const root = String(lib.root ?? '').replace(/\/+$/, '');
+      if (!root || root.length <= ownerLength) continue;
+      if (path === root || path.startsWith(`${root}/`)) {
+        owner = lib;
+        ownerLength = root.length;
+      }
+    }
+    return owner;
   }
 
   /** The rules source for *id*: the RomM store, or a folder Library's own. */
@@ -191,8 +221,11 @@ class LibrariesStore {
     this.error = null;
     const readAt = new Map(this.#settingsGenerations);
     const epoch = this.#catalogueEpoch;
+    const sent = ++this.#loadsSent;
     try {
       const data = await api.listLibraries();
+      if (sent < this.#loadApplied) return this.list;
+      this.#loadApplied = sent;
       const current = new Map(this.list.map((lib) => [lib.id, lib]));
       // A row whose settings were saved while this read was out keeps the
       // saved row; see `adopt`.
@@ -217,6 +250,7 @@ class LibrariesStore {
       this.error = e?.message ?? 'Failed to list Libraries';
     } finally {
       this.loading = false;
+      this.loaded = true;
     }
     return this.list;
   }
@@ -306,10 +340,37 @@ class LibrariesStore {
     this.selectedId = id || ROMM_LIBRARY_ID;
   }
 
-  /** Open the Rules view on *id*. The RomM view's Automation tab passes `romm`. */
-  open(id = ROMM_LIBRARY_ID) {
+  /**
+   * The facts Library *id*'s card shows: how many consoles and games it has,
+   * and how many watch folders. Read once; a part that can't be read is left
+   * out rather than shown as nought.
+   */
+  async loadFacts(id) {
+    if (id in this.facts) return;
+    this.facts = { ...this.facts, [id]: null };
+    const [listing, inboxes] = await Promise.allSettled([
+      id === ROMM_LIBRARY_ID ? api.getRommPlatforms() : api.getLibraryPlatforms(id),
+      api.listInboxes(id),
+    ]);
+    const facts = {};
+    if (listing.status === 'fulfilled') {
+      const platforms = id === ROMM_LIBRARY_ID ? listing.value : listing.value?.platforms;
+      const rows = Array.isArray(platforms) ? platforms : [];
+      facts.consoles = rows.length;
+      facts.games = rows.reduce((n, p) => n + (p.images ?? p.rom_count ?? 0), 0);
+    }
+    if (inboxes.status === 'fulfilled') {
+      facts.watchFolders = inboxes.value?.inboxes?.length ?? 0;
+    }
+    // Removed while this read was out: don't bring its card back.
+    if (!(id in this.facts)) return;
+    this.facts = { ...this.facts, [id]: facts };
+  }
+
+  /** Open Library *id*'s page, on *tab* when given (`#/libraries/<id>[/<tab>]`). */
+  open(id = ROMM_LIBRARY_ID, tab = null) {
     this.select(id);
-    ui.navigate('rules');
+    ui.navigate('libraries', { id, tab });
   }
 
   async register(path, name = null) {
@@ -318,6 +379,8 @@ class LibrariesStore {
       const library = await api.registerLibrary(path, name);
       if (library?.id) this.#registeredAt.set(library.id, this.#catalogueEpoch++);
       this.adopt(library);
+      // The Libraries around it now list it in `contains` (#514).
+      void this.load();
       return library;
     } finally {
       this.registering = false;
@@ -329,7 +392,12 @@ class LibrariesStore {
     this.#removed.add(id);
     this.#sources.delete(id);
     this.list = this.list.filter((lib) => lib.id !== id);
+    const { [id]: _gone, ...facts } = this.facts;
+    this.facts = facts;
     if (this.selectedId === id) this.selectedId = ROMM_LIBRARY_ID;
+    // The Libraries around it no longer list it in `contains` (CodeRabbit
+    // PR #518): read the catalogue again rather than keep a stale notice.
+    void this.load();
   }
 }
 

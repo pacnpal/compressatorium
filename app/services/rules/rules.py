@@ -128,6 +128,18 @@ def _valid_pattern(value: Any) -> tuple[str | None, bool]:
     """
     if not isinstance(value, str) or not value.strip():
         return None, False
+    if pattern_problem(value):
+        return None, True
+    return value.strip(), False
+
+
+def pattern_problem(value: Any) -> str | None:
+    """Why *value* can't be a name filter, in plain words, or None when it
+    can (blank is no filter). The one check :func:`_valid_pattern` makes, and
+    what the console table asks before it saves one (#541), so the two never
+    disagree."""
+    if not isinstance(value, str) or not value.strip():
+        return None
     pattern = value.strip()
     if len(pattern) > _MAX_PATTERN:
         # Refused, not trimmed. A prefix of a regex is usually still a valid
@@ -137,15 +149,15 @@ def _valid_pattern(value: Any) -> tuple[str | None, bool]:
         # that narrows stops protecting the titles they meant to skip, with
         # delete-on-verify possibly attached. Both are the "helpfully widened"
         # failure this whole validator exists to refuse.
-        return None, True
+        return f"longer than {_MAX_PATTERN} characters"
     try:
         re.compile(pattern)
-    except re.error:
-        return None, True
+    except re.error as exc:
+        return str(exc)
     if _has_nested_quantifier(pattern) or _has_overlapping_quantifiers(pattern):
         # It backtracks too long.
-        return None, True
-    return pattern, False
+        return "it could take too long to match (a repeat inside a repeat)"
+    return None
 
 
 # Quantifiers that can repeat unboundedly. This is the test for what follows a

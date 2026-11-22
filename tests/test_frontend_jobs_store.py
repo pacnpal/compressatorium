@@ -87,11 +87,13 @@ def _evaluate(tmp_path: Path, scenario: str):
 # SSE completes j1 and the history prune evicts it
 # before the Auto response arrives. With its row gone, the response's older
 # `queued` snapshot looked like an unknown job and went back into the active
-# queue for good. Eviction leaves a tombstone, and adopt() skips it.
+# queue for good. A finished job the job list no longer has leaves a
+# tombstone, and adopt() skips it.
 _EVICTED_BEFORE_ADOPT = """
 const store = new JobsStore();
 store._applyJob({ id: 'j1', file_path: '/v/a.iso', mode: 'createdvd', status: 'completed' });
-store._applyHistoryOverflow({ generation: 'g', seq: 1, evicted_ids: ['j1'], evicted: {} });
+api.getJobs = async () => [];                 // the cap evicted j1
+await store.refresh();
 store.adopt([
   { id: 'j1', file_path: '/v/a.iso', mode: 'createdvd', status: 'queued' },
   { id: 'j2', file_path: '/v/b.iso', mode: 'createdvd', status: 'queued' },
@@ -107,7 +109,7 @@ def test_a_job_evicted_before_adopt_is_never_brought_back(tmp_path):
 _TOMBSTONES_ARE_BOUNDED = """
 const store = new JobsStore();
 const ids = Array.from({ length: 5000 }, (_v, i) => `old${i}`);
-store._applyHistoryOverflow({ generation: 'g', seq: 1, evicted_ids: ids, evicted: {} });
+store._rememberEvicted(ids);
 process.stdout.write(JSON.stringify({ kept: store._evictedOrder.length }));
 """
 
@@ -130,7 +132,6 @@ api.getJobs = async () => {
   store._applyJob({ id: 'j9', file_path: '/v/n.iso', mode: 'createdvd', status: 'completed' });
   return [];                                  // built before j9 existed
 };
-api.getJobHistoryOverflow = async () => ({});
 await store.refresh();
 process.stdout.write(JSON.stringify({
   ids: store.jobs.map((j) => j.id),
@@ -153,7 +154,7 @@ const store = new JobsStore();
 store._applyJob({ id: 'j1', file_path: '/v/a.iso', mode: 'createdvd', status: 'completed' });
 store._applyJob({ id: 'j2', file_path: '/v/b.iso', mode: 'createdvd', status: 'processing' });
 api.deleteCompletedJobs = async () => ({
-  deleted: ['j1'], history_generation: 'g', history_seq: 5,
+  deleted: ['j1'],
 });
 await store.clearCompleted();
 store.adopt([
@@ -181,7 +182,7 @@ store._applyJob({ id: 'j2', file_path: '/v/b.iso', mode: 'createdvd', status: 'p
 api.deleteCompletedJobs = async () => {
   // The backend skipped j2 (still running), then SSE completes it in transit.
   store._applyJob({ id: 'j2', file_path: '/v/b.iso', mode: 'createdvd', status: 'completed' });
-  return { deleted: ['j1'], history_generation: 'g', history_seq: 5 };
+  return { deleted: ['j1'] };
 };
 await store.clearCompleted();
 const afterClear = Object.fromEntries(store.jobs.map((j) => [j.id, j.status]));
@@ -215,7 +216,7 @@ store._applyJob({ id: 'j2', file_path: '/v/b.iso', mode: 'createdvd', status: 'p
 // j1 finished on the backend and the clear deleted it before its SSE frame
 // reached this tab.
 api.deleteCompletedJobs = async () => ({
-  deleted: ['j1'], history_generation: 'g', history_seq: 5,
+  deleted: ['j1'],
 });
 await store.clearCompleted();
 const late = { id: 'j1', file_path: '/v/a.iso', mode: 'createdvd', status: 'completed' };
@@ -224,8 +225,7 @@ if (path === 'sse') {
   store._applyJob(late);
 } else if (path === 'refresh') {
   api.getJobs = async () => [late, store._byId.get('j2')];   // built before the clear
-  api.getJobHistoryOverflow = async () => ({});
-  await store.refresh();
+    await store.refresh();
 } else {
   store.adopt([late]);
 }

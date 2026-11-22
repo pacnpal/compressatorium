@@ -25,17 +25,31 @@ os.environ.setdefault(
 
 
 @pytest.fixture(autouse=True)
-def _release_leaked_tickets():
-    """A job a test creates but never runs keeps its FIFO ticket in the lock
-    dir, held by this live process, so it is never pruned and sits ahead of
-    every later test's jobs: a later ``_process_job`` waits for its turn
-    forever. Release whatever tickets a test reserved and left behind."""
-    from services.concurrency_manager import concurrency_manager
+def _no_romm_layout_reads(request):
+    """A sweep and an Inbox poll read RomM's layout first (#532). The suite's
+    RomM URLs mostly name no server (``http://romm:8080``), and asking one
+    waits out a name lookup, so that read is off unless a module sets
+    ``READS_ROMM_LAYOUT = True`` (it then serves a :class:`FakeRomm`).
 
-    before = set(concurrency_manager._ticket_handles)
-    yield
-    for key in set(concurrency_manager._ticket_handles) - before:
-        concurrency_manager.release(key)
+    Patched by hand, not through ``monkeypatch``, for the reason
+    ``_programs_as_in_the_image`` gives."""
+    if getattr(request.module, "READS_ROMM_LAYOUT", False):
+        yield
+        return
+    from services.romm import connect as romm_connect
+    from services.romm.library import RommLibrary
+
+    async def no_read(_self) -> None:
+        return None
+
+    real = RommLibrary.refresh, romm_connect.exclusions_known, romm_connect.structure_known
+    RommLibrary.refresh = no_read
+    # ...and read as declaring nothing, so a sweep or placement isn't deferred.
+    romm_connect.exclusions_known = romm_connect.structure_known = lambda *_: True
+    try:
+        yield
+    finally:
+        RommLibrary.refresh, romm_connect.exclusions_known, romm_connect.structure_known = real
 
 
 @pytest.fixture(autouse=True)

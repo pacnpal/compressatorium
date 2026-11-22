@@ -11,7 +11,7 @@ from fastapi.concurrency import run_in_threadpool
 from services import libraries
 from services.rules import editor, store
 from services.rules.library import Library, UnsupportedPolicy
-from services.rules.rules import UnusableCompression
+from services.rules.rules import UnusableCompression, pattern_problem
 
 router = APIRouter()
 
@@ -22,6 +22,17 @@ async def save_rules(library: Library, payload: Any) -> dict:
     for the same pair, #474)."""
     try:
         return await editor.save_rules(library, payload)
+    except UnsupportedPolicy as exc:
+        raise HTTPException(status_code=422, detail=exc.detail()) from None
+    except UnusableCompression as exc:
+        raise HTTPException(status_code=400, detail=exc.problem) from None
+
+
+async def patch_rules(library: Library, payload: Any) -> dict:
+    """``PATCH .../rules`` for any Library: merges the consoles it names
+    (``null`` removes one) and saves with ``PUT``'s checks and answers (#541)."""
+    try:
+        return await editor.patch_rules(library, payload)
     except UnsupportedPolicy as exc:
         raise HTTPException(status_code=422, detail=exc.detail()) from None
     except UnusableCompression as exc:
@@ -40,8 +51,12 @@ def requested_platform_ids(payload: dict | None) -> list[str] | None:
 
 
 async def forget_converted(library: Library, payload: dict | None) -> dict:
-    """``POST .../rules/forget-converted`` for any Library."""
-    return await editor.forget_converted(library, requested_platform_ids(payload))
+    """``POST .../rules/forget-converted`` for any Library. ``failed_only``
+    releases the failed holds and keeps the converted history (#541)."""
+    return await editor.forget_converted(
+        library, requested_platform_ids(payload),
+        failed_only=bool((payload or {}).get("failed_only")),
+    )
 
 
 async def _libraries() -> list:
@@ -67,3 +82,13 @@ async def get_rule_notices() -> dict:
 async def dismiss_check_level_notice() -> dict:
     """Stop showing the check-level notice. Stored, so it stays dismissed."""
     return {"check_level": await store.dismiss_check_level_notice(await _libraries())}
+
+
+@router.post("/rules/check-pattern")
+async def check_pattern(payload: dict) -> dict:
+    """Whether ``pattern`` can be a Rule's name filter: the check saving one
+    runs (`rules.pattern_problem`), asked first so the console table never
+    autosaves a filter the save would refuse and pause the console for
+    (#541). Pure: compiles a string of at most 500 characters."""
+    problem = pattern_problem(payload.get("pattern"))
+    return {"ok": problem is None, "error": problem}

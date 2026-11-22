@@ -114,6 +114,20 @@ jobs:
           printf '#!/bin/sh\necho "rom-converto 0.24.0"\n' > "$RUNNER_TEMP/bin/rom-converto"
           chmod +x "$RUNNER_TEMP/bin/rom-converto"
           export ROM_CONVERTO_PATH="$RUNNER_TEMP/bin/rom-converto"
+          # The Convert panel plans only with converters that can run here, so
+          # the disc converters get the same stand-ins: the plan shows each
+          # game's real format, and no job runs.
+          for tool in chdman dolphin-tool z3ds_compressor maxcso makeps3iso nkit2iso extract-xiso; do
+            printf '#!/bin/sh\necho "%s 0.0"\n' "$tool" > "$RUNNER_TEMP/bin/$tool"
+            chmod +x "$RUNNER_TEMP/bin/$tool"
+          done
+          export CHDMAN_PATH="$RUNNER_TEMP/bin/chdman"
+          export DOLPHIN_TOOL_PATH="$RUNNER_TEMP/bin/dolphin-tool"
+          export Z3DS_COMPRESSOR_PATH="$RUNNER_TEMP/bin/z3ds_compressor"
+          export MAXCSO_PATH="$RUNNER_TEMP/bin/maxcso"
+          export MAKEPS3ISO_PATH="$RUNNER_TEMP/bin/makeps3iso"
+          export NKIT2ISO_PATH="$RUNNER_TEMP/bin/nkit2iso"
+          export EXTRACT_XISO_PATH="$RUNNER_TEMP/bin/extract-xiso"
           # The eXoDOS tool needs no setting (#513): the fixture's synthetic
           # !dos tree sits beside its game zip, where the tool finds it.
           mkdir -p "$CHD_DATA_DIR" "$CHD_TEMP_DIR"

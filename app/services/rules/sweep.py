@@ -71,6 +71,7 @@ from services.rules.library import (
     CONVERTED_HISTORY,
     FAILED_HOLD,
     Image,
+    LibrariesChanged,
     Library,
     LibraryUnreadable,
     QueuedImage,
@@ -200,10 +201,11 @@ _unreadable: dict[tuple[str, str], str] = {}
 _reported_unrunnable: dict[tuple[str, str, str], str] = {}
 
 # The checks a sweep makes before it runs a conversion Rule, in the order it
-# makes them: its tool is installed, its output folder is inside a Volume, its
-# mode is one for the Platform. A Rule that fails one is skipped with no run
-# recorded, so it is tried again on the next tick (#480).
-_SKIP_CHECKS = ("tool", "output_dir", "platform")
+# makes them: its tool is installed, its output folder is inside a Volume, the
+# Library doesn't ignore its outputs (#532), its mode is one for the Platform.
+# A Rule that fails one is skipped with no run recorded, so it is tried again
+# on the next tick (#480).
+_SKIP_CHECKS = ("tool", "output_dir", "output_excluded", "platform")
 
 # (library id, kind, platform id) -> (check, reason) the sweep last skipped
 # that Rule for: logged once for each reason, not on every tick (#480).
@@ -656,6 +658,31 @@ async def forget_converted_locked(
     if await _invalidate_decisions(library, state, targets, owner=owner) or cleared:
         await store.write(store.STATE_KEY, library, state)
     return cleared
+
+
+async def release_failed(library: Library, platform_ids: list[str] | None = None) -> int:
+    """Drop only the failed holds of *platform_ids* (or every Platform), so
+    the next run tries those Images again (#541).
+
+    Unlike :func:`forget_converted` it keeps the converted history: under a
+    rename or overwrite Rule that history is what stops a converted Image from
+    being converted again. No decision about a converted Image changes, so
+    nothing is invalidated. Returns how many Platforms had holds.
+    """
+    async with _sweep_lock:
+        state = await get_state(library)
+        targets = [str(p) for p in platform_ids] if platform_ids is not None else list(state)
+        cleared = 0
+        for pid in targets:
+            entry = state.get(pid)
+            if isinstance(entry, dict) and entry.get("failed"):
+                entry = dict(entry)
+                entry.pop("failed", None)
+                state[pid] = entry
+                cleared += 1
+        if cleared:
+            await store.write(store.STATE_KEY, library, state)
+        return cleared
 
 
 def library_generation(library_id: str) -> int:
@@ -1469,7 +1496,7 @@ _kept_running: set[tuple[str, str, str]] = set()
 
 async def _plan_kept_deletes(
     library: Library, rules: dict, wanted: set[str] | None,
-    stopping: Callable[[], bool], result: dict,
+    stopping: Callable[[], bool], result: dict, *, honour_pauses: bool = False,
 ) -> list[_KeptAttempt]:
     """Decide which Sources a reader kept are tried this sweep (#329). Called
     under ``_sweep_lock``; :func:`_run_kept_deletes` tries them after it.
@@ -1491,7 +1518,7 @@ async def _plan_kept_deletes(
         if not kept or (wanted is not None and platform_id not in wanted):
             continue
         rule = rules.get(platform_id)
-        if rule and _rule_paused(rule, wanted):
+        if rule and _rule_paused(rule, None if honour_pauses else wanted):
             # The same pause the Platform pass honours: its entries wait,
             # neither retried nor dropped.
             continue
@@ -1659,6 +1686,10 @@ async def _run_kept_delete(
     """One :func:`_run_kept_deletes` attempt."""
     pending = attempt.pending
     deleting = pending.get("state") == KEPT_DELETING
+    # A Source the Library now ignores by name (#532) is left alone, its
+    # entry pending; a delete already under way finishes.
+    if not deleting and library.excluded(Path(str(pending.get("source") or "")).name):
+        return
     try:
         async with job_manager.kept_delete(
             source_path=str(pending.get("source") or ""),
@@ -2006,8 +2037,18 @@ async def sweep(
     dry_run: bool = False,
     overall_limit: int | None = None,
     should_stop: Callable[[], bool] | None = None,
+    kinds: tuple[str, ...] = RULE_KINDS,
+    honour_pauses: bool = False,
 ) -> dict:
     """Run one pass over *library*'s ruled Platforms.
+
+    *kinds* narrows it to those kinds of Rule: an *arr import into a Library
+    runs the console's conversion Rule only (``(CONVERT,)``), never a
+    budget's worth of its check Rule (#541). *honour_pauses* keeps an
+    operator's pause even for the Platforms named: Run now's override is for
+    a person's click, never for an automatic run. It
+    is read under ``_sweep_lock``, so a pause made after the import was
+    accepted still holds.
 
     Returns a summary rather than raising on a partial failure: one unreachable
     platform must not abort the sweep for the others.
@@ -2032,6 +2073,9 @@ async def sweep(
     notified: dict | None = {"errors": [{"platform_id": None, "error": "sweep_failed"}]}
     result: dict | None = None
     try:
+        # What the Library caches about itself (RomM's structure and
+        # exclusions, #532), read before the lock: bounded, never raises.
+        await library.refresh()
         async with _sweep_lock:
             blocked = library.sweep_blocked()
             if blocked:
@@ -2049,6 +2093,8 @@ async def sweep(
                 overall_limit=overall_limit,
                 should_stop=should_stop,
                 kept_attempts=kept_attempts,
+                kinds=kinds,
+                honour_pauses=honour_pauses,
             )
         await _run_kept_deletes(
             library, kept_attempts, result,
@@ -2200,6 +2246,8 @@ async def _sweep_locked(
     overall_limit: int | None,
     should_stop: Callable[[], bool] | None = None,
     kept_attempts: list | None = None,
+    kinds: tuple[str, ...] = RULE_KINDS,
+    honour_pauses: bool = False,
 ) -> dict:
     """The sweep body. Always called with ``_sweep_lock`` held. The pending
     deletes it plans go in *kept_attempts*, for the caller to try once the
@@ -2225,6 +2273,9 @@ async def _sweep_locked(
         "skipped_filtered": 0,
         "skipped_unconvertible": 0,
         "skipped_missing": 0,
+        # Rules passed over because they are off: how Preview and Run now
+        # say why nothing ran (#520).
+        "skipped_paused": 0,
         "platforms": [],
         "errors": [],
         "stopped_reason": None,
@@ -2262,7 +2313,7 @@ async def _sweep_locked(
     # first), so the order is total and a capped sweep resumes where the last
     # one stopped.
     ordered = sorted(
-        ((kind, pid) for kind in RULE_KINDS for pid in rules[kind]),
+        ((kind, pid) for kind in RULE_KINDS if kind in kinds for pid in rules[kind]),
         key=lambda item: (
             rules[item[0]][item[1]]["priority"], library.platform_value(item[1]),
             RULE_KINDS.index(item[0]),
@@ -2288,10 +2339,13 @@ async def _sweep_locked(
     # their runs to record then. Both are dropped if a stop comes first.
     picked: list = []
     check_runs: list = []
+    # What `picked` is checked against before its job starts (PR #518).
+    sweep_owned_at = _ownership_generation()
     if not dry_run:
         await _clear_vanished(library)
         planned_deletes = await _plan_kept_deletes(
             library, rules[CONVERT], wanted, stopping, result,
+            honour_pauses=honour_pauses,
         )
         if kept_attempts is not None:
             kept_attempts.extend(planned_deletes)
@@ -2328,11 +2382,13 @@ async def _sweep_locked(
         # window becomes no window -- so running it would do more than the
         # saved rule says, unattended, possibly with delete-on-verify. Those
         # stay paused until the operator fixes what is wrong.
-        if _rule_paused(rule, wanted):
-            if wanted is not None:
+        if _rule_paused(rule, None if honour_pauses else wanted):
+            if wanted is not None and not honour_pauses:
                 result["errors"].append(
                     {"platform_id": platform_ref, "error": "rule_invalid"},
                 )
+            else:
+                result["skipped_paused"] += 1
             continue
         # ignore_schedule bypasses only the clock (interval, window, weekday).
         if not ignore_schedule and not _is_due(
@@ -2389,7 +2445,22 @@ async def _sweep_locked(
             )
             continue
 
+        # The Library would ignore every output (#532): RomM told to exclude
+        # the target format would drop each converted game from its catalog.
+        # The extension alone: a name RomM excludes skips only the game whose
+        # output has it (below), not the Rule.
+        output_ext = (spec.output_ext or "").lstrip(".")
+        problem = (
+            f"{library.name} ignores .{output_ext} files, so its outputs would vanish from it"
+            if output_ext and library.excluded_extension(output_ext) else None
+        )
+        _report_skip(library, kind, platform_id, "output_excluded", problem)
+        if problem is not None:
+            result["errors"].append({"platform_id": platform_ref, "error": "output_excluded"})
+            continue
+
         listed_at = _walk_generation(library)
+        owned_at = _ownership_generation()
         images = await _list_images(library, platform_id, result, stopping)
         if images is None:
             if _sweep_ends(result):
@@ -2466,6 +2537,10 @@ async def _sweep_locked(
             if stopping():
                 break
             considered += 1
+            # A file the Library ignores (#532), told apart by name alone.
+            if library.excluded(image.name or ""):
+                result["skipped_filtered"] += 1
+                continue
             # One hop to a worker thread for every disk-touching check on this
             # candidate — the local-path mapping and volume check included,
             # since both resolve paths against a mount that may be remote.
@@ -2541,6 +2616,10 @@ async def _sweep_locked(
                 continue
             if decision["destination"] in claimed_destinations:
                 result["skipped_active"] += 1
+                continue
+            # Its output would be a file the Library ignores by name (#532).
+            if library.excluded(Path(decision["destination"]).name):
+                result["skipped_filtered"] += 1
                 continue
             claimed_destinations.add(decision["destination"])
             batch.append(path)
@@ -2652,6 +2731,10 @@ async def _sweep_locked(
                     output_paths=destinations,
                     allow_overwrite=rule["duplicate_action"] == "overwrite",
                     owner=owner,
+                    # Checked and held under the queue lock as the batch goes
+                    # in: a Library registered since the listing refuses it,
+                    # and none can land mid-admission (PR #518).
+                    admission=functools.partial(_owned_as_listed, owned_at),
                 )
                 await _after_queued(
                     library, platform_id=platform_id, platform_ref=platform_ref,
@@ -2662,6 +2745,15 @@ async def _sweep_locked(
                     resolved_by_path=resolved_by_path, active_paths=active_paths,
                     summary=summary, result=result,
                 )
+            except LibrariesChanged:
+                # The listing may hold a new inner Library's files: queue none
+                # of them under these Rules; the next run lists again.
+                result["errors"].append(
+                    {"platform_id": platform_ref, "error": "libraries_changed"},
+                )
+                summary["libraries_changed"] = True
+                result["platforms"].append(summary)
+                continue
             except QueueBackpressureError:
                 # The queue is full. Stop rather than spin: the next sweep
                 # resumes exactly here, because the filesystem still reports
@@ -2774,11 +2866,25 @@ async def _sweep_locked(
             # One job and, if anything fails, one notification for the sweep.
             # The check Rules' runs are recorded once it has checked them all,
             # so a check cut short (a stop, a restart) leaves its Rule due.
-            _active_check_runs.update(reserved)
-            checks.start(
-                library, picked, generation=_generations.get(library.id, 0),
-                on_finished=check_run_ended,
-            )
+            try:
+                # Held while the job starts: a Library registered since any
+                # Platform was listed drops the whole pick, so no Image a new
+                # inner Library owns is checked here (CodeRabbit PR #518).
+                with _owned_as_listed(sweep_owned_at):
+                    _active_check_runs.update(reserved)
+                    checks.start(
+                        library, picked, generation=_generations.get(library.id, 0),
+                        on_finished=check_run_ended,
+                    )
+            except LibrariesChanged:
+                # Against each Platform whose pick it was (CodeRabbit PR
+                # #551); nothing is checked and no run is recorded.
+                for run in check_runs:
+                    summary = run[1]
+                    summary["libraries_changed"] = True
+                    result["errors"].append(
+                        {"platform_id": summary["platform_id"], "error": "libraries_changed"},
+                    )
         else:
             await record_check_runs()
     result.update(await library.sweep_extras())
@@ -2822,6 +2928,29 @@ def forget_checks_locked(library: Library) -> None:
 
     _generations[library.id] = _generations.get(library.id, 0) + 1
     library_records.forget(library.id)
+
+
+def _ownership_generation() -> int:
+    from services import libraries
+
+    return libraries.ownership_generation()
+
+
+def _owned_as_listed(owned_at: int):
+    from services import libraries
+
+    return libraries.owned_as_listed(owned_at)
+
+
+def _ownership_moved(owned_at: int, platform_ref: Any, result: dict) -> bool:
+    """Whether a Library was registered or removed, or RomM's folder moved,
+    since the listing read *owned_at* (Codex PR #518): the listing may then
+    hold files another Library now owns, so nothing of it is queued. Says so
+    in *result*'s errors."""
+    if _ownership_generation() == owned_at:
+        return False
+    result["errors"].append({"platform_id": platform_ref, "error": "libraries_changed"})
+    return True
 
 
 def _walk_generation(library: Library) -> int:
@@ -2932,6 +3061,7 @@ async def _sweep_check(
     """
     platform_ref = library.platform_value(platform_id)
     listed_at = _walk_generation(library)
+    owned_at = _ownership_generation()
     images = await _list_images(library, platform_id, result, stopping)
     if images is None:
         return _sweep_ends(result)
@@ -3043,6 +3173,11 @@ async def _sweep_check(
     }
     if unresponsive:
         summary["library_unresponsive"] = True
+    if not dry_run and _ownership_moved(owned_at, platform_ref, result):
+        # As for a conversion Rule: nothing of a stale listing is checked.
+        summary["libraries_changed"] = True
+        result["platforms"].append(summary)
+        return False
     result["platforms"].append(summary)
     if not dry_run:
         picked.extend(chosen)

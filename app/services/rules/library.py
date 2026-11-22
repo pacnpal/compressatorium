@@ -70,17 +70,28 @@ def folder_holding(parent: str, path: str) -> str | None:
     so it raises :class:`AmbiguousFolder` instead (Codex PRRT_kwDOQ9nULM64Ki7x).
     Blocking; raises OSError when *parent* can't be listed.
     """
-    real = os.path.realpath(path)
-    holding = []
+    return folder_holder(parent)(path)
+
+
+def folder_holder(parent: str) -> Callable[[str], str | None]:
+    """:func:`folder_holding` for many paths: *parent* is listed and its
+    folders resolved once, here, so a listing of thousands of Images doesn't
+    list it again for each. Raises OSError when *parent*
+    can't be listed."""
     with os.scandir(parent) as listing:
-        for entry in listing:
-            if entry.is_dir() and real.startswith(
-                os.path.realpath(entry.path).rstrip(os.sep) + os.sep,
-            ):
-                holding.append(entry.path)
-    if len(holding) > 1:
-        raise AmbiguousFolder(path, holding)
-    return holding[0] if holding else None
+        folders = [
+            (entry.path, os.path.realpath(entry.path).rstrip(os.sep) + os.sep)
+            for entry in listing if entry.is_dir()
+        ]
+
+    def holding_of(path: str) -> str | None:
+        real = os.path.realpath(path)
+        holding = [folder for folder, prefix in folders if real.startswith(prefix)]
+        if len(holding) > 1:
+            raise AmbiguousFolder(path, holding)
+        return holding[0] if holding else None
+
+    return holding_of
 
 
 def log_prefix(library: Any) -> str:
@@ -287,12 +298,14 @@ class Placement:
     Platform folder that isn't there yet: whoever places an Image creates it.
 
     ``guessed`` is True when the folder is a best guess the user may want to
-    change (#512): RomM's default structure where its structure can't be read
-    off the disk, or one of several RomM folders for the Platform that hold
-    ROMs. ``why`` says in plain words how the folder was picked, or None when
-    there was nothing to pick. ``choices`` are the folder names the Library
-    could have picked from, each with its ROM count, when there are several
-    (RomM's records for one Platform); empty otherwise.
+    change: more than one folder could be it and a folder Library picked one
+    (#515; a mapping makes it certain), RomM's default structure where its
+    structure can't be read off the disk, or one of several RomM folders for
+    the Platform that hold ROMs (#512). ``why`` says in plain words how the
+    folder was picked, or None when there was nothing to pick. ``choices``
+    are the folder names the Library could have picked from, each with its
+    ROM count, when there are several (RomM's records for one Platform);
+    empty otherwise.
     """
 
     platform: str
@@ -301,6 +314,11 @@ class Placement:
     guessed: bool = False
     why: str | None = None
     choices: tuple[tuple[str, int], ...] = ()
+
+
+class LibrariesChanged(Exception):
+    """Which Libraries sit inside which changed since a listing was taken
+    (``libraries.owned_as_listed``, PR #518): work from it is refused."""
 
 
 class PlacementUnknown(Exception):
@@ -400,6 +418,21 @@ class Library(Protocol):
 
     def sweep_blocked(self) -> str | None:
         """An error code when the Library must not be swept now, else None."""
+
+    def excluded(self, name: str) -> bool:
+        """Whether the Library ignores a file or game folder named *name*
+        (#532): RomM's ``exclude:`` settings. The sweep skips such an Image,
+        and one whose output would have such a name. In memory, never blocks."""
+
+    def excluded_extension(self, ext: str) -> bool:
+        """Whether the Library ignores every file ending in ``.<ext>``, by
+        extension alone (#532). The sweep skips a Rule whose outputs all end
+        so. In memory, never blocks."""
+
+    async def refresh(self) -> None:
+        """Bring what the Library caches about itself up to date, bounded and
+        never raising (#532: RomM's folder structure and exclusions). Called
+        by the sweep and by an Inbox poll before they read it."""
 
     def referrer_enabled(self, referrer_id: str) -> bool:
         """Whether this Library's settings turn on the opt-in Referrer *referrer_id* (#383).
@@ -518,6 +551,17 @@ class LibraryDefaults:
         summary. Never raises.
         """
         return None
+
+    def excluded(self, name: str) -> bool:
+        """A Library ignores no file by its name (#532)."""
+        return False
+
+    def excluded_extension(self, ext: str) -> bool:
+        """A Library ignores no extension (#532)."""
+        return False
+
+    async def refresh(self) -> None:
+        """Nothing cached to bring up to date (#532)."""
 
     def referrer_enabled(self, referrer_id: str) -> bool:
         """No opt-in Referrer is on until a Library's settings say so (#383)."""

@@ -5,7 +5,7 @@
   // sidecar files (cue + bin set, gdi + raw tracks, etc.). Users
   // shouldn't trip the destructive flow without seeing the list.
   //
-  // Per-submit promise-resolver pattern, same as DuplicateModal.
+  // Per-submit promise-resolver pattern: the Convert panel awaits onResolve.
 
   import { conversion } from '$lib/stores/conversion.svelte.js';
   import { summarizeMessages } from '$lib/util/messages.js';
@@ -76,21 +76,25 @@
   }
 </script>
 
-<BaseModal {open} onClose={() => onResolve(false)} title="Confirm delete-on-verify" size="md">
+<BaseModal
+  {open}
+  onClose={() => onResolve(false)}
+  title="These files will be deleted after their new files check out"
+  size="md"
+>
   {#snippet titleIcon()}<Trash2 size={18} aria-hidden="true" />{/snippet}
   {#snippet body()}
     <p class="dp-lead">
       <Badge tone={blocked ? 'error' : 'warning'}>{totalDelete}</Badge>
       file{totalDelete === 1 ? '' : 's'} will be deleted across {items.length}
-      conversion{items.length === 1 ? '' : 's'}, but only after each
+      {items.length === 1 ? 'game' : 'games'}, but only after each new file
       {#if conversion.deleteCheck === 'round_tripped'}
-        output is Round-tripped (it decodes to the same content as its source).
+        reads back as an exact copy of its original.
       {:else if conversion.deleteCheck === 'recognized'}
-        output is Recognized (its hash is in one of your DATs or in Hasheous). An
-        output nothing recognizes keeps its source.
+        is a known good dump (its checksum is in one of your game lists or on
+        Hasheous). A new file nothing recognizes keeps its original.
       {:else}
-        output is Intact (it passes its own container check; its content is
-        not compared with the source).
+        passes its own check (its content is not compared with the original).
       {/if}
       This cannot be undone.
     </p>
@@ -122,7 +126,7 @@
       <div class="dp-block" role="alert">
         <TriangleAlert size={14} aria-hidden="true" />
         <div>
-          Delete-on-verify is not supported for multiple selections from the same archive
+          Deleting the original isn't offered for several games from the same archive
           ({disallowedArchives.length}).
         </div>
       </div>
@@ -193,7 +197,7 @@
   .dp-block { display: flex; gap: var(--space-2); background: var(--error-muted); color: var(--error); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); align-items: flex-start; }
   .dp-block strong { font-weight: var(--weight-semibold); }
   .dp-block-list { margin: var(--space-1) 0 0; padding-left: var(--space-4); font-size: var(--text-xs); }
-  .dp-warn { display: flex; gap: var(--space-2); background: var(--warning-muted); color: var(--warning); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); align-items: flex-start; }
+  .dp-warn { display: flex; gap: var(--space-2); background: var(--warning-muted); color: var(--warning-text); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); align-items: flex-start; }
   .dp-warn strong { font-weight: var(--weight-semibold); }
   .dp-warn-list { margin: var(--space-1) 0 0; padding-left: var(--space-4); font-size: var(--text-xs); }
   .dp-list { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow-y: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface-2); }

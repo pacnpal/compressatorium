@@ -29,7 +29,10 @@ import pytest
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 _SETTINGS = _SRC / "lib" / "components" / "views" / "RommSettings.svelte"
-_AUTOMATION = _SRC / "lib" / "components" / "views" / "RuleEditor.svelte"
+_LIBRARY = _SRC / "lib" / "components" / "library"
+_AUTOMATION = _LIBRARY / "LibraryAutomation.svelte"
+_TABLE = _LIBRARY / "RuleTable.svelte"
+_RULES_SOURCE = _SRC / "lib" / "rules" / "rulesSource.svelte.js"
 
 
 def _find_node() -> str | None:
@@ -92,17 +95,31 @@ def _script_of(component: Path) -> str:
 
 _STUBS = """
 const __saved = [];
+const __tested = [];
+const __paired = [];
+let __testReply = {
+  reachable: true, authorized: true, library_root_mounted: true, version: '5.4.1', error: null,
+};
 const toast = { success() {}, error() {}, info() {}, warning() {} };
 const romm = {
   settings: {
     url: 'http://romm:8080', library_root: '/library',
     repin_enabled: true, repin_on_load: true, repin_abandon_days: 7,
-    env_defaults: [],
+    swap_keep_rom_id: false, env_defaults: [],
   },
   settingsSaving: false,
   testResult: null,
   async saveSettings(patch) { __saved.push(patch); return this.settings; },
-  async testConnection(patch) { __saved.push(patch); return {}; },
+  async testConnection(patch) {
+    __tested.push(patch);
+    return typeof __testReply === 'function' ? __testReply(patch) : __testReply;
+  },
+  async pair(url, code) {
+    __paired.push([url, code]);
+    return { url: url.replace(/[/]+$/, ''), missing_scopes: [] };
+  },
+  async discover() { return null; },
+  async loadStatus() {},
 };
 """
 
@@ -121,104 +138,114 @@ def _run(tmp_path: Path, component: Path, scenario: str) -> dict:
     return json.loads(proc.stdout)
 
 
-_METADATA_SAVE = """
-// The operator has half-typed a new URL in the Connection card above, and has
-// not pressed its Save. Then they toggle a metadata checkbox and save *that*.
-url = 'http://new-rom';
-libraryRoot = '/somewhere/else';
-token = 'rmm_half_typed';
+_REPORT = """
+process.stdout.write(JSON.stringify({
+  saved: __saved, tested: __tested, paired: __paired, problem,
+  credential, clear_after: clearToken, library_root: libraryRoot,
+}));
+"""
+
+
+def test_save_tests_first_and_saves_nothing_that_fails(tmp_path):
+    """Test on Save (#532): a connection that doesn't work is not saved, and
+    the problem names the field to fix."""
+    data = _run(tmp_path, _SETTINGS, """
+url = 'http://typo:8080';
+__testReply = { reachable: false, authorized: null, library_root_mounted: null,
+                field: 'url', error: 'Could not reach RomM.' };
+await handleSave();
+""" + _REPORT)
+
+    assert data["tested"][0]["url"] == "http://typo:8080", data
+    assert data["saved"] == [], data
+    assert data["problem"]["field"] == "url", data
+
+
+def test_save_anyway_skips_the_test(tmp_path):
+    data = _run(tmp_path, _SETTINGS, """
+__testReply = { reachable: false, field: 'url', error: 'down' };
+await handleSave(true);
+""" + _REPORT)
+    assert data["tested"] == [], data
+    assert len(data["saved"]) == 1, data
+
+
+def test_one_save_sends_the_whole_form(tmp_path):
+    """One form, one Save: connection and metadata go together."""
+    data = _run(tmp_path, _SETTINGS, """
 repinOnLoad = false;
-
-await handleSaveMetadata();
-
-process.stdout.write(JSON.stringify({
-  submitted: __saved,
-  // What the Connection card would send is unchanged — this is about which
-  // button sends which fields, not about forbidding connection edits.
-  connection_keys: Object.keys(patch()).sort(),
-  // ...and the buffers the save did not carry are still there to be saved.
-  token_after: token,
-  clear_after: clearToken,
-}));
-"""
-
-
-_CONNECTION_SAVE = """
-token = 'rmm_new_credential';
+credential = 'rmm_new_credential';
 await handleSave();
-process.stdout.write(JSON.stringify({
-  submitted: __saved, token_after: token, clear_after: clearToken,
-}));
-"""
+""" + _REPORT)
 
-
-_CLEAR_TOKEN_SAVE = """
-clearToken = true;
-await handleSave();
-process.stdout.write(JSON.stringify({
-  submitted: __saved, token_after: token, clear_after: clearToken,
-}));
-"""
-
-
-def test_saving_metadata_does_not_submit_the_connection_buffers(tmp_path):
-    """A metadata toggle must not commit a half-typed connection edit.
-
-    Both cards shared one handler, and it always submitted the URL, token and
-    library-root buffers. A URL or root that differs from the saved one is an
-    identity change on the backend: it clears the conversion history and
-    retires every pending re-pin snapshot. Toggling "re-apply on load" is not a
-    reason to lose those — and if the settings load had failed, the buffers are
-    still empty, so it would have submitted a *blank* URL and root.
-    """
-    data = _run(tmp_path, _SETTINGS, _METADATA_SAVE)
-
-    assert len(data["submitted"]) == 1, data
-    sent = data["submitted"][0]
-    # The Hasheous ids switch (#427) lives on the Metadata card too.
-    assert sorted(sent) == [
-        "hasheous_write_ids", "repin_abandon_days", "repin_enabled", "repin_on_load",
-    ], sent
+    sent = data["saved"][0]
+    assert sent["url"] == "http://romm:8080", sent
+    assert sent["token"] == "rmm_new_credential", sent
     assert sent["repin_on_load"] is False, sent
-    # The Connection card still owns those fields.
-    assert "url" in data["connection_keys"], data
-    assert "library_root" in data["connection_keys"], data
+    # The swap switch didn't change, so it isn't sent (it probes the token).
+    assert "swap_keep_rom_id" not in sent, sent
+    # Once submitted, the token doesn't linger in the field.
+    assert data["credential"] == "", data
 
 
-def test_a_metadata_save_does_not_discard_the_typed_token(tmp_path):
-    """The credential buffers belong to the card that submits them.
-
-    Splitting the patch fixed *what is sent*; the shared success handler still
-    cleared the token buffer and the "clear token" tick on every save. So
-    saving a metadata toggle wiped a replacement token typed next door and not
-    yet submitted — and RomM shows an API token once, at creation, so it is
-    usually not recoverable: the operator has to issue a new one and update
-    whatever else was using it.
-    """
-    data = _run(tmp_path, _SETTINGS, _METADATA_SAVE)
-
-    sent = data["submitted"][0]
-    assert "token" not in sent and "clear_token" not in sent, sent
-    assert data["token_after"] == "rmm_half_typed", data
+def test_a_cleared_token_is_sent_and_the_tick_reset(tmp_path):
+    data = _run(tmp_path, _SETTINGS, "clearToken = true;\nawait handleSave();\n" + _REPORT)
+    assert data["saved"][0]["clear_token"] is True, data
     assert data["clear_after"] is False, data
 
 
-def test_a_connection_save_still_clears_the_credential_buffers(tmp_path):
-    """Once submitted, the token must not linger in the component.
+def test_a_pairing_code_is_traded_for_a_token_not_saved_as_one(tmp_path):
+    """RomM's pairing code (#532) goes to the pair call, never into `token`."""
+    data = _run(tmp_path, _SETTINGS, "credential = 'abcd-2345';\nawait handleSave();\n" + _REPORT)
 
-    The reset is what stops a saved credential sitting in a field for the rest
-    of the session and being re-submitted by the next save.
-    """
-    saved = _run(tmp_path, _SETTINGS, _CONNECTION_SAVE)
-    assert saved["submitted"][0]["token"] == "rmm_new_credential", saved
-    assert saved["token_after"] == "", saved
-
-    cleared = _run(tmp_path, _SETTINGS, _CLEAR_TOKEN_SAVE)
-    assert cleared["submitted"][0]["clear_token"] is True, cleared
-    assert cleared["clear_after"] is False, cleared
+    assert data["paired"] == [["http://romm:8080", "abcd-2345"]], data
+    assert all("token" not in sent for sent in data["saved"]), data
+    # The held token is named for the test and the Save that commits it.
+    assert data["tested"][0]["paired"] is True, data
+    assert data["saved"][0]["paired"] is True, data
+    assert data["credential"] == "", data
 
 
-def test_every_save_button_waits_for_the_settings_to_load(tmp_path):
+def test_the_save_sends_the_values_that_passed_the_test(tmp_path):
+    """An edit made while the test runs is not saved untested (CodeRabbit
+    PRRT_kwDOQ9nULM66RLwF, Codex PRRT_kwDOQ9nULM66ReGy): the Save sends the
+    snapshot the test passed."""
+    data = _run(tmp_path, _SETTINGS, """
+__testReply = () => {
+  url = 'http://edited:8080';
+  libraryRoot = '/elsewhere';
+  return { reachable: true, authorized: true, library_root_mounted: true, error: null };
+};
+await handleSave();
+""" + _REPORT)
+
+    assert data["tested"][0]["url"] == "http://romm:8080", data
+    assert data["saved"][0]["url"] == "http://romm:8080", data
+    assert data["saved"][0]["library_root"] == "/library", data
+
+
+def test_an_empty_library_path_is_filled_from_romm(tmp_path):
+    data = _run(tmp_path, _SETTINGS, """
+libraryRoot = '';
+__testReply = (patch) => patch.library_root
+  ? { reachable: true, authorized: true, library_root_mounted: true, error: null }
+  : { reachable: true, authorized: true, library_root_mounted: null,
+      library_root_suggestion: '/data/romm/library', field: 'library_root', error: 'Fill in' };
+await handleSave();
+""" + _REPORT)
+
+    assert data["library_root"] == "/data/romm/library", data
+    assert data["saved"][0]["library_root"] == "/data/romm/library", data
+
+
+def test_the_keep_rom_id_switch_is_saved_on_its_own(tmp_path):
+    """Turning it on probes the token; a refusal must not undo the rest."""
+    data = _run(tmp_path, _SETTINGS, "swapKeepRomId = true;\nawait handleSave();\n" + _REPORT)
+    assert data["saved"][-1] == {"swap_keep_rom_id": True}, data
+    assert "swap_keep_rom_id" not in data["saved"][0], data
+
+
+def test_the_one_save_button_waits_for_the_settings_to_load():
     """Empty buffers submitted as a connection read as a move to nowhere.
 
     Until the saved settings arrive the edit buffers are `''`. Saving then
@@ -226,36 +253,26 @@ def test_every_save_button_waits_for_the_settings_to_load(tmp_path):
     that retires pending snapshots.
     """
     src = _SETTINGS.read_text(encoding="utf-8")
-    buttons = re.findall(r"<Button\b[^>]*?onclick=\{(handleSave\w*)\}(.*?)/>", src, re.DOTALL)
-    found = {name for name, _ in buttons}
-    assert found == {"handleSave", "handleSaveMetadata", "handleSaveSwap"}, found
-    for name, attrs in buttons:
-        assert "disabled={!loaded}" in attrs, (
-            f"{name}'s button can fire before the settings have loaded"
-        )
+    submits = re.findall(r'<Button\b[^>]*?type="submit"(.*?)>', src, re.DOTALL)
+    assert len(submits) == 1, submits
+    assert "disabled={!loaded}" in submits[0], submits[0]
+    assert "handleSaveMetadata" not in src and "handleSaveSwap" not in src
 
 
 def test_enabling_automation_commits_pending_rule_edits():
-    """The scheduler reads the server's rules, not the editor's.
+    """The scheduler reads the server's rules, not the table's.
 
-    Preview and Run now both save first. The master switch did not, so turning
-    it on with unsaved edits started unattended runs against the previous
-    configuration — which may still have the platform enabled, or
-    delete-on-verify on, while the editor showed the safer one just typed.
+    Preview and Run now both save first. Turning automation on with an edit
+    still waiting would start unattended runs against the previous
+    configuration — which may still have delete-on-verify on.
     """
     src = _AUTOMATION.read_text(encoding="utf-8")
-    body = re.search(
-        r"async function toggleAuto\(enabled\) \{(.*?)\n  \}", src, re.DOTALL,
-    )
-    assert body, "toggleAuto is no longer where this guard can find it"
-    assert "commitPendingEdits()" in body.group(1), (
-        "toggleAuto enables the scheduler without saving pending rule edits; "
-        "Preview and Run now both commit first"
-    )
-    # Guarded on `enabled`: switching automation OFF must stay immediate, and
-    # must not commit edits the operator never saved.
-    assert re.search(r"if \(enabled && !\(await commitPendingEdits\(\)\)\) return;",
-                     body.group(1)), body.group(1)
+    body = re.search(r"async function setAuto\(enabled\) \{(.*?)\n  \}", src, re.DOTALL)
+    assert body, "setAuto is no longer where this guard can find it"
+    # Guarded on `enabled`: switching automation OFF stays immediate.
+    assert "if (enabled && !(await committed())) return;" in body.group(1), body.group(1)
+    committed = re.search(r"async function committed\(\) \{(.*?)\n  \}", src, re.DOTALL)
+    assert "await source.flush()" in committed.group(1)
 
 
 def test_navigating_into_a_catalog_folder_leaves_the_romm_view():
@@ -273,45 +290,37 @@ def test_navigating_into_a_catalog_folder_leaves_the_romm_view():
         r"if \(this\.rommPlatformId !== null\) \{(.*?)\n    \}", src, re.DOTALL,
     )
     assert body, "the exit-RomM branch of navigate() is no longer where this guard looks"
-    assert "ui.navigate('workspace')" in body.group(1), (
+    assert "ui.navigate('files')" in body.group(1), (
         "navigate() drops RomM mode without leaving the RomM view, which has "
         "no breadcrumbs to get back with"
     )
 
 
 def test_an_action_refuses_when_its_rule_save_was_superseded():
-    """The editor stays live while Preview / Run now / the toggle are saving.
+    """The table stays live while Preview / Run now / the switch are saving.
 
     `saveRules()` deliberately keeps an edit that landed mid-save and leaves it
-    dirty. Returning success anyway ran the action against the *older*
-    server-side snapshot while the editor showed the newer rule — including a
-    platform just switched off, or a delete-after-verify just cleared.
+    dirty. `flush()` reports success only once the server holds what the
+    table shows, so an action never runs on an older snapshot.
     """
-    src = _AUTOMATION.read_text(encoding="utf-8")
-    body = re.search(
-        r"async function commitPendingEdits\(\) \{(.*?)\n  \}\n", src, re.DOTALL,
-    )
-    assert body, "commitPendingEdits is no longer where this guard looks"
-    assert "source.rulesDirty" in body.group(1), (
-        "commitPendingEdits reports success without checking whether the save "
-        "was superseded by an edit made while it was in flight"
-    )
-    # ...and it does not simply proceed: the failure path returns false.
-    assert re.search(r"if \(source\.rulesDirty\)", body.group(1)), body.group(1)
-    assert "return false;" in body.group(1)
+    src = _RULES_SOURCE.read_text(encoding="utf-8")
+    body = re.search(r"async flush\(\) \{(.*?)\n  \}\n", src, re.DOTALL)
+    assert body, "flush is no longer where this guard looks"
+    assert "this.rulesDirty" in body.group(1)
+    assert "return !this.rulesDirty;" in body.group(1)
 
 
 def test_automation_offers_neither_unpacking_nor_self_multiplying_modes():
     """Two exclusions, from two places, and both have to stay.
 
-    `kind === 'extract'` is the editor's own choice (automation converts, it
-    does not unpack). Whether a mode multiplies its own output is the
-    *backend's* answer, because deriving it needs the tool's `output_path`.
+    Unpacking is the table's own choice (automation converts, it does not
+    unpack). Whether a mode multiplies its own output is the *backend's*
+    answer, because deriving it needs the tool's `output_path`.
     """
-    src = _AUTOMATION.read_text(encoding="utf-8")
-    assert "m.kind === 'extract'" in src
-    assert "source.modeIsAutomatable(m.mode)" in src, (
-        "the editor offers modes the backend refuses to run unattended"
+    src = _TABLE.read_text(encoding="utf-8")
+    assert "g.group !== 'Unpack'" in src
+    assert "source.modeIsAutomatable(o.value)" in src, (
+        "the table offers modes the backend refuses to run unattended"
     )
 
 
@@ -319,45 +328,31 @@ def test_the_repin_promise_is_qualified_for_split_builds():
     """A split build has no single file for RomM to hash.
 
     Past 4 GB the tool writes `Game.iso.0`, `.1`, … and the backend retires the
-    re-pin row saying exactly that. The warning promised the metadata would be
-    restored regardless, so an unattended conversion finished with no recovery
-    and no warning that there would not be one.
+    re-pin row saying exactly that, so the promise must say so.
     """
-    src = _AUTOMATION.read_text(encoding="utf-8")
+    src = _TABLE.read_text(encoding="utf-8")
     block = re.search(
-        r"\{#if source\.losesDatMatch\(spec\)\}(.*?)\{/if\}", src, re.DOTALL,
+        r"if \(source\.losesDatMatch\(spec\)\) \{(.*?)\n    \}", src, re.DOTALL,
     )
-    assert block, "the lost-DAT-match warning is no longer where this guard can find it"
+    assert block, "the lost-match note is no longer where this guard can find it"
     warning = block.group(1)
-    assert "restores it for you" in warning, warning
-    assert "rule.split" in warning, (
-        "the warning promises metadata restoration unconditionally; a split "
-        "build's numbered parts cannot be hash-matched at all"
-    )
+    assert "puts them back" in warning, warning
+    assert "rule.split" in warning, warning
+
+def test_using_romms_choices_reads_its_plan():
+    """The converter banner's import (#385) lives on the Automation tab now."""
+    src = _AUTOMATION.read_text(encoding="utf-8")
+    body = re.search(r"async function useRommChoices\(\) \{(.*?)\n  \}", src, re.DOTALL)
+    assert body, "useRommChoices moved"
+    assert "source.importConverterTargets()" in body.group(1)
+    assert "Use RomM's choices" in src
 
 
-_IMPORT_TARGETS = """
-const said = [];
-toast.success = (m) => said.push(['success', m]);
-toast.info = (m) => said.push(['info', m]);
-romm.importConverterTargets = async () => ({
-  created: 2,
-  skipped: [{ platform_id: '9', name: 'Xbox 360', slug: 'xbox360', target: 'zar' }],
-});
-await handleImport();
-romm.importConverterTargets = async () => ({ created: 0, skipped: [] });
-await handleImport();
-process.stdout.write(JSON.stringify({ said, importing }));
-"""
 
-
-def test_importing_romms_targets_says_how_many_rules_it_made(tmp_path):
-    """The banner's import names the count, and the Platforms it had to skip (#385)."""
-    data = _run(tmp_path, _SETTINGS, _IMPORT_TARGETS)
-
-    (tone, first), (tone2, second) = data["said"]
-    assert tone == "success", data
-    assert "Imported 2 Rules" in first, first
-    assert "Xbox 360 (ZAR)" in first, first
-    assert tone2 == "info" and "No Rules to import" in second, second
-    assert data["importing"] is False, data
+def test_the_romm_summary_counts_the_format_the_panel_makes():
+    """a format-valued Convert to (`.chd`) has no mode, so
+    the summary matches the format, and with Best each game's planned file."""
+    browse = (Path(__file__).resolve().parents[1] / "src" / "lib" / "components"
+              / "library" / "RommBrowse.svelte").read_text(encoding="utf-8")
+    assert "conversion.targetExt" in browse
+    assert "planned[e.path]" in browse

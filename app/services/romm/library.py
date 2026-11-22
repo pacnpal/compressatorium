@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from types import MappingProxyType
 from typing import Any
@@ -23,6 +23,7 @@ from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from services.platform_detect import canonical_slug
 from services.romm import RommError, romm_client
+from services.romm import connect as romm_connect
 from services.romm import repin as romm_repin
 from services.romm import settings as romm_settings
 
@@ -113,8 +114,19 @@ def _pick(slug: str, choices: list[tuple[str, int, str]]) -> tuple[str, bool, st
 
 def _structure(root: str, name: str) -> tuple[str, str | None]:
     """Where the Platform folder *name* sits in RomM's structure under *root*,
-    read off the disk (see ``RommLibrary.placement``), and why it's a guess
-    when it is one. Blocking."""
+    and why it's a guess when it is one (see ``RommLibrary.placement``).
+    RomM's own ``filesystem.structure`` when RomM declared it (#532), else
+    read off the disk. Blocking."""
+    declared = romm_connect.structure()
+    if declared is not None:
+        return _declared(root, name, *declared), None
+    if not romm_connect.structure_known():
+        # Not "no structure declared": RomM hasn't been asked successfully.
+        # Retryable, not a refusal: an Inbox tries the file again on a later
+        # poll instead of holding it for good (Codex PRRT_kwDOQ9nULM66SC3A).
+        raise LibraryUnreadable(
+            "RomM's folder structure couldn't be read yet; the next pass tries again",
+        )
     own = os.path.join(root, name)
     if os.path.isdir(os.path.join(root, "roms")):
         return os.path.join(root, "roms", name), None
@@ -142,6 +154,35 @@ def _structure(root: str, name: str) -> tuple[str, str | None]:
         os.path.join(root, "roms", name),
         f"guessed RomM's default structure, roms/{name}: there's no roms folder yet",
     )
+
+
+def _declared(
+    root: str, name: str, before: tuple[str, ...], levels: tuple[str | None, ...],
+) -> str:
+    """The folder RomM's declared structure puts *name*'s games in (#532).
+
+    ``roms/...`` is read the way ``RommClient.local_path`` maps RomM's paths:
+    a root with no ``roms`` folder but Platform folders in it is RomM's
+    ``roms`` folder itself. Refuses a structure with a folder per group of
+    games (``{category}``): which one a new game goes in isn't this app's
+    call."""
+    if None in levels:
+        raise PlacementUnknown(
+            f"RomM's folder structure, {romm_connect.layout().get('structure_template')}, "
+            "keeps games in folders of their own under each platform, so this app "
+            "can't tell which one a new game goes in",
+        )
+    return os.path.join(_prefix(root, before), name, *levels)
+
+
+def _prefix(root: str, before: tuple[str, ...]) -> str:
+    """The folder RomM's declared structure keeps the Platform folders in:
+    *before* under *root*, a leading ``roms`` dropped when *root* is RomM's
+    ``roms`` folder itself (see :func:`_declared`)."""
+    if before[:1] == ("roms",) and not os.path.isdir(os.path.join(root, "roms")) \
+            and _platform_dirs(root):
+        before = before[1:]
+    return os.path.join(root, *before)
 
 
 def _holds_structure(folder: str) -> bool:
@@ -203,7 +244,7 @@ def app_verdicts(paths: list[str]) -> dict[str, dict | None]:
         return dict.fromkeys(paths)
 
 
-def image_from_rom(rom: dict) -> Image:
+def image_from_rom(rom: dict, *, owned_elsewhere: Callable[[str], bool] | None = None) -> Image:
     """One RomM ROM record as an Image.
 
     ``title`` is RomM's display name (what the ``name`` order sorts by), and
@@ -220,6 +261,10 @@ def image_from_rom(rom: dict) -> Image:
     it only for a ROM its name and size filters kept, inside the bounded
     candidate probe, so a ROM those filters exclude costs no disk at all
     (Codex on PR #442). The path is lazy for the same reason.
+
+    *owned_elsewhere* answers, for the mapped path, whether another Library
+    owns it (#514); such a ROM has no path here, so RomM's Rules leave it
+    alone. Asked only when the path is read, so it stays lazy (Codex PR #518).
     """
     identified = rom_identified(rom)
 
@@ -242,10 +287,16 @@ def image_from_rom(rom: dict) -> Image:
         platform=rom.get("platform_slug"),
         # Mapping the record onto the mount stats it, so it waits until the
         # sweep reads `path` off the event loop.
-        resolve_path=lambda: romm_client.local_path(rom),
+        resolve_path=lambda: _owned_path(romm_client.local_path(rom), owned_elsewhere),
         record=rom,
     )
     return image
+
+
+def _owned_path(path: str | None, owned_elsewhere: Callable[[str], bool] | None) -> str | None:
+    if path and owned_elsewhere is not None and owned_elsewhere(path):
+        return None
+    return path
 
 
 def scan_refusal(exc: RommError) -> str:
@@ -317,11 +368,27 @@ class RommLibrary(LibraryDefaults):
         ]
 
     def images(self, platform_id: str) -> list[Image]:
+        # Imported here: services.libraries imports this module.
+        from services import libraries
+
         try:
             roms = romm_client.roms(int(platform_id))
         except RommError as exc:
             raise LibraryUnreadable(str(exc)) from exc
-        return [image_from_rom(rom) for rom in roms]
+        # A folder Library inside RomM's folder owns its files (#514), so
+        # RomM's Rules leave them alone: such a ROM has no path here. Asked
+        # when its path is read, inside the bounded candidate probe, never
+        # for every ROM while listing (Codex PR #518); `local_path` answers it
+        # resolved.
+        inner = libraries.inner_folders(self)
+        if not inner:
+            return [image_from_rom(rom) for rom in roms]
+        real_root = os.path.realpath(self.root)
+
+        def owned_elsewhere(path: str) -> bool:
+            return libraries.is_inner(os.path.relpath(path, real_root), inner)
+
+        return [image_from_rom(rom, owned_elsewhere=owned_elsewhere) for rom in roms]
 
     def rule_defaults(self) -> dict[str, Any]:
         cfg = romm_settings.effective()
@@ -334,6 +401,19 @@ class RommLibrary(LibraryDefaults):
 
     def max_per_sweep(self) -> int:
         return int(romm_settings.effective().get("auto_convert_max_per_run", 25))
+
+    def excluded(self, name: str) -> bool:
+        """RomM's ``exclude:`` settings ignore files named *name* (#532)."""
+        return romm_connect.excluded(name)
+
+    def excluded_extension(self, ext: str) -> bool:
+        """RomM's ``exclude:`` settings ignore every ``.<ext>`` file (#532)."""
+        return romm_connect.excluded_extension(ext)
+
+    async def refresh(self) -> None:
+        """Re-read RomM's folder structure and exclusions, at most every few
+        minutes (#532)."""
+        await romm_connect.refresh_layout()
 
     def schedule_enabled(self) -> bool:
         return bool(romm_settings.effective().get("auto_convert"))
@@ -425,6 +505,11 @@ class RommLibrary(LibraryDefaults):
         cleanup on its own tick, under the locks it requires, and a sweep
         holding the sweep lock is the one caller that cannot take them.
         """
+        if self.configured() and not romm_connect.exclusions_known():
+            # RomM's exclusions were never read (#532): a sweep now would
+            # convert what RomM ignores. Deferred, not guessed. (Placement
+            # waits for the structure on its own: `_structure`.)
+            return "romm_layout_unread"
         if not romm_settings.cleanup_owed():
             return None
         logger.warning(
@@ -458,6 +543,11 @@ class RommLibrary(LibraryDefaults):
         root = self.root
         if not root:
             return None
+        declared = romm_connect.structure()
+        if declared is not None:
+            # Under the declared prefix (#532): `games/{platform}/{game}`
+            # holds its Platform folders in `games`.
+            return folder_holding(_prefix(root, declared[0]), path)
         roms = os.path.join(root, "roms")
         return folder_holding(roms if os.path.isdir(roms) else root, path)
 
@@ -479,7 +569,9 @@ class RommLibrary(LibraryDefaults):
         only folder holding ROMs (RomM's ``rom_count``); else the one with the
         most ROMs (then the one named as the Platform), marked ``guessed``.
 
-        Where that folder sits is read off the disk, at the directory level as
+        Where that folder sits is RomM's own ``filesystem.structure`` when
+        RomM declared it (5.3+, read by ``services.romm.connect``, #532), not
+        a guess. Otherwise it is read off the disk, at the directory level as
         ``RommClient.local_path`` maps ROMs:
 
         * ``<root>/roms`` exists: RomM's standard structure,

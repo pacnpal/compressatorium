@@ -103,8 +103,26 @@ export const api = {
     fetchJson(buildApiUrl('/ledger', query), undefined, 'Failed to fetch ledger'),
   getLedgerFacets: () =>
     fetchJson(`${API_BASE}/ledger/facets`, undefined, 'Failed to fetch ledger filters'),
+  // Finished jobs by status, all time (the job list keeps only the newest).
+  getLedgerTotals: () =>
+    fetchJson(`${API_BASE}/ledger/totals`, undefined, 'Failed to fetch job totals'),
+
   getLedgerSavings: () =>
     fetchJson(`${API_BASE}/ledger/savings`, undefined, 'Failed to fetch savings'),
+  // How long History keeps its rows: `{ retention_days }`, null for forever.
+  getLedgerSettings: () =>
+    fetchJson(`${API_BASE}/ledger/settings`, undefined, "Couldn't load the History setting"),
+  putLedgerSettings(body) {
+    return fetchJson(
+      `${API_BASE}/ledger/settings`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      "Couldn't save the History setting",
+    );
+  },
 
   // ─── Volumes ──────────────────────────────────────────────────────────
   getVolumes: () => fetchJson(`${API_BASE}/volumes`, undefined, 'Failed to fetch volumes'),
@@ -140,6 +158,20 @@ export const api = {
         body: JSON.stringify(layout),
       },
       'Failed to save preferences',
+    );
+  },
+  // The safety choices new conversions start with (check, delete, quick check).
+  getDefaultsPrefs: () =>
+    fetchJson(`${API_BASE}/preferences/defaults`, undefined, 'Failed to load defaults'),
+  putDefaultsPrefs(prefs) {
+    return fetchJson(
+      `${API_BASE}/preferences/defaults`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(prefs),
+      },
+      "Couldn't save the defaults",
     );
   },
 
@@ -301,32 +333,39 @@ export const api = {
 
   // Auto: the backend works out each Image's Platform and default target.
   // `signal` aborts the request (the convert panel unmounting mid-plan).
-  getAutoPlan(filePaths, outputDir = null, { signal } = {}) {
+  // The Convert panel's plan. `target` is its "Convert to" (null: each game's
+  // best format; a format such as `.chd`; or a mode id). `platformOverrides`
+  // maps a path to the console picked for it this session.
+  getAutoPlan(filePaths, outputDir = null, { signal, target = null, platformOverrides = {} } = {}) {
     return jsonPost(
       `${API_BASE}/jobs/auto-plan`,
-      { file_paths: filePaths, output_dir: outputDir },
+      {
+        file_paths: filePaths, output_dir: outputDir,
+        target: target || null, platform_overrides: platformOverrides,
+      },
       signal ? { signal } : {},
-      'Failed to plan Auto conversion',
+      'Failed to plan the conversion',
     );
   },
 
   // `items`: the confirmed plan's actionable rows, `{ file_path, mode }`. The
-  // server replans them and answers 409 with the new plan when one changed.
-  createAutoJobs(items, outputDir = null, duplicateAction = 'skip') {
+  // server replans them (with the same `target` and overrides) and leaves out,
+  // and reports, any whose target changed. `options` carries the panel's
+  // safety choices: `{ verifyAfter, deleteOnVerify, containerOnly, split }`.
+  createAutoJobs(items, outputDir = null, duplicateAction = 'skip', options = {}) {
     return jsonPost(
       `${API_BASE}/jobs/auto`,
-      { items, output_dir: outputDir, duplicate_action: duplicateAction },
-      {},
-      'Failed to create Auto jobs',
-    );
-  },
-
-  checkDuplicates(filePaths, outputDir = null, mode = 'createcd') {
-    return jsonPost(
-      `${API_BASE}/jobs/check-duplicates`,
-      { file_paths: filePaths, output_dir: outputDir, mode },
-      {},
-      'Failed to check duplicates',
+      {
+        items, output_dir: outputDir, duplicate_action: duplicateAction,
+        target: options.target || null,
+        platform_overrides: options.platformOverrides ?? {},
+        verify_after: !!options.verifyAfter,
+        delete_on_verify: !!options.deleteOnVerify,
+        container_only: !!options.containerOnly,
+        split: !!options.split,
+      },
+      options.signal ? { signal: options.signal } : {},
+      'Failed to start converting',
     );
   },
 
@@ -340,32 +379,6 @@ export const api = {
   },
 
   getJobs: () => fetchJson(`${API_BASE}/jobs`, undefined, 'Failed to fetch jobs'),
-
-  // Counts of finished jobs the backend history cap (MAX_JOB_HISTORY) has
-  // already evicted. /jobs only returns what is still retained, so this is
-  // what turns a capped list into a true total. Live updates arrive as
-  // `history` events on the job stream; this is the hydration read.
-  //
-  // `since` is the caller's last applied `seq`. Passing it also returns the
-  // ids evicted after that point — read /jobs first, then pass the cursor
-  // here, and a job evicted between the two reads is named rather than
-  // counted twice (once as a row still in the list, once in the totals).
-  //
-  // `generation` is the backend process the cursor came from. Without it, a
-  // cursor minted before a backend restart reads as a huge sequence against a
-  // log that restarted at 0, so the reply names nothing — the exact
-  // double-count the cursor exists to prevent.
-  getJobHistoryOverflow(since, generation) {
-    const params = typeof since === 'number' && since >= 0
-      ? new URLSearchParams({ since: String(since) })
-      : undefined;
-    if (params && generation) params.set('generation', generation);
-    return fetchJson(
-      buildApiUrl('/jobs/history-overflow', params),
-      undefined,
-      'Failed to fetch job history totals',
-    );
-  },
 
   getJob: (jobId) => fetchJson(`${API_BASE}/jobs/${jobId}`, undefined, 'Failed to fetch job'),
 
@@ -386,12 +399,6 @@ export const api = {
       'Failed to delete completed jobs',
     ),
 
-  checkStuckStatus: () =>
-    fetchJson(`${API_BASE}/jobs/stuck-status`, undefined, 'Failed to check stuck status'),
-
-  recoverStuckJobs: () =>
-    fetchJson(`${API_BASE}/jobs/recover`, { method: 'POST' }, 'Failed to recover stuck jobs'),
-
   /**
    * Subscribe to the global job event stream. Auto-reconnects on error.
    * Returns an unsubscribe function.
@@ -400,16 +407,13 @@ export const api = {
    * sends on connect (and re-sends after each reconnect) flows through
    * the same handler as live updates. See convert.py:event_generator.
    *
-   * `history` carries the counts of finished jobs the backend's history cap
-   * has evicted — absolute totals, re-sent whenever they change.
-   *
    * @param {(evt: { type: string, data: any }) => void} onEvent
    * @param {{onOpen?: () => void, onReconnecting?: () => void}} [status]
    */
   subscribeToJobs(onEvent, status) {
     const conn = sseConnectNamed(
       `${API_BASE}/jobs/events`,
-      ['snapshot', 'progress', 'complete', 'error', 'status', 'cancelled', 'history'],
+      ['snapshot', 'progress', 'complete', 'error', 'status', 'cancelled'],
       onEvent,
       status,
     );
@@ -469,8 +473,8 @@ export const api = {
     return fetchJson(buildApiUrl('/rom-converto-info', params), undefined, 'Failed to get ZAR info');
   },
 
-  // Which tools the UI should show. Switch is reported unavailable when no
-  // prod.keys are configured, so the sidebar can hide it entirely.
+  // Which tools can run, and `reasons`: why each of the others can't, with
+  // the fix (Switch with no prod.keys, a program that isn't installed).
   getTools() {
     return fetchJson(`${API_BASE}/tools`, undefined, 'Failed to load tool availability');
   },
@@ -660,15 +664,24 @@ export const api = {
     fetchJson(`${API_BASE}/chd-metadata/scan/status`, undefined, 'Failed to get scan status'),
 
   // ─── DAT library ──────────────────────────────────────────────────────
-  importDAT(file) {
+  // .dat / .xml files and .zip files of them (No-Intro's daily pack, a Redump
+  // zip), all in one request -> { imported: [...], errors: [{file, error}], message }.
+  importDATs(files) {
     const formData = new FormData();
-    formData.append('file', file);
+    for (const file of files) formData.append('files', file);
     return fetchJson(
-      `${API_BASE}/dat/import`,
+      `${API_BASE}/dat/import-batch`,
       { method: 'POST', body: formData },
-      'Failed to import DAT',
+      'Failed to import DATs',
     );
   },
+
+  // The disc Platforms in your Libraries Redump has a DAT for: { running, systems }.
+  getRedump: () => fetchJson(`${API_BASE}/dat/redump`, undefined, 'Failed to read Redump status'),
+
+  // Waits for the sync: { systems, imported, up_to_date, failed, changed, message }.
+  syncRedump: (force = false) =>
+    jsonPost(`${API_BASE}/dat/redump/sync`, { force }, {}, 'Redump sync failed'),
 
   // ─── Patch bench (#428) ──────────────────────────────────────────────
   // Keeps an .ips/.bps in the app's data directory; answers { upload_id, ... }.
@@ -728,6 +741,15 @@ export const api = {
   testRommConnection: (patch = {}) =>
     jsonPost(`${API_BASE}/romm/settings/test`, patch, {}, 'Connection test failed'),
 
+  // A RomM pairing code, traded for a token the backend holds for the URL
+  // until a Save sent with `paired: true` (#532).
+  pairRomm: (url, code) =>
+    jsonPost(`${API_BASE}/romm/pair`, { url, code }, {}, 'Pairing with RomM failed'),
+
+  // RomM at its usual addresses, or { url: null } (#532).
+  discoverRomm: () =>
+    fetchJson(`${API_BASE}/romm/discover`, undefined, 'Could not look for RomM'),
+
   getRommRules: () =>
     fetchJson(`${API_BASE}/romm/rules`, undefined, 'Failed to load RomM rules'),
 
@@ -740,12 +762,13 @@ export const api = {
       "Failed to read RomM's converter targets",
     ),
 
+  // The consoles changed (#541): `{id: rule | null}`, merged by the server.
   // `checkRules` (#305) is sent when given; without it the server keeps them.
   saveRommRules: (rules, checkRules) =>
     fetchJson(
       `${API_BASE}/romm/rules`,
       {
-        method: 'PUT',
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
           checkRules === undefined ? { rules } : { rules, check_rules: checkRules },
@@ -754,24 +777,13 @@ export const api = {
       'Failed to save RomM rules',
     ),
 
-  // One-time notices any rule editor shows (#302). Not RomM-specific.
-  getRuleNotices: () =>
-    fetchJson(`${API_BASE}/rules/notices`, undefined, 'Failed to load rule notices'),
-
-  dismissCheckLevelNotice: () =>
-    jsonPost(
-      `${API_BASE}/rules/notices/check-level/dismiss`,
-      {},
-      {},
-      'Failed to dismiss the notice',
-    ),
-
   // Clears the "already converted by this rule" history that stops overwrite
   // and rename rules from reconverting the same sources every interval.
-  forgetRommConverted: (platformIds = null) =>
+  // `failedOnly` releases the failed holds and keeps what was converted (#541).
+  forgetRommConverted: (platformIds = null, failedOnly = false) =>
     jsonPost(
       `${API_BASE}/romm/rules/forget-converted`,
-      platformIds ? { platform_ids: platformIds } : {},
+      { ...(platformIds ? { platform_ids: platformIds } : {}), ...(failedOnly ? { failed_only: true } : {}) },
       {},
       'Failed to clear the conversion history',
     ),
@@ -787,6 +799,14 @@ export const api = {
   // A Library id goes in the path (`romm`, `folder:3`), so it is encoded.
   listLibraries: () =>
     fetchJson(`${API_BASE}/libraries`, undefined, 'Failed to list Libraries'),
+
+  // ES-DE gamelists folders found in the Volumes (#523).
+  findGamelistsFolders: () =>
+    fetchJson(
+      `${API_BASE}/libraries/gamelists-folders`,
+      undefined,
+      'Failed to search the Volumes for ES-DE gamelists',
+    ),
 
   registerLibrary: (path, name = null) =>
     jsonPost(`${API_BASE}/libraries`, { path, name }, {}, 'Failed to register the Library'),
@@ -860,6 +880,23 @@ export const api = {
       'Failed to remove the Inbox',
     ),
 
+  // The *arr webhook (#522): its setup, path rewrites and a dry-run check.
+  getArrHook: () => fetchJson(`${API_BASE}/hooks/arr`, undefined, 'Could not read the webhook setup'),
+
+  saveArrRewrites: (rewrites) =>
+    fetchJson(
+      `${API_BASE}/hooks/arr/rewrites`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rewrites }),
+      },
+      'Could not save the rewrites',
+    ),
+
+  checkArrPath: (path) =>
+    jsonPost(`${API_BASE}/hooks/arr/check`, { path }, {}, 'Could not check the path'),
+
   getLibraryRules: (id) =>
     fetchJson(
       `${API_BASE}/libraries/${encodeURIComponent(id)}/rules`,
@@ -867,11 +904,12 @@ export const api = {
       'Failed to load the Rules',
     ),
 
+  // The consoles changed (#541): `{id: rule | null}`, merged by the server.
   saveLibraryRules: (id, rules, checkRules) =>
     fetchJson(
       `${API_BASE}/libraries/${encodeURIComponent(id)}/rules`,
       {
-        method: 'PUT',
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
           checkRules === undefined ? { rules } : { rules, check_rules: checkRules },
@@ -880,10 +918,10 @@ export const api = {
       'Failed to save the Rules',
     ),
 
-  forgetLibraryConverted: (id, platformIds = null) =>
+  forgetLibraryConverted: (id, platformIds = null, failedOnly = false) =>
     jsonPost(
       `${API_BASE}/libraries/${encodeURIComponent(id)}/rules/forget-converted`,
-      platformIds ? { platform_ids: platformIds } : {},
+      { ...(platformIds ? { platform_ids: platformIds } : {}), ...(failedOnly ? { failed_only: true } : {}) },
       {},
       'Failed to clear the conversion history',
     ),
@@ -895,6 +933,19 @@ export const api = {
 
   runLibrary: (id, body = {}) =>
     jsonPost(`${API_BASE}/libraries/${encodeURIComponent(id)}/run`, body, {}, 'Run failed'),
+
+  // Whether a name filter can be saved (#541): `{ ok, error }`, from the
+  // same compile a Rule save runs.
+  checkRulePattern: (pattern) =>
+    jsonPost(`${API_BASE}/rules/check-pattern`, { pattern }, {}, "Couldn't check the pattern"),
+
+  // Apply recommended (#541): `{ rules: {platform_id: {mode, enabled}}, skipped }`
+  // for the consoles with games and no target. Read-only; the caller saves.
+  getRecommendedRules: (id) =>
+    fetchJson(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/recommended-rules`, undefined,
+      "Couldn't work out the best formats",
+    ),
 
   // A Library's find-duplicates run (#388): a background job whose groups
   // land in Findings. `{ job_id }`; 409 while the previous run still runs.

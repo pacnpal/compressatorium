@@ -60,10 +60,12 @@ import os
 import stat
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
-from collections.abc import Iterable, Sequence
+from collections import Counter
+from collections.abc import Callable, Iterable, Sequence
+from functools import cache
 from typing import Any
 
 from logging_setup import get_logger
@@ -75,6 +77,7 @@ from services.rules.library import (
     FAILED_HOLD,
     GAMELISTS_FOLDER,
     RECOGNIZED_FILTER,
+    AmbiguousFolder,
     Image,
     ImageListing,
     LibraryDefaults,
@@ -83,7 +86,7 @@ from services.rules.library import (
     PlacementUnknown,
     Platform,
     QueuedImage,
-    folder_holding,
+    folder_holder,
     placed_in,
 )
 from services.tools import registry
@@ -188,6 +191,17 @@ def _image_extensions() -> tuple[str, ...]:
     return tuple(sorted(
         set(registry.convertible_extensions()) | set(registry.output_extensions())
     ))
+
+
+def _image_count(folder: str) -> int:
+    """How many Image files are under *folder*. Blocking; an unreadable one is 0."""
+    extensions = _image_extensions()
+    # ponytail: walks the folder each time; read the last Scan if placement gets hot.
+    return sum(
+        name.lower().endswith(extensions)
+        for _dir, _subdirs, names in os.walk(folder)
+        for name in names
+    )
 
 
 def _recognized(paths: list[str]) -> dict[str, bool | None]:
@@ -321,10 +335,21 @@ class FolderLibrary(LibraryDefaults):
         PRRT_kwDOQ9nULM64es7B). None for an Image directly in the root or in
         ``roms``.
         """
-        holding = folder_holding(self.root, path)
-        if holding is not None and os.path.basename(holding) == "roms":
-            return folder_holding(holding, path)
-        return holding
+        return self.platform_folders()(path)
+
+    def platform_folders(self) -> Callable[[str], str | None]:
+        """:meth:`platform_folder` for many paths: the root (and its ``roms``
+        folder) is listed once, not once per Image."""
+        in_root = folder_holder(self.root)
+        below = cache(folder_holder)
+
+        def platform_folder(path: str) -> str | None:
+            holding = in_root(path)
+            if holding is not None and os.path.basename(holding) == "roms":
+                return below(holding)(path)
+            return holding
+
+        return platform_folder
 
     def placement(
         self, platform: str, *, known: Sequence[Platform] | None = None,
@@ -336,7 +361,8 @@ class FolderLibrary(LibraryDefaults):
         style) or under ``roms`` (RomM style) that already names the Platform,
         by the user's mapping or a name detection reads, spelled as listed;
         else a new one named as ES-DE (or RomM) names it. Two folders that
-        both name it refuse. Blocking (lists one folder).
+        both name it: the one holding the most Images, marked ``guessed``
+        (#515). Blocking (lists one folder, or walks the candidates).
         """
         slug = platform_detect.known_slug(platform)
         if slug is None:
@@ -353,8 +379,10 @@ class FolderLibrary(LibraryDefaults):
         except OSError as exc:
             raise PlacementUnknown(f"{parent} can't be listed ({exc})") from exc
         if len(found) > 1:
-            names = ", ".join(os.path.basename(f) for f in found)
-            raise PlacementUnknown(f"more than one folder is {slug} ({names})")
+            # A best guess, not a refusal (#515): the folder already holding
+            # the most Images, ties by name. Marked so the UI says it guessed.
+            folder = max(sorted(found), key=_image_count)
+            return replace(placed_in(folder, slug, mapped=mapped), guessed=True)
         if found:
             folder = found[0]
         else:
@@ -406,6 +434,11 @@ class FolderLibrary(LibraryDefaults):
             raise RootUnavailable(f"{root} is not reachable inside the configured Volumes")
         if not os.path.isdir(root):
             raise RootUnavailable(f"{root} is not a folder")
+        from services import libraries
+
+        # Another Library's root inside this one owns its files (#514): not
+        # walked, so neither Rules, Findings nor duplicates here see them.
+        inner = libraries.inner_folders(self)
         extensions = _image_extensions()
         files: list[tuple[str, os.stat_result]] = []
         unreadable = 0
@@ -425,7 +458,13 @@ class FolderLibrary(LibraryDefaults):
         for current, dirs, names in os.walk(root, followlinks=False, onerror=on_error):
             # Junk (OS metadata, RomM's `.romm_tmp_*` staging) is neither
             # walked into nor listed: the same predicate the file browser uses.
-            dirs[:] = sorted(d for d in dirs if not is_junk_entry(d))
+            dirs[:] = sorted(
+                d for d in dirs if not is_junk_entry(d) and not (
+                    inner and libraries.is_inner(
+                        os.path.relpath(os.path.join(current, d), root), inner,
+                    )
+                )
+            )
             for name in sorted(n for n in names if not is_junk_entry(n)):
                 path = os.path.join(current, name)
                 # A split output's numbered parts (`Game.iso.0`, `.1`) carry no
@@ -680,9 +719,41 @@ class FolderLibrary(LibraryDefaults):
         self._rewalk_thread = thread
         thread.start()
 
+    def _games_folder(
+        self, entries: list[Entry], platform_folder: Callable[[str], str | None],
+    ) -> tuple[str | None, str | None]:
+        """Where most of a console's games are, relative to the root (#541):
+        their console folder, whatever the layout says new ones get, and a
+        note when that can't be told. ``(None, None)`` when they sit in the
+        root itself.
+
+        A game two folders claim (a symlinked alias, ``AmbiguousFolder``)
+        counts for neither: that check still refuses to pick, but only this
+        console's folder is left unknown, never the whole listing.
+        """
+        held: Counter = Counter()
+        ambiguous = None
+        for entry in entries:
+            try:
+                folder = platform_folder(entry.path)
+            except AmbiguousFolder as exc:
+                ambiguous = str(exc)
+                continue
+            # None is the root: games sitting there count too, so most games in
+            # the root open the root.
+            held[folder or None] += 1
+        if not held:
+            return None, ambiguous
+        folder = held.most_common(1)[0][0]
+        if folder is None:
+            return None, None
+        return os.path.relpath(folder, self.root).replace(os.sep, "/"), None
+
     def summary(self, *, refresh: bool = False) -> dict[str, Any]:
         """Detected Platforms with Image counts, and the Images left out."""
         scan = self.scan(refresh=refresh)
+        by_platform = scan.by_platform()
+        platform_folder = self.platform_folders() if by_platform else None
         unsorted = conflicted = 0
         for entry in scan.entries:
             if entry.detection.platform:
@@ -696,8 +767,11 @@ class FolderLibrary(LibraryDefaults):
                 {
                     "id": slug, "slug": slug,
                     "name": platform_detect.platform_name(slug), "images": len(entries),
+                    **dict(zip(
+                        ("folder", "folder_note"), self._games_folder(entries, platform_folder),
+                    )),
                 }
-                for slug, entries in sorted(scan.by_platform().items())
+                for slug, entries in sorted(by_platform.items())
             ],
             "unsorted": unsorted,
             "conflicted": conflicted,

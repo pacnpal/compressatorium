@@ -2,6 +2,86 @@
 
 ## Unreleased
 
+### Added
+
+- **RomM connects itself** (#532).
+  - On first run, RomM's Settings looks for RomM at `http://romm:8080` and its
+    other usual addresses and offers **Found RomM at …: Use it**.
+  - Type RomM's **pairing code** (RomM 4.8+) instead of pasting a 64-character
+    token. Pasting a token still works. A pairing saves nothing by itself: its
+    token is saved with the URL and Library path by the Save, once they test,
+    so a wrong path leaves the current connection as it was.
+  - The **Library path** fills itself in from RomM's platform folders, matched
+    against your volumes, following RomM's own folder structure (a custom
+    `games/{platform}/{game}` suggests the folder holding `games`).
+  - New games go where RomM's own folder structure says (RomM 5.3+), not a
+    guess from what's on disk. Rules skip files RomM is set to ignore, and
+    refuse a target format RomM ignores; a single file name RomM ignores skips
+    only the game whose output has that name. Scheduled runs, `run-rules` and
+    Inbox placement read RomM's settings themselves, with RomM's page closed.
+    Until RomM's ignore settings have been read once, runs wait, and until its
+    folder structure has, new games aren't placed, rather than guessing; a
+    failed read is retried within a minute.
+  - **Save tests the connection first** and names the field to fix, with
+    **Retry** and **Save anyway**. It saves exactly what was tested, and a
+    Save that leaves the URL and Library path as they were no longer reloads
+    the catalog. A check that couldn't run shows as "not
+    checked" instead of failed.
+  - The three RomM Settings cards are one form with one Save; the re-pin
+    knobs are under **Advanced**.
+  - RomM errors name the field to fix instead of an environment variable.
+- **ES-DE's gamelists are found for you** (#523). ES-DE 2.0 and later read
+  gamelists only from `ES-DE/gamelists/<system>`, never from the ROM folders,
+  so an ES-DE Library updated nothing until you typed that folder. The Rules
+  editor's **Frontend** select (None, ES-DE, Batocera or Knulli) replaces the
+  "Used by an EmulationStation frontend" checkbox. Picking ES-DE searches the
+  Volumes for the folder and offers each one found with **Use this folder**.
+  A Library already set up the old way is offered the folder too.
+- **Choose which messages each notification destination gets** (#523), and a
+  new **A job you started finished** message (off unless chosen).
+- **Signed webhooks** (#523). A generic webhook can have a signing secret; each
+  message then carries `X-Compressatorium-Signature: sha256=<hex>`, the
+  HMAC-SHA256 of the body.
+- **DATs made easy** (#524). **Import DATs** takes several `.dat`/`.xml` files
+  at once, and zips of them: No-Intro's daily pack or a Redump zip imports
+  every DAT inside in one go. A zip is read under the same caps and member-name
+  rules as an archive an Inbox takes in, and each DAT is capped at 100 MB.
+  Re-importing a DAT replaces the older copy instead of doubling it. One bad
+  or unreadable DAT is reported and the rest still import. The whole upload
+  is capped at 1 GB while it arrives, and the 100 MB cap holds for a loose
+  DAT from the CLI too. A DAT imported from the CLI while the server is
+  matching makes it re-check what it was deciding.
+- **Sync Redump in one click** (#524). Downloads Redump's DAT for each disc
+  Platform in your Libraries, one request at a time, and leaves a system
+  synced in the last day alone. Only DATs: never keys, BIOS sets or games.
+  It asks over HTTPS only, with the certificate checked, so a DAT can't be
+  swapped on the way in; while redump.org answers only plain HTTP, each
+  system reports that it couldn't connect. A Redump DAT you replace by hand
+  is fetched again on the next sync. No-Intro stays upload-only, because its
+  site is gated.
+- **Online identification is a single yes/no** (#524). Until you answer, the
+  DAT Library asks once whether to look up unknown files on Hasheous.
+- **CLI:** `compressatorium dat import PATH...` and `compressatorium dat sync`.
+- **Sonarr, Radarr and ROMarr webhook, and "scan this path now"** (#522).
+  `POST /api/hooks/arr` takes the *arr's Webhook connection: its Test answers
+  ok, and each file an import names is taken in by the Inbox that holds it at
+  once, with no poll and no settle wait, through the same intake as always.
+  `POST /api/scan` with a `path` (a file or folder) does the same for scripts.
+  Both use the app's login when it is on and the header
+  `X-Chd-Action-Confirm: scan`. When the *arr sees a folder under another name
+  (`/downloads` here is `/data/downloads`), add a path rewrite in the new
+  **Sonarr, Radarr and ROMarr** fold under a Library's watch folders; **Test a path** says
+  where a path lands, and suggests the rewrite when it finds the file under a
+  Volume. A rewritten path must still be inside a Volume and an Inbox.
+- **An *arr that imports straight into a Library converts it** (#541). When the
+  imported file lands in a Library's console folder rather than an Inbox, that
+  console's conversion Rule runs for it at once, as Run now would. Only when
+  the Library converts on its own (Convert automatically) and the console is
+  set to convert and on; otherwise the hook skips it and says why. A console
+  outside its hours is skipped too, and its next scheduled run takes the file.
+  A console paused meanwhile stays paused. **Test a path** gives the answer an
+  import of that path would get.
+
 ### Changed
 
 - **Backend cleanup** (#543). The 3DS verify (`zstd -t`) now runs through the
@@ -9,6 +89,196 @@
   process priority, bound and cancel handling. Dead code is gone, the tool
   services share their common methods, and the two longest functions (the job
   runner and the Rule sweep) are split into named steps. Nothing else changes.
+- **One page per Library** (#541). **Libraries** lists every Library as a
+  card with its consoles, games, whether it converts on its own, its watch
+  folders and how many problems need you. A Library's page has **Browse** (its
+  consoles and their folders, each a link into Files; RomM's catalog for
+  RomM), **Automation** and, for RomM, **Connection**. The Rules view, the
+  separate RomM view and the Inboxes panel are gone; their old links open the
+  new page.
+- **A console table instead of the Rule editor.** Each console is one row:
+  **Convert to**, **Check after**, **Delete original**. The rest (compression,
+  where new files go, which games, when it runs, the nightly re-check) is
+  under the row's sliders button. Picking a format turns the console on; a
+  new console starts from your saved defaults. Every change saves on its own,
+  so the **Save rules** button is gone. **Apply recommended** sets every
+  console with games and no format yet to its best one in one click, checks
+  each new file and keeps originals, and never changes a console you set
+  (new `GET /api/libraries/{id}/recommended-rules`). **Re-check games every
+  night** turns the check on for every converting console at once. A name
+  filter is saved only once the server says it is a valid pattern (new
+  `POST /api/rules/check-pattern`); until then it stays in its box with why,
+  and Preview, Run now and turning automation on wait for the check and refuse
+  while a filter isn't valid. Each change saves only the console it changes
+  (new `PATCH .../rules`, which the server merges), so no other console's
+  settings can be lost.
+  A console's **Try them again** releases only the games held after a failed
+  conversion (`failed_only` on `.../rules/forget-converted`), so a game already
+  converted under a rename or overwrite console is never converted again.
+- **Watch folders** (Inboxes) are picked from your Drives, never typed, and
+  each row says when it was last checked, what's still downloading, what
+  needs you and what was taken in, refreshed every 15 seconds. **Where new
+  games go** and the **Game list app** (None, ES-DE or Batocera/Knulli; ES-DE's
+  gamelists folder is picked from your Drives) sit below the table.
+- **RomM's Connection tab** has one **Save** that tests the connection before
+  saving, and saves only when it works. RomM's details, keeping the same entry and online IDs fold under
+  **More**. RomM's own converter shows as a banner on the Automation tab with
+  **Use RomM's choices**.
+- **Four places instead of eleven** (#534). The sidebar is now **Files**,
+  **Libraries**, **Activity** and **Settings**, with **Help** at the foot.
+  Files is the old Workspace; Libraries holds RomM and every folder Library;
+  Activity holds Findings, the job queue and the Ledger, with the space-saved
+  and queue cards on top; Settings holds game identification (DATs),
+  notifications and a new **Converters** list that says which converters can
+  run here and why one can't. The per-tool sidebar section is gone: the
+  Convert panel's **Convert to** list offers every format a ready converter
+  makes, grouped as Make smaller, Unpack and Other, and picking one switches
+  the panel to that converter. Every old link and bookmark (`#/workspace/…`,
+  `#/dashboard`, `#/romm`, `#/rules/…`, `#/findings`, `#/ledger`, `#/dat`)
+  still opens the same screen at its new address.
+- **Auto is the way to convert** (#538). Pick games and the Convert panel
+  shows the plan before anything runs: "12 PlayStation games → CHD",
+  "3 GameCube games → RVZ", and every game it leaves alone, with why. Each
+  game goes to its best format; **Convert to** names one format instead, or
+  an unpack. A game whose console is unknown or unclear gets **Pick console**.
+  **Options** holds the safety choices (they start from your defaults), one
+  compression choice per format the plan makes, and where the new files go,
+  picked from your Drives. One **Convert** button queues the plan; the Auto
+  checkbox, the tool picker and the typed output folder are gone. On a phone
+  the panel is a sheet at the foot of the screen while games are selected.
+  - `/api/jobs/auto-plan` and `/api/jobs/auto` take a `target` format (or mode)
+    and per-file `platform_overrides`; `/api/jobs/auto` also takes
+    `verify_after`, `delete_on_verify`, `container_only` and `split`, and gives
+    each group only what its format can do safely. The CLI's `--to` plans
+    through the same function.
+  - Skip reasons are plain: "Unknown console: …", "Console unclear: …",
+    "No converter here makes CHD from .rvz files", "Already CHD".
+  - An archive a converter reads whole (an eXoDOS game zip, a RAR set) can be
+    ticked under Best, so its own Convert to (Repack for RomM, Extract) can be
+    picked; Best itself leaves a dos zip alone (#294).
+- **A multi-file game is one row** (#538). A `.cue` or `.gdi` and its tracks, a
+  RAR set, a split Wii U dump and a playlist with its discs each show as one
+  row with the total size; the chevron shows the files. Ticking a playlist
+  ticks its discs, and Delete takes every file of the game. Each file under
+  the chevron keeps its own actions menu (Info, Verify, Rename, Delete…), and
+  a disc can still be ticked on its own. Deleting or renaming one file that a
+  sheet or playlist still names, or one part of a set, is refused with the
+  reason; a game's own Delete takes all of its files. The Status column
+  names the format: "CHD ✓" for a new file that is there, "→ CHD" for a game
+  that can be made smaller here, never a tool name. The search box searches
+  this folder as you type, or everywhere under it; going back to this folder
+  unticks the results it doesn't list. A file another playlist or sheet names
+  is kept, whatever code page (UTF-8, cp1252, UTF-16) that file is saved in.
+- **The top bar shows what's running**: "2 converting · 3 waiting", linking to
+  Activity. The Activity item in the sidebar counts what needs you (or, when
+  nothing does, what's running).
+- **Files** offers **Make this folder a Library** for the open folder, or shows
+  which Library it is in, and a first-run card offers to add a Library or
+  connect RomM until there is one (or it is dismissed). **Add a Library**
+  picks the folder by walking your Drives; there is no path to type.
+- **Help** is three steps and links into the README, instead of a page-long
+  reference.
+- **Compression** keeps "Compatible with…" in view and folds the codec and
+  level controls under **Choose codecs**.
+- New `GET`/`PUT /api/preferences/defaults` store the safety choices new
+  conversions start with (check each new file on, delete the original off).
+  The Settings screen that edits them comes next.
+- **One Settings page** (#540). Five sections, each with its own link
+  (`#/settings/<section>`) and its own loading and error line, with the section
+  list pinned at the left on a wide screen:
+  - **Connections**: whether RomM answers, with **Manage** to its Library page;
+    the **Identify games online (Hasheous)** switch, moved here from the DAT
+    screen, which checks Hasheous answers as soon as it's turned on (the
+    separate Test button is gone), and the once-only question on a fresh
+    install; and where to set up Sonarr, Radarr and ROMarr.
+  - **Game identification** (the old DAT Library): **Import game lists…**
+    (several files or zips at once), **Get Redump lists for my consoles**,
+    **Update MAME Redump**, the lists with their game counts and dates, and the
+    order under **Name order**. The hash-count tiles and the hash essay are
+    gone. A second click while a Redump download or an import runs starts
+    nothing.
+  - **Defaults** (new): what new conversions start with (check each new file,
+    delete the original once it checks out, quick check), the compression for
+    each format (the same one the Convert panel remembers), and **Keep history
+    for** forever, 30 days, 90 days or a year. Nothing in the UI set History's
+    retention before.
+  - **Converters** keeps the CHD badge scan.
+- **`compressatorium convert` uses the running server** (#533). When the
+  server is running on the same `/config`, the command finds it there and
+  hands it the jobs: they show in the web UI's queue, share its limit on
+  parallel jobs and land in its Ledger, and the command prints each line as
+  its job ends. A server whose queue is full (its own `MAX_QUEUE_DEPTH`, or
+  other clients' jobs) is fed smaller batches and waited for, so no input
+  fails for it. What the server can run decides what is converted, so NSZ
+  Images convert on a server that has the Switch keys even when the
+  command's container doesn't. Ctrl-C cancels the run's own jobs on the
+  server, asking again for any the server didn't take the first time. With
+  no server running, the command runs the jobs itself, and a server started
+  meanwhile waits until it is done, so a command and the server never work
+  on the same file. A server in another container is found
+  with nothing to set: by its host name on a Compose network, and by its own
+  address on Docker's default bridge (`docker run`, Unraid), checked to be
+  that server, on whatever port it was started with (`PORT=9090` too).
+  `--server URL` names one that still can't be found. The
+  cross-process job queue the two used to share in `/config/locks`
+  (`queue_*.ticket`, `holder_*.lock`, `convert_slot_*.lock`) is gone; old
+  files there are harmless and can be deleted.
+- **No more Recover button or "jobs look stuck" banner** (#533). Recovery
+  only ever removed lock files no process held, and such a file never blocks
+  a job; the app removes them on its own every 30 seconds. The
+  `CHD_DEBUG_HEARTBEAT` setting is gone: that cadence is fixed.
+  `GET /api/jobs/stuck-status` and `POST /api/jobs/recover` are removed.
+- **Job totals come from the Ledger** (#533). The dashboard's Done and Failed
+  numbers count every finished job, from the Ledger
+  (`GET /api/ledger/totals`). The Jobs panel's Completed and Failed tabs
+  count the jobs they list, and link to the Ledger for the older ones. The
+  file list still refreshes as each job finishes once the history is full,
+  and one Ledger read that fails no longer blanks the dashboard's other
+  cards. `GET /api/jobs/history-overflow` and the job stream's `history` event are
+  removed; `DELETE /api/jobs/completed` answers `{deleted, count}`.
+- **A Rule turns on when you pick its target, and an empty run says why**
+  (#520). Picking "Convert to" for a console now enables that Rule, so Preview
+  and Run now no longer answer "0 queued" for a Rule that was silently off.
+  When nothing runs, Preview and Run now say why: the Rule is off, no files
+  match, all of them are already converted or already in the queue, or a Rule
+  could not run.
+- **A batch never fails over one file** (#520). A file whose output another
+  job is already writing is skipped and named in the result; the rest of the
+  batch is queued. Auto queues every Image whose plan is unchanged since you
+  confirmed it and names the ones that changed, instead of refusing the whole
+  run and asking again; if one target's group can't be queued, the others
+  still are. A compression level outside the codec's range is clamped to it
+  (`zstd:40` on RVZ runs as `zstd:22`) instead of refused.
+- **Works out of the box** (#515). A tool program that isn't at the path the
+  image uses (`/usr/bin/chdman`, `/usr/local/bin/maxcso`, ...) is looked up on
+  `PATH` by name when its `*_PATH` is unset, so a Homebrew or distro install
+  works with nothing set; `7zz` stands in for a missing `7z`. A path you set
+  is used as is.
+- **A tool that can't run is shown, not hidden** (#515). The dashboard's Quick
+  tools card lists it under **Not ready here** with the one thing to install
+  or set (`GET /api/tools` now carries a `reasons` map). The Switch reason says
+  a `prod.keys` anywhere on a Volume is found on its own. The empty Volume list
+  says to mount folders under `/data`. RomM errors point at the URL and token
+  on the RomM page instead of naming `ROMM_URL` / `ROMM_TOKEN`, and Help no
+  longer tells you to set environment variables for Switch keys or NKit.
+- **A folder Library with two folders for one Platform places new Images in
+  the one already holding the most** (#515), instead of refusing. The
+  placements list marks that row `guessed`; a folder mapping makes it
+  certain. Containment and the detection check still apply to the guess.
+
+- **Libraries may overlap; the nearest folder owns a file** (#514). Any
+  folder can be registered as a Library now, including one inside RomM's
+  library folder or inside or around another folder Library, and RomM's
+  library folder can be set around or inside a folder Library. A file belongs
+  to the Library with the nearest folder: its Rules convert the file and its
+  settings (its ES-DE gamelist) apply, and the Library around it leaves the
+  file out of its Rules, check Rules, Findings, find-duplicates and counts,
+  so no file is converted twice. An output written into a folder Library
+  inside RomM's folder is still hidden from RomM's scanner while it is
+  written. The Rules view says which Library a Library sits inside and which
+  sit inside it. Still refused: the same folder twice, a Library overlapping
+  an Inbox, and a file reached through one Library's folder that lives in
+  another (its Source is kept).
 
 - **eXoDOS works with no setting** (#513). Point the app at your eXoDOS
   collection and the eXoDOS tool is there: it is no longer hidden until
@@ -31,6 +301,64 @@
   - Verify accepts a `.dosz` with no `dosbox.conf` when it holds a DOS program.
 
 ### Fixed
+
+- **Settings → Game identification** says when it couldn't check which
+  consoles Redump covers, with **Try again**, instead of claiming none of
+  your Libraries has one (#545 follow-up).
+- **Turning Hasheous on, then off quickly** no longer lets the first click
+  finish after the second: it can't switch the screen back to on or test
+  Hasheous once you've turned it off (#545 follow-up).
+- **Saving a format's compression in Settings** changes only that format on
+  the server, so a change saved meanwhile from another tab is kept
+  (#545 follow-up).
+
+- **Quick wins, contrast and plain details** (#521).
+  - The RomM page's hints point to its own Settings tab, with a **Connect
+    RomM** button, instead of a "Settings → Metadata" page that doesn't exist.
+  - The RomM, Rules and Findings pages have a title in the top bar.
+  - Opening a Library from a toast keeps it in the address, so a reload stays
+    on it.
+  - The main area no longer draws a blue outline after every page change.
+  - The file list's breadcrumb has a row of its own and no longer draws over
+    the search box.
+  - **Set Platform** is offered only on folders inside a folder Library, the
+    only place it works.
+  - The sidebar shows no empty **Tool** heading when no tool can run.
+  - RomM's **Automation** tab shows RomM's Rules only, with no Library picker.
+  - The Rules page opens on the first folder Library when RomM isn't set up,
+    and shows a **Connect RomM** button when RomM is picked but not connected.
+  - Light mode: muted text and status text (warnings, successes) pass WCAG AA
+    contrast.
+  - Library pickers and the row menu show a clear keyboard focus ring.
+  - With reduced motion on, spinners and progress bars fade gently instead of
+    stopping, so busy work still looks busy.
+  - Dashboard cards and Help callouts drop their coloured stripe.
+  - The **Info** window shows readable labels ("Hunk size", "Game ID"),
+    hides empty fields and the repeated path, and puts a tool's raw output
+    behind **Details**.
+  - Checking a CHD no longer marks its `.cue` and `.bin` "Intact": a source
+    row shows a tick on its output's badge instead.
+  - Job toasts and job rows name the new file, not its full path.
+
+- muOS is no longer listed as reading `gamelist.xml`. It keeps its artwork in
+  its own catalogue (`MUOS/info/catalogue`), by game name.
+
+- **Sync MAMERedump no longer deletes your other DATs** (#525). It used to
+  delete every DAT in the store after a successful sync, including No-Intro
+  packs and Redump DATs you had imported or synced. It now replaces only the
+  DATs it brings a new copy of (same name and family).
+
+- **A sweep queues nothing from a listing that adding or removing a Library
+  made stale** (#518 follow-up). A sweep that listed a Platform
+  before a Library was registered or removed inside it (or before RomM's
+  folder moved) now queues none of that listing and checks none of it: the
+  Platform says "a Library was added or removed inside this one while it ran",
+  its run isn't recorded, and the next run lists it again. The check and the
+  queueing are one step, so no registration can slip in between. The Rules
+  view reads the Library list again after a Library is added or removed, so
+  which Library sits inside which stays right, also for a RomM folder reached
+  through a link. A job already queued before the change still runs as it
+  was queued.
 
 - **RomM: every Platform gets a folder for new Images, even when RomM keeps
   two records for it** (#512). RomM often keeps an empty record beside the

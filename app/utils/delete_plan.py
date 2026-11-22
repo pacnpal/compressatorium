@@ -4,7 +4,11 @@ import posixpath
 from pathlib import Path
 from typing import Dict, List, Sequence, Set
 
-from utils.path_utils import is_within_configured_volumes, strip_archive_path
+from utils.path_utils import (
+    is_within_configured_volumes,
+    lock_boundary_root,
+    strip_archive_path,
+)
 from utils.sheet_text import (
     cue_tracks,
     gdi_tracks,
@@ -304,6 +308,33 @@ def _archive_verdict(source_path: str) -> tuple[str, List[str]] | None:
     return ("extra", extras) if extras else None
 
 
+def _other_owner(part: str, source: Path) -> str | None:
+    """Why *part* of *source* stays: another file names it too (a sheet, a
+    playlist, a set; ``image_sets.owners_naming``), or that could not be told
+    (fail closed). None when only *source* does."""
+    from services import image_sets
+
+    if not os.path.exists(part):
+        return None  # reported as missing already
+    boundary = lock_boundary_root(part)
+    if boundary is None:
+        # Outside every Volume: never walked. The plan
+        # already refuses such a path (unsafe_paths), and the job's delete
+        # step checks the Volumes again.
+        return None
+    stop = str(boundary)
+    name = os.path.basename(part)
+    try:
+        owners = image_sets.owners_naming(part, stop_at=stop)
+    except (image_sets.SheetOwnerUnknown, OSError, ValueError) as exc:
+        return f"{exc}, so whether another game needs {name} is unknown; it is kept"
+    own = os.path.normcase(os.path.realpath(source))
+    others = [o for o in owners if os.path.normcase(os.path.realpath(o)) != own]
+    if not others:
+        return None
+    return f"{os.path.basename(others[0])} needs {name} too; it is kept"
+
+
 def build_delete_plan(
     source_path: str, *, confine_to_volumes: bool = False,
 ) -> Dict[str, object]:
@@ -401,6 +432,11 @@ def build_delete_plan(
                 unsafe_paths.append(str(exc))
                 continue
             _add_path(track_path)
+            # A track another game's sheet names too is never deleted with
+            # this one (#549 review): the plan is blocked instead.
+            shared = _other_owner(str(track_path), source)
+            if shared:
+                errors.append(shared)
         unsafe_paths[:] = list(dict.fromkeys(unsafe_paths))
 
         # Sources that are really a *set* of files report the rest of the set
@@ -414,8 +450,17 @@ def build_delete_plan(
         # Strict: a set whose members can't be told now (a RAR set whose
         # headers can't be read) blocks the plan rather than deleting the
         # named file alone.
-        for companion in registry.source_companions(str(source), strict=True):
+        # A split output's later parts too (Game.iso.0 leads .1, .2): the set
+        # goes whole or not at all.
+        companions = [
+            *registry.source_companions(str(source), strict=True),
+            *registry.split_members(str(source)),
+        ]
+        for companion in dict.fromkeys(companions):
             _add_path(Path(companion))
+            shared = _other_owner(companion, source)
+            if shared:
+                errors.append(shared)
     except Exception as exc:
         errors.append(str(exc))
 

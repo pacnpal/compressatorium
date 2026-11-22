@@ -23,20 +23,14 @@ ENV_FIXTURE = _env
 
 @pytest.fixture(name="one_slot")
 def _one_slot(env, monkeypatch, tmp_path):
-    """MAX_CONCURRENT_JOBS=1, locally and across processes, with the
+    """MAX_CONCURRENT_JOBS=1, with the
     dispatcher running; each conversion takes a moment."""
-    from services import job_manager as job_manager_module
-    from services.concurrency_manager import ConcurrencyManager
     from services.job_manager import job_manager
     from services.tools import registry
 
     monkeypatch.setattr(job_manager, "max_concurrent", 1)
     monkeypatch.setattr(job_manager, "_semaphore", asyncio.Semaphore(1))
     monkeypatch.setattr(job_manager, "_slot_waiters", {})
-    monkeypatch.setattr(
-        job_manager_module, "concurrency_manager",
-        ConcurrencyManager(1, str(tmp_path / "locks")),
-    )
     service = registry.get("dolphin")._service
 
     async def slow(cmd, *, input_path, output_path, **kwargs):

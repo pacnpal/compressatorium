@@ -160,10 +160,10 @@ def test_conflicted_and_unsorted_images_are_skipped_with_a_reason(tmp_path):
     plan = _by_path(plan_auto([conflicted, unsorted]))
 
     assert plan["clash.iso"].mode is None
-    assert "conflict" in plan["clash.iso"].skip_reason.lower()
+    assert plan["clash.iso"].skip_reason.startswith("Console unclear: ")
     assert "ngc" in plan["clash.iso"].skip_reason
     assert plan["mystery.iso"].mode is None
-    assert "unsorted" in plan["mystery.iso"].skip_reason.lower()
+    assert plan["mystery.iso"].skip_reason.startswith("Unknown console: ")
 
 
 def test_platform_with_no_target_for_the_file_type_is_skipped(tmp_path):
@@ -173,7 +173,7 @@ def test_platform_with_no_target_for_the_file_type_is_skipped(tmp_path):
     [entry] = plan_auto([path])
 
     assert entry.mode is None
-    assert entry.skip_reason == "No ps2 target reads .rvz files"
+    assert entry.skip_reason == "No converter here reads .rvz files for PlayStation 2"
 
 
 def test_an_image_already_in_its_target_format_is_left_alone(tmp_path):
@@ -194,15 +194,15 @@ def test_other_dolphin_formats_still_convert_to_rvz(tmp_path):
 @pytest.mark.parametrize(
     ("folder", "name", "platform"),
     [
-        ("ngpc", "game.ngc", "neo-geo-pocket-color"),
-        ("wonderswancolor", "game.wsc", "wonderswan-color"),
+        ("ngpc", "game.ngc", "Neo Geo Pocket Color"),
+        ("wonderswancolor", "game.wsc", "WonderSwan Color"),
     ],
 )
 def test_a_platform_no_tool_converts_says_so(tmp_path, folder, name, platform):
     [entry] = plan_auto([_blank(tmp_path / folder / name)])
 
     assert entry.mode is None
-    assert entry.skip_reason == f"No tool converts {platform} Images"
+    assert entry.skip_reason == f"No converter here handles {platform} games"
 
 
 def test_saved_compression_follows_the_tool(tmp_path):
@@ -356,88 +356,23 @@ async def test_auto_route_queues_nothing_when_a_later_group_fails_planning(
 
 
 @pytest.mark.asyncio
-async def test_auto_route_cancels_what_it_queued_when_a_later_group_fails(
+async def test_auto_route_keeps_what_it_queued_when_a_later_group_fails(
     route_env, monkeypatch,
 ):
+    """A later group refused at queue time reports its files; the earlier
+    groups stay queued, nothing is withdrawn (#520)."""
     paths = _mixed_selection(route_env["tmp_path"])
-    queued_ids: list[str] = []
     cancelled: list[str] = []
 
     async def fake_atomic(job_specs, mode, **_kwargs):
         if mode.value == "dolphin_rvz":
-            raise convert_routes.OutputClaimedError("taken by another job")
-        job_id = f"job-{mode.value}"
-        queued_ids.append(job_id)
-        return [type("Job", (), {"id": job_id})()]
-
-    async def fake_cancel(job_id):
-        cancelled.append(job_id)
-        return True
-
-    monkeypatch.setattr(convert_routes.job_manager, "create_jobs_atomic", fake_atomic)
-    monkeypatch.setattr(convert_routes.job_manager, "cancel_job", fake_cancel)
-
-    with pytest.raises(convert_routes.HTTPException) as exc:
-        await convert_routes.create_auto_jobs(await _confirmed(paths))
-
-    assert exc.value.status_code == 409
-    assert queued_ids, "the failing group must not be the first one queued"
-    assert sorted(cancelled) == sorted(queued_ids)
-
-
-@pytest.mark.asyncio
-async def test_auto_route_names_a_job_that_finished_before_the_withdrawal(
-    route_env, monkeypatch, caplog,
-):
-    paths = _mixed_selection(route_env["tmp_path"])
-
-    async def fake_atomic(job_specs, mode, **_kwargs):
-        if mode.value == "dolphin_rvz":
-            raise convert_routes.OutputClaimedError("taken by another job")
+            raise convert_routes.DestinationUnresolvableError("the volume did not answer")
         spec = job_specs[0]
         return [convert_routes.ConversionJob(
-            id=f"job-{mode.value}",
-            file_path=spec["file_path"],
-            filename=Path(spec["file_path"]).name,
-            output_path=spec["output_path"],
-            mode=mode,
-            status="completed",
-            created_at="2026-11-14T00:00:00Z",
+            id=f"job-{mode.value}", file_path=spec["file_path"],
+            filename=Path(spec["file_path"]).name, output_path=spec["output_path"],
+            mode=mode, status="queued", created_at="2026-11-14T00:00:00Z",
         )]
-
-    async def fake_cancel(_job_id):
-        return False  # already finished: nothing left to cancel
-
-    monkeypatch.setattr(convert_routes.job_manager, "create_jobs_atomic", fake_atomic)
-    monkeypatch.setattr(convert_routes.job_manager, "cancel_job", fake_cancel)
-
-    with pytest.raises(convert_routes.HTTPException) as exc:
-        await convert_routes.create_auto_jobs(await _confirmed(paths))
-
-    assert exc.value.status_code == 409
-    detail = exc.value.detail
-    assert "taken by another job" in detail["message"]
-    assert "ps2.iso" in detail["message"]
-    assert "ps2.iso" in caplog.text
-    # The kept jobs come back in the shape a success returns them, so the
-    # client can adopt them and keep their re-pin records.
-    kept = {job["id"]: job for job in detail["jobs"]}
-    assert "job-createdvd" in kept
-    assert kept["job-createdvd"]["file_path"].endswith("ps2.iso")
-    assert kept["job-createdvd"]["output_path"].endswith("ps2.chd")
-
-
-@pytest.mark.asyncio
-async def test_auto_route_withdraws_on_any_failure_not_only_http_errors(
-    route_env, monkeypatch,
-):
-    paths = _mixed_selection(route_env["tmp_path"])
-    cancelled: list[str] = []
-
-    async def fake_atomic(job_specs, mode, **_kwargs):
-        if mode.value == "dolphin_rvz":
-            raise RuntimeError("queue fell over")
-        return [type("Job", (), {"id": f"job-{mode.value}", "filename": "x"})()]
 
     async def fake_cancel(job_id):
         cancelled.append(job_id)
@@ -446,10 +381,16 @@ async def test_auto_route_withdraws_on_any_failure_not_only_http_errors(
     monkeypatch.setattr(convert_routes.job_manager, "create_jobs_atomic", fake_atomic)
     monkeypatch.setattr(convert_routes.job_manager, "cancel_job", fake_cancel)
 
-    with pytest.raises(RuntimeError):
-        await convert_routes.create_auto_jobs(await _confirmed(paths))
+    result = await convert_routes.create_auto_jobs(await _confirmed(paths))
 
-    assert cancelled
+    assert cancelled == []
+    assert {job.id for job in result.jobs} == {"job-createdvd", "job-createcd"}
+    skipped = {Path(s.path).name: s for s in result.skipped}
+    assert set(skipped) == {"gc.iso"}
+    assert skipped["gc.iso"].code == "queue_failed"
+    assert "did not answer" in skipped["gc.iso"].reason
+    rows = {Path(p.file_path).name: p for p in result.plan}
+    assert rows["gc.iso"].mode is None and "did not answer" in rows["gc.iso"].skip_reason
 
 
 @pytest.mark.asyncio

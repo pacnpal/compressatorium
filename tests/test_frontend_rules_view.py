@@ -24,9 +24,13 @@ _RULES_SOURCE = _SRC / "lib" / "rules" / "rulesSource.svelte.js"
 _ROMM_STORE = _SRC / "lib" / "stores" / "romm.svelte.js"
 _SAVE_QUEUE = _SRC / "lib" / "stores" / "latestSaveQueue.js"
 _VIEWS = _SRC / "lib" / "components" / "views"
-_EDITOR = _VIEWS / "RuleEditor.svelte"
-_RULES_VIEW = _VIEWS / "RulesView.svelte"
-_ROMM_VIEW = _VIEWS / "RommView.svelte"
+_LIBRARY = _SRC / "lib" / "components" / "library"
+# The console table (#541) replaced RuleEditor; LibraryView replaced RulesView.
+_TABLE = _LIBRARY / "RuleTable.svelte"
+_ADVANCED = _LIBRARY / "RuleAdvanced.svelte"
+_AUTOMATION = _LIBRARY / "LibraryAutomation.svelte"
+_BROWSE = _LIBRARY / "LibraryBrowse.svelte"
+_LIBRARY_VIEW = _VIEWS / "LibraryView.svelte"
 _ROW_MENU = _SRC / "lib" / "components" / "panels" / "RowActionsMenu.svelte"
 
 
@@ -76,9 +80,15 @@ const api = {
   forgetLibraryConverted: __defer('forgetLibraryConverted'),
   getLibraryPlatforms: __defer('getLibraryPlatforms'),
   registerLibrary: __defer('registerLibrary'),
+  getRecommendedRules: __defer('getRecommendedRules'),
+  getRommPlatforms: __defer('getRommPlatforms'),
+  listInboxes: __defer('listInboxes'),
 };
 const romm = { isRomm: true };
-const ui = { navigated: null, navigate(v) { this.navigated = v; } };
+const ui = {
+  navigated: null, navigatedOpts: null,
+  navigate(v, opts = {}) { this.navigated = v; this.navigatedOpts = opts; },
+};
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 """
 
@@ -523,20 +533,18 @@ process.stdout.write(JSON.stringify({{
     assert data["before"] == 1, data
     assert data["none"] == 0, data
     assert data["after"] == 0, data
-    assert data["call"] == ["forgetLibraryConverted", "folder:3", ["ps2"]], data
+    assert data["call"] == ["forgetLibraryConverted", "folder:3", ["ps2"], False], data
 
 
 def test_the_editor_shows_held_images_whatever_the_policy():
-    src = _EDITOR.read_text(encoding="utf-8")
-    assert "r.skipped_failed" in src, "the sweep summary drops held Images"
+    src = _ADVANCED.read_text(encoding="utf-8")
     block = re.search(
-        r"\{#if source\.heldCountFor\(platform\.id\) > 0\}(.*?)\{/if\}", src, re.DOTALL,
+        r"\{#if rule\.mode && source\.heldCountFor\(platform\.id\) > 0\}(.*?)\{/if\}", src, re.DOTALL,
     )
-    assert block, "no held-Images control in the editor"
-    assert "retryFailed(platform.id)" in block.group(1)
-    # Not nested under the overwrite/rename-only history block.
-    before = src[: block.start()]
-    assert before.rfind("{#if rule.duplicate_action !== 'skip'}") < before.rfind("{/if}")
+    assert block, "no held-games control in the console's settings"
+    assert "retryFailed" in block.group(1)
+    # Not tied to the duplicate policy.
+    assert "duplicate_action !== 'skip'" not in src
 
 
 def test_a_listing_still_running_is_a_wait_not_an_error(tmp_path):
@@ -561,41 +569,54 @@ process.stdout.write(JSON.stringify({{
     assert data["after"] == {"busy": False, "n": 1}, data
 
 
-def test_the_rules_view_offers_a_retry_while_a_listing_runs():
-    src = _RULES_VIEW.read_text(encoding="utf-8")
-    block = re.search(r"\{:else if source\.platformsBusy\}(.*?)\{:else", src, re.DOTALL)
-    assert block, "no neutral state for a listing still running"
-    assert "Listing still running, try again shortly" in block.group(1)
-    assert "source.loadPlatforms()" in block.group(1)
-    assert "error" not in block.group(1), "the wait is styled as an error"
+def test_the_browse_tab_waits_and_retries_while_a_listing_runs():
+    src = _BROWSE.read_text(encoding="utf-8")
+    assert "source.platformsBusy" in src
+    assert "const RETRY_MS = 3000;" in src
+    assert "setTimeout(() => source.loadPlatforms(), RETRY_MS)" in src
+    assert "Reading the folder…" in src
 
 
 def test_the_sweep_summary_names_every_reason_a_library_gives():
     """Round 3: a mount blip and a running listing each have their own words."""
-    src = _EDITOR.read_text(encoding="utf-8")
+    src = _AUTOMATION.read_text(encoding="utf-8")
     labels = re.search(r"const SWEEP_ERROR_LABELS = \{(.*?)\n  \};", src, re.DOTALL)
     assert labels, "SWEEP_ERROR_LABELS moved"
     for code in ("root_unavailable", "listing_in_progress"):
         assert f"{code}:" in labels.group(1), f"no label for {code}"
-    assert "still running, try again shortly" in labels.group(1)
-    assert "r.stopped_reason === 'not_configured'" in src
+    assert "try again shortly" in labels.group(1)
+    summary = (_SRC / "lib" / "rules" / "sweepSummary.js").read_text(encoding="utf-8")
+    assert "nothingReason(r)" in src and "not_configured:" in summary
     # PR #320 (Codex security): a sheet whose tracks leave the volumes.
     assert "r.skipped_unsafe" in src
 
 
 def test_the_deferred_romm_load_stops_once_the_view_is_gone():
-    """the RomM view's lifecycle guard, after every await."""
-    src = _RULES_VIEW.read_text(encoding="utf-8")
-    body = re.search(r"async function loadRomm\(\) \{(.*?)\n  \}", src, re.DOTALL)
+    """the Library view's lifecycle guard, after every await."""
+    src = _LIBRARY_VIEW.read_text(encoding="utf-8")
+    body = re.search(r"async function loadRomm\(gen\) \{(.*?)\n  \}", src, re.DOTALL)
     assert body, "loadRomm moved"
     load = body.group(1)
     first_await = load.index("await ")
-    guard = load.find("if (!alive) return;", first_await)
-    enters = load.index("enteredRomm = true;")
+    guard = load.find("if (!current(gen) || !romm.usable) return;", first_await)
+    enters = load.index("Promise.allSettled(")
     platforms = load.index("romm.loadPlatforms()")
     # Checked after the first await and before anything enters RomM mode.
     assert first_await < guard < enters < platforms, load
     assert "alive = false;" in src, "the view never marks itself gone"
+    assert "fileBrowser.exitRomm();" in src
+
+
+def test_a_romm_load_stops_when_another_library_opens():
+    """RomM to a folder Library while RomM's first requests
+    are out must not finish into RomM mode. Every Library change bumps a
+    generation the RomM load checks after each await."""
+    src = _LIBRARY_VIEW.read_text(encoding="utf-8")
+    assert "const current = (gen) => alive && gen === generation;" in src
+    effect = re.search(r"\$effect\(\(\) => \{\s*const src = source;(.*?)\n  \}\);", src, re.DOTALL)
+    assert effect and "const gen = ++generation;" in effect.group(1)
+    assert "void id;" in effect.group(1), "the generation must follow the id, not only the source"
+    assert "loadRomm(gen)" in effect.group(1)
 
 
 def test_folder_endpoints_read_the_librarys_own_id():
@@ -605,27 +626,23 @@ def test_folder_endpoints_read_the_librarys_own_id():
     assert "api.getLibraryRules(this.id)" in src
 
 
-def test_the_rules_screenshot_finds_its_row_by_platform_id():
+def test_the_automation_screenshot_finds_its_row_by_platform_id():
     """The shot opens the ps2 row by id; rows show display names, not slugs."""
-    editor = _EDITOR.read_text(encoding="utf-8")
-    assert "data-platform-id={platform.id}" in editor
+    table = _TABLE.read_text(encoding="utf-8")
+    assert "data-platform-id={platform.id}" in table
     shots = (_SRC.parent / "shots.yml").read_text(encoding="utf-8")
-    assert """.row-toggle[data-platform-id="ps2"]""" in shots
+    assert """[data-platform-id="ps2"]""" in shots
     assert "b.textContent.includes('ps2')" not in shots
 
 
-def test_a_deep_link_change_reselects_while_the_view_stays_mounted():
-    """#/rules/folder:1 -> #/rules/folder:2 (or Back) reselects."""
-    src = _RULES_VIEW.read_text(encoding="utf-8")
-    effect = re.search(
-        r"\$effect\(\(\) => \{\s*if \(embedded\) return;\s*"
-        r"const target = ui\.rulesTarget;(.*?)\n  \}\);",
-        src, re.DOTALL,
-    )
-    assert effect, "the selection does not follow ui.rulesTarget"
-    assert "libraries.select(target)" in effect.group(1)
-    # Not only once on mount.
-    assert "else if (ui.rulesTarget) libraries.select(ui.rulesTarget);" not in src
+def test_a_deep_link_change_follows_the_hash_while_the_view_stays_mounted():
+    """#/libraries/folder:1 -> folder:2 (or Back) shows folder:2."""
+    src = _LIBRARY_VIEW.read_text(encoding="utf-8")
+    assert "const id = $derived(ui.libraryTarget);" in src
+    assert "const source = $derived(libraries.sourceFor(id));" in src
+    effect = re.search(r"\$effect\(\(\) => \{\s*const src = source;(.*?)\n  \}\);", src, re.DOTALL)
+    assert effect, "the view does not load the Library the hash names"
+    assert "src.loadPlatforms();" in effect.group(1)
 
 
 def test_both_libraries_share_one_rules_source():
@@ -642,9 +659,11 @@ def test_both_libraries_share_one_rules_source():
 def test_opening_rules_on_a_library_navigates_there(tmp_path):
     data = _run(tmp_path, """
 libraries.open('folder:3');
-process.stdout.write(JSON.stringify({ selected: libraries.selectedId, view: ui.navigated }));
+process.stdout.write(JSON.stringify({
+  selected: libraries.selectedId, view: ui.navigated, id: ui.navigatedOpts.id,
+}));
 """)
-    assert data == {"selected": "folder:3", "view": "rules"}, data
+    assert data == {"selected": "folder:3", "view": "libraries", "id": "folder:3"}, data
 
 
 # ----------------------------------------------------------------------
@@ -652,32 +671,21 @@ process.stdout.write(JSON.stringify({ selected: libraries.selectedId, view: ui.n
 # ----------------------------------------------------------------------
 
 
-def test_the_romm_entry_point_opens_the_rules_view_on_romm():
-    romm_view = _ROMM_VIEW.read_text(encoding="utf-8")
-    assert "<RulesView embedded />" in romm_view, (
-        "the RomM view's Automation tab no longer opens the Rules view"
-    )
-    rules_view = _RULES_VIEW.read_text(encoding="utf-8")
-    assert "if (embedded) libraries.select(ROMM_LIBRARY_ID);" in rules_view, (
-        "the embedded Rules view does not open on the RomM Library"
-    )
+def test_every_library_shares_one_automation_tab():
+    """RomM and a folder Library open the same Automation tab on their own source."""
+    view = _LIBRARY_VIEW.read_text(encoding="utf-8")
+    assert "<LibraryAutomation {source} {library} />" in view
+    assert "<RommBrowse />" in view and "<LibraryBrowse {source} {library} />" in view
 
 
 def test_the_editor_reads_policies_from_the_library():
     """No hard-coded policy list the folder Library could not honour."""
-    src = _EDITOR.read_text(encoding="utf-8")
-    assert "source.ruleOptions?.duplicate_actions" in src
-    assert not re.search(r"\bromm\.[a-zA-Z]+\(", src), (
-        "the editor reaches past its source into the RomM store"
-    )
-
-
-def test_the_rules_view_has_a_library_picker():
-    src = _RULES_VIEW.read_text(encoding="utf-8")
-    assert re.search(r'<Select\s+label="Library"', src), "the Library picker is gone"
-    assert "onchange={pick}" in src
-    # Inside the RomM view, another Library opens the full Rules view.
-    assert "if (embedded && id !== ROMM_LIBRARY_ID) libraries.open(id);" in src
+    advanced = _ADVANCED.read_text(encoding="utf-8")
+    assert "source.ruleOptions?.duplicate_actions" in advanced
+    for src in (advanced, _TABLE.read_text(encoding="utf-8")):
+        assert not re.search(r"\bromm\.[a-zA-Z]+\(", src), (
+            "the console table reaches past its source into the RomM store"
+        )
 
 
 def test_folders_offer_register_as_a_library():
@@ -689,10 +697,32 @@ def test_folders_offer_register_as_a_library():
     assert "libraries.register(path)" in src
 
 
-def test_rules_is_a_view_of_its_own():
-    ui = (_SRC / "lib" / "stores" / "ui.svelte.js").read_text(encoding="utf-8")
-    assert "'rules'" in ui.split("const VIEWS", 1)[1].split("\n", 1)[0]
+def test_a_folder_librarys_page_opens_from_its_route():
+    """Restructure item 9: `#/libraries/<id>` shows that Library's page."""
+    view = (_SRC / "lib" / "components" / "views" / "LibrariesView.svelte").read_text(
+        encoding="utf-8",
+    )
+    assert "{#if id}\n  <LibraryView />" in view
     sidebar = (_SRC / "lib" / "components" / "layout" / "Sidebar.svelte").read_text(
         encoding="utf-8",
     )
-    assert "go('rules')" in sidebar
+    assert "view: 'libraries'" in sidebar
+
+
+def test_a_catalogue_read_answering_after_a_newer_one_is_dropped(tmp_path):
+    """CodeRabbit PR #551: an older read finishing last must not put back
+    stale nesting over the newer catalogue."""
+    data = _run(tmp_path, f"""
+const first = libraries.load();
+await tick();
+const second = libraries.load();
+await tick();
+__calls[1].resolve([{{ ...{_FOLDER}, contains: [] }}]);
+await second;
+__calls[0].resolve([{{ ...{_FOLDER}, contains: [{{ id: 'folder:7', name: 'gone' }}] }}]);
+await first;
+process.stdout.write(JSON.stringify({{
+  contains: libraries.list.find((lib) => lib.id === 'folder:3').contains,
+}}));
+""")
+    assert data["contains"] == [], data

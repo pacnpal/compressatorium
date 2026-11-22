@@ -157,6 +157,10 @@ class FileEntry(BaseModel):
     # on its own; the Source's path is what to select. None when it is no
     # companion, or the set's members can't be told now.
     companion_of: str | None = None
+    # The playlist this row is a disc of: the ``.m3u`` in the same listing
+    # that names it. The Files view folds the discs under the playlist row.
+    # None when no listed playlist names it, or the playlist can't be read.
+    disc_of: str | None = None
 
 
 class RommListingSummary(BaseModel):
@@ -344,13 +348,22 @@ class BatchJobCreateRequest(BaseModel):
     # Skip the Round-trip check and delete on the container check alone.
     container_only: bool = False
     split: bool = False  # makeps3iso folder->iso: split output into 4 GB parts
+    # Read each new file back once it is written (a check, never a delete).
+    verify_after: bool = False
 
 
 class AutoPlanRequest(BaseModel):
-    """Images to send to their Platform's default target (the Auto choice)."""
+    """Images to send to their Platform's default target (the Auto choice).
+
+    ``target`` is the Convert panel's "Convert to": None for each game's best
+    format, a format (``chd``) or a mode id. ``platform_overrides`` maps a
+    path to the console the user picked for a game detection left undecided.
+    """
 
     file_paths: list[str]
     output_dir: str | None = None
+    target: str | None = None
+    platform_overrides: dict[str, str] = {}
 
 
 class AutoJobItem(BaseModel):
@@ -364,13 +377,22 @@ class AutoJobCreateRequest(BaseModel):
     """Queue the Auto plan the user confirmed.
 
     ``items`` are the plan's actionable rows only (an Image the preview
-    skipped is never sent). The route replans them and refuses with 409 when
-    any target changed, so what is queued is what was confirmed.
+    skipped is never sent). The route replans them and queues each one whose
+    target is unchanged; one that changed is reported, never queued (#520).
     """
 
     items: list[AutoJobItem]
     output_dir: str | None = None
     duplicate_action: DuplicateAction = DuplicateAction.SKIP
+    # The plan's own inputs, so the replan matches what was confirmed.
+    target: str | None = None
+    platform_overrides: dict[str, str] = {}
+    # The panel's safety choices. Each group gets delete (and the quick check
+    # with it) only when its mode can delete safely; the rest keep originals.
+    verify_after: bool = False
+    delete_on_verify: bool = False
+    container_only: bool = False
+    split: bool = False
 
 
 class AutoPlanItem(BaseModel):
@@ -388,6 +410,8 @@ class AutoPlanItem(BaseModel):
     tool_id: str | None = None
     compression: str | None = None
     skip_reason: str | None = None
+    # The name of the file the mode would write, for the plan's file list.
+    output_name: str | None = None
 
 
 class BatchSkippedItem(BaseModel):
@@ -413,8 +437,14 @@ class BatchJobsResponse(BaseModel):
 
 
 class AutoBatchResponse(BaseModel):
+    """What Auto queued, the plan as it ran, and each file it left out and why
+    (#520): a plan that changed since it was confirmed (``plan_changed``), a
+    ``plan_job`` skip, an output another job holds (``output_claimed``), or a
+    group the queue refused (``queue_failed``)."""
+
     plan: list[AutoPlanItem]
     jobs: list[ConversionJob]
+    skipped: list[BatchSkippedItem] = []
 
 
 class CheckDuplicatesRequest(BaseModel):
@@ -638,3 +668,18 @@ class ConversionPreferences(BaseModel):
     """
 
     model_config = ConfigDict(extra="allow")
+
+
+class DefaultsPreferences(BaseModel):
+    """The safety choices a new conversion or a new console setting starts with.
+
+    Stored under the ``defaults`` preference key. Check each new file, keep the
+    original, and run the full check: the safe answer for each, so nothing is
+    deleted until the user asks for it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    verify_after: bool = True
+    delete_on_verify: bool = False
+    container_only: bool = False

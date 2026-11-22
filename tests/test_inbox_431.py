@@ -97,18 +97,6 @@ async def _poll(box, now: float) -> dict:
     return result
 
 
-def _two_global_slots(monkeypatch, where: Path) -> None:
-    """Two cross-process slots too (an Inbox copy takes one, #431), in a lock
-    folder of the test's own."""
-    from services import job_manager as job_manager_module
-    from services.concurrency_manager import ConcurrencyManager
-
-    monkeypatch.setattr(
-        job_manager_module, "concurrency_manager",
-        ConcurrencyManager(2, str(where.parent / "locks-2")),
-    )
-
-
 def _inbox_findings() -> list[dict]:
     return [f for f in findings.list_findings() if f["kind"] in findings.INBOX_KINDS]
 
@@ -576,12 +564,13 @@ async def test_a_held_file_that_leaves_the_inbox_has_its_finding_cleared(vol, db
 
 def test_the_libraries_view_lists_inboxes_with_their_status():
     root = Path(__file__).resolve().parents[1]
-    view = (root / "src/lib/components/views/RulesView.svelte").read_text()
-    panel = (root / "src/lib/components/views/LibraryInboxes.svelte").read_text()
+    view = (root / "src/lib/components/library/LibraryAutomation.svelte").read_text()
+    panel = (root / "src/lib/components/library/WatchFolders.svelte").read_text()
     endpoints = (root / "src/lib/api/endpoints.js").read_text()
     findings_view = (root / "src/lib/components/views/FindingsView.svelte").read_text()
-    assert "<LibraryInboxes" in view
+    assert "<WatchFolders" in view
     assert "api.listInboxes" in panel and "api.createInbox" in panel
+    # The status line (#541): last checked, still downloading, need you, taken in.
     for status in ("last_poll", "waiting", "in_progress", "held", "processed"):
         assert f"row.{status}" in panel
     assert "/inboxes`" in endpoints
@@ -592,8 +581,8 @@ def test_the_libraries_view_lists_inboxes_with_their_status():
     shots = (root / "shots.yml").read_text()
     readme = (root / "README.md").read_text()
     for theme in ("light", "dark"):
-        assert f"output: docs/screenshots/rules-inboxes-{theme}.png" in shots
-        assert f"docs/screenshots/rules-inboxes-{theme}.png" in readme
+        assert f"output: docs/screenshots/library-watch-folders-{theme}.png" in shots
+        assert f"docs/screenshots/library-watch-folders-{theme}.png" in readme
 
 
 # ---- no Inbox around or inside any Library ---------------------------------
@@ -1210,14 +1199,15 @@ async def test_a_verifier_that_must_stop_stops_the_pass(vol, db, monkeypatch):
     assert sorted(p.name for p in (vol / "ROMs" / "ps2").glob("*.iso")) == ["A.iso", "B.iso"]
 
 
-def test_a_save_keeps_a_draft_typed_while_it_was_out():
-    """the folder field is cleared only when the
-    Library and the draft are still the ones that were saved."""
+def test_a_save_reloads_only_the_library_it_was_for():
+    """the folder is picked, not typed (#541), so no
+    draft can be lost; a save that lands after another Library was opened
+    still reloads only its own."""
     panel = (
-        Path(__file__).resolve().parents[1] / "src/lib/components/views/LibraryInboxes.svelte"
+        Path(__file__).resolve().parents[1] / "src/lib/components/library/WatchFolders.svelte"
     ).read_text()
-    assert "if (libraryId === id && folder === submitted) folder = '';" in panel
-    assert "\n      folder = '';\n" not in panel
+    assert "if (libraryId === id) await load(id);" in panel
+    assert "<input" not in panel
 
 
 # ---- review round four (CodeRabbit follow-ups on #443) ----------------------
@@ -1310,7 +1300,6 @@ async def test_a_stop_reaches_a_copy_already_running_beside_it(vol, db, monkeypa
 
     monkeypatch.setattr(job_manager, "max_concurrent", 2)
     monkeypatch.setattr(job_manager, "_semaphore", asyncio.Semaphore(2))
-    _two_global_slots(monkeypatch, vol)
     library = _library(vol)
     _inbox(vol, library, settle=0)
     _drop(vol / "Downloads" / "ps2" / "A.iso")
@@ -1618,7 +1607,6 @@ async def test_a_copy_paused_before_its_first_open_sees_the_stop(vol, db, monkey
 
     monkeypatch.setattr(job_manager, "max_concurrent", 2)
     monkeypatch.setattr(job_manager, "_semaphore", asyncio.Semaphore(2))
-    _two_global_slots(monkeypatch, vol)
     library = _library(vol)
     _inbox(vol, library, settle=0)
     _drop(vol / "Downloads" / "ps2" / "A.iso")
@@ -1792,7 +1780,6 @@ async def test_an_open_in_flight_when_the_stop_lands_reads_nothing(vol, db, monk
 
     monkeypatch.setattr(job_manager, "max_concurrent", 2)
     monkeypatch.setattr(job_manager, "_semaphore", asyncio.Semaphore(2))
-    _two_global_slots(monkeypatch, vol)
     library = _library(vol)
     _inbox(vol, library, settle=0)
     _drop(vol / "Downloads" / "ps2" / "A.iso")
@@ -1988,40 +1975,6 @@ async def test_output_locks_taken_after_their_wait_gave_up_are_released(vol, db,
 
     assert not lock_manager._locks
     assert not (vol / "ROMs" / "ps2" / "Game.iso").exists()
-
-
-@pytest.mark.asyncio
-async def test_a_copy_waits_for_the_global_slot_another_process_holds(
-    vol, db, monkeypatch, tmp_path,
-):
-    """Hold_slot takes the cross-process slot a
-    conversion takes too, so a CLI process holding the only one makes the
-    copy wait; ending gives both back."""
-    import asyncio
-
-    from models import ConversionMode
-    from services import job_manager as job_manager_module
-    from services.concurrency_manager import ConcurrencyManager
-    from services.job_manager import job_manager
-
-    shared = ConcurrencyManager(1, str(tmp_path / "locks"))
-    other = ConcurrencyManager(1, str(tmp_path / "locks"))  # the CLI process
-    monkeypatch.setattr(job_manager_module, "concurrency_manager", shared)
-    assert await other.acquire("cli-job")
-    copy = job_manager.create_external_job("Game.iso", ConversionMode.INBOX_COPY)
-    try:
-        waiting = asyncio.ensure_future(job_manager.hold_slot(copy.id, asyncio.Event()))
-        await asyncio.sleep(0.5)
-        assert not waiting.done()
-
-        other.release("cli-job")
-        assert await asyncio.wait_for(waiting, 5) is True
-        job_manager.release_slot(copy.id)
-        assert await asyncio.wait_for(other.acquire("cli-job-2"), 5)
-        other.release("cli-job-2")
-    finally:
-        job_manager.jobs.pop(copy.id, None)
-
 
 
 # ---- review round eight (Codex on #443) -------------------------------------
@@ -2243,7 +2196,8 @@ def test_the_inbox_screenshot_requires_its_own_inbox():
     """after a 409 the shot lists the Library's
     Inboxes and requires the expected folder, and waits for its row."""
     shots = (Path(__file__).resolve().parents[1] / "shots.yml").read_text()
-    block = shots[shots.index("rules-inboxes-light"):shots.index("rules-inboxes-dark")]
+    start = shots.index("shot === 'library-watch-folders'")
+    block = shots[start:shots.index("} else if", start + 1)]
     assert "/inboxes`" in block and "listed.inboxes" in block
     assert "downloads" in block and "status row" in block
 
@@ -2368,11 +2322,11 @@ def _run_inbox_shot(listed: list[str]) -> subprocess.CompletedProcess:
     import yaml
 
     shots = yaml.safe_load((Path(__file__).resolve().parents[1] / "shots.yml").read_text())
-    script = next(s for s in shots if "rules-inboxes-light" in s["url"])["javascript"]
+    script = next(s for s in shots if "library-watch-folders-light" in s["url"])["javascript"]
     harness = """
 const listed = JSON.parse(process.argv[1]);
 const json = (data, status = 200) => ({ ok: status < 300, status, json: async () => data });
-globalThis.location = { search: '?s=rules-inboxes-light', hash: '' };
+globalThis.location = { search: '?s=library-watch-folders-light', hash: '' };
 globalThis.localStorage = { setItem() {} };
 globalThis.StorageEvent = class { constructor() {} };
 globalThis.window = { dispatchEvent() {} };
@@ -2387,11 +2341,11 @@ globalThis.fetch = async (url, opts = {}) => {
   throw new Error('unexpected fetch ' + url);
 };
 const rows = listed.map(folder => ({
-  querySelector: sel => (sel === '.where code' ? { textContent: folder }
-    : sel === '.status' ? {} : null),
+  dataset: { folder },
+  querySelector: sel => (sel === '.status' ? {} : null),
 }));
 const panel = { querySelectorAll: () => rows, scrollIntoView() {} };
-globalThis.document = { querySelector: sel => (sel === '.inboxes' ? panel : null) };
+globalThis.document = { querySelector: sel => (sel === '.watch' ? panel : null) };
 eval(require('fs').readFileSync(process.argv[2], 'utf8'))
   .then(() => console.log('captured'), e => { console.log('refused: ' + e.message); });
 """

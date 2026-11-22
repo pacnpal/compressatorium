@@ -20,6 +20,7 @@ from models import (
 )
 from services.archive import ARCHIVE_EXTENSIONS, archive_service, log_archive_read_failure
 from services.archive_members import later_volume_of
+from services import image_sets
 from services.chd_metadata_store import chd_metadata_store
 from services.disc_playlist import (
     PlaylistBusy,
@@ -50,6 +51,7 @@ from utils.path_utils import (
     is_configured_volume_root,
     is_within_configured_volumes,
     list_folder,
+    read_beneath,
 )
 
 router = APIRouter()
@@ -415,29 +417,85 @@ def companion_marks(
 ) -> dict[str, str]:
     """Which of *paths* belong to another of them (#504): companion -> Source.
 
-    A row is marked when it is one of ``registry.source_companions`` of another
-    listed path (a RAR set's later volumes, a split Wii U dump's parts): the
-    tools' own hook decides, never an extension. The lenient form, so a set
-    whose members can't be told now (an unreadable or slow RAR header, already
-    bounded and detached there) marks nothing. A path already marked is no
-    Source of its own and is not asked. ``progress`` is reported per path.
-    Blocking.
+    A row is marked when it is one of ``image_sets.image_members`` of another
+    listed path: a ``.cue``/``.gdi``'s tracks, a RAR set's later volumes, a
+    split dump's parts (the tools' own hooks decide, never an extension). The
+    lenient form, so a set whose members can't be told now (an unreadable
+    sheet, an unreadable or slow RAR header, already bounded and detached
+    there) marks nothing. A path already marked is no Source of its own and is
+    not asked. ``progress`` is reported per path. Blocking.
     """
-    listed = set(paths)
-    marks: dict[str, str] = {}
+    listed = {os.path.normpath(p): p for p in paths}
+    heads: dict[str, list[str]] = {}
     for path in paths:
         if progress is not None:
             progress(path)
-        if path in marks:
+        if path in heads:
             continue
-        for companion in registry.source_companions(path):
-            if companion in listed and companion not in marks:
-                marks[companion] = path
-    return marks
+        for member in image_sets.image_members(path):
+            companion = listed.get(os.path.normpath(member))
+            if companion is not None and companion != path:
+                heads.setdefault(companion, []).append(path)
+    # A file two rows name (a track two sheets share) folds under neither: it
+    # stays its own row, so deleting one game never takes the other's track.
+    return {
+        companion: owners[0] for companion, owners in heads.items()
+        if len(set(owners)) == 1
+    }
+
+
+PLAYLIST_EXTENSIONS = (".m3u", ".m3u8")
+# A playlist is a few lines; a bigger file is not one to fold a listing by.
+PLAYLIST_READ_BYTES = 64 * 1024
+
+
+def disc_marks(
+    paths: list[str], progress: Callable[..., None] | None = None,
+) -> dict[str, str]:
+    """Which of *paths* a listed playlist names: disc -> ``.m3u`` path.
+
+    Each entry resolves against the playlist's own folder. The read follows no
+    symlink and stops at ``PLAYLIST_READ_BYTES``; a playlist that can't be
+    read marks nothing. Blocking.
+    """
+    from services.referrers import m3u
+
+    listed = {os.path.normpath(p): p for p in paths}
+    heads: dict[str, list[str]] = {}
+    for path in paths:
+        if not path.lower().endswith(PLAYLIST_EXTENSIONS):
+            continue
+        if progress is not None:
+            progress(path)
+        folder = os.path.dirname(path)
+        try:
+            data = read_beneath(
+                os.path.realpath(folder), os.path.basename(path),
+                max_bytes=PLAYLIST_READ_BYTES,
+            )
+        except (OSError, ValueError):
+            continue
+        for entry in m3u.every_entry(data):
+            disc = listed.get(os.path.normpath(os.path.join(folder, entry)))
+            # A playlist is never another playlist's disc: two that name each
+            # other would otherwise both fold away.
+            if disc is None or disc == path or disc.lower().endswith(PLAYLIST_EXTENSIONS):
+                continue
+            heads.setdefault(disc, []).append(path)
+    # A disc two playlists name folds under neither, as a shared track does.
+    return {disc: owners[0] for disc, owners in heads.items() if len(set(owners)) == 1}
+
+
+def game_row_marks(
+    paths: list[str], progress: Callable[..., None] | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """``(companion_marks, disc_marks)`` in one blocking pass."""
+    return companion_marks(paths, progress), disc_marks(paths, progress)
 
 
 async def _listing_companion_marks(entries: list[FileEntry]) -> None:
-    """Set ``companion_of`` on the listed rows that belong to another row.
+    """Set ``companion_of`` and ``disc_of`` on the listed rows that belong to
+    another row (a sheet's tracks, a playlist's discs).
 
     Off the event loop under the listing's own stall bound. The marks are a
     hint: a pass that stops moving (a mount that hangs between two bounded
@@ -447,15 +505,16 @@ async def _listing_companion_marks(entries: list[FileEntry]) -> None:
     if len(paths) < 2:
         return
     try:
-        marks = await run_detached_within_stall_bound(
-            companion_marks, paths, what="Finding a listing's multi-file sets",
+        companions, discs = await run_detached_within_stall_bound(
+            game_row_marks, paths, what="Finding a listing's multi-file sets",
             stall=WALK_STALL_SECONDS, report_progress=True,
         )
     except (Stalled, ProbeCapacityExceeded):
         logger.warning("Listing marks no companion rows: the sets did not answer in time")
         return
     for entry in entries:
-        entry.companion_of = marks.get(entry.path)
+        entry.companion_of = companions.get(entry.path)
+        entry.disc_of = discs.get(entry.path)
 
 
 def _listing_volume(path: str) -> str:
@@ -960,6 +1019,8 @@ async def rename_file(
 
     is_dir = await run_in_threadpool(os.path.isdir, path)
     await _assert_path_not_in_use(path, is_dir=is_dir)
+    if not is_dir:
+        await _assert_not_named_elsewhere(path, renaming=True)
 
     # Validate new name (no path separators, no empty, no special chars that could be problematic)
     if not new_name or "/" in new_name or "\\" in new_name or new_name in (".", ".."):
@@ -1057,6 +1118,8 @@ async def delete_file(
     # For a recursive directory delete this also rejects the request if any
     # active job's path lives under the directory (see _assert_path_not_in_use).
     await _assert_path_not_in_use(path, is_dir=is_dir)
+    if not is_dir:
+        await _assert_not_named_elsewhere(path, renaming=False)
 
     try:
         if is_dir:
@@ -1087,6 +1150,114 @@ async def delete_file(
         raise HTTPException(status_code=500, detail=f"Failed to delete: {e!s}") from None
 
 
+def removed_path(path: str) -> str:
+    """The file a delete of *path* removes, normcased: a link itself (its
+    target stays), anything else by its real path. Blocking."""
+    if os.path.islink(path):
+        return os.path.normcase(os.path.abspath(path))
+    return os.path.normcase(os.path.realpath(path))
+
+
+def real_path_set(paths: list[str]) -> set[str]:
+    """*paths* as the files their deletes remove (:func:`removed_path`). Blocking."""
+    return {removed_path(p) for p in paths}
+
+
+def _split_set_by_name(path: str) -> list[str]:
+    """The other numbered parts beside *path* of the split output it belongs
+    to (``Game.iso.0`` / ``.1`` / …), by name alone, so a part the tool's
+    probe can't stat still counts. Blocking."""
+    owner = registry.split_owner_name(path)
+    if owner is None:
+        return []
+    folder = os.path.dirname(path)
+    parts = []
+    for name in os.listdir(folder):  # an OSError: the set can't be told
+        sibling = os.path.join(folder, name)
+        if sibling != path and registry.split_owner_name(sibling) == owner:
+            parts.append(sibling)
+    return parts
+
+
+def owners_of(
+    path: str, companions_of: dict[str, list[str]] | None = None,
+) -> tuple[dict[str, str] | None, str | None]:
+    """``(owners, None)``: every file that names *path* as part of itself, as
+    normcased real path -> path; or ``(None, why)`` when that can't be told.
+    Blocking.
+
+    Through ``image_sets.owners_naming``, the one ownership check: a sheet's
+    track, a playlist's disc, a set's later volume or part. Fails closed: when
+    the owners can't be told, the caller keeps the file.
+    """
+    name = os.path.basename(path)
+    boundary = lock_boundary_root(path)
+    if boundary is None:
+        # The batch checks containment first; never walk outside the Volumes.
+        return None, "Access denied: path outside configured volumes"
+    stop = str(boundary)
+    try:
+        owners = image_sets.owners_naming(path, stop_at=stop, companions_of=companions_of)
+    except (image_sets.SheetOwnerUnknown, OSError, ValueError) as exc:
+        return None, f"{exc}, so whether another game still needs {name} is unknown; it is kept"
+    return {os.path.normcase(os.path.realpath(o)): o for o in owners}, None
+
+
+def set_members(path: str) -> tuple[list[str] | None, str | None]:
+    """``(members, None)``: the other files of the set *path* leads (a split
+    output's later parts, any tool's ``source_companions``), as normcased
+    real paths; or ``(None, why)`` when they can't be told. Blocking."""
+    from services.tools.base import CompanionsUnknown
+
+    try:
+        members = [
+            *registry.split_members(path), *_split_set_by_name(path),
+            *registry.source_companions(path, strict=True),
+        ]
+    except (CompanionsUnknown, OSError, ValueError) as exc:
+        name = os.path.basename(path)
+        return None, f"the files {name} is made of can't be told ({exc}); it is kept"
+    return [os.path.normcase(os.path.realpath(m)) for m in dict.fromkeys(members)], None
+
+
+async def _assert_not_named_elsewhere(path: str, *, renaming: bool) -> None:
+    """Refuse (409) to delete or rename one file another file still names.
+
+    The single-file routes' share of the batch's check, after containment:
+    a sheet's track, a playlist's disc or a set's later part (``owners_of``),
+    and, for a delete, a set's first file without the rest (``set_members``;
+    the game's row deletes the set whole). Renaming a sheet leaves its tracks
+    reachable, so only a set whose parts follow its name refuses a rename.
+    Fails closed: when the owners can't be told, the file stays as it is.
+    """
+    name = os.path.basename(path)
+    owners, why = await off_loop_bounded(owners_of, path)
+    if owners is None:
+        raise HTTPException(status_code=409, detail=why)
+    if owners:
+        owner = os.path.basename(next(iter(owners.values())))
+        if renaming:
+            detail = f"{owner} names {name}; renaming it would break {owner}, so it keeps its name"
+        else:
+            detail = _still_needed_by(owner, name)
+        raise HTTPException(status_code=409, detail=detail)
+    if renaming and path.lower().endswith(image_sets.SHEET_EXTENSIONS):
+        return
+    members, why = await off_loop_bounded(set_members, path)
+    if members is None:
+        raise HTTPException(status_code=409, detail=why)
+    if members:
+        part = os.path.basename(members[0])
+        verb = "renamed" if renaming else "deleted"
+        raise HTTPException(status_code=409, detail=(
+            f"{name} and {part} are one set and can't be {verb} apart; the set is kept"
+        ))
+
+
+def _still_needed_by(owner: str, name: str) -> str:
+    return f"{os.path.basename(owner)} still needs {name} and isn't being deleted; {name} is kept"
+
+
 @router.post("/files/delete-batch")
 async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> dict:
     """Delete multiple files at once."""
@@ -1097,9 +1268,72 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
     if not payload.paths:
         raise HTTPException(status_code=400, detail="No paths provided")
 
-    results = []
-    success_count = 0
-    failed_count = 0
+    # A file another game still names (a shared track, a disc two playlists
+    # list, a set's part) goes only once every file naming it has actually
+    # been deleted in this request (#549 review). A file whose owners are still
+    # to come waits for a later round, whatever order the request lists them
+    # in; one whose owner stays (outside the request, or its delete failed) is
+    # kept.
+    # Containment first: a path outside every Volume gets
+    # the plain access-denied answer and nothing beside it is listed, stat'ed
+    # or read; only the contained paths take part in the ownership checks.
+    by_path: dict[str, dict] = {}
+    contained: list[str] = []
+    for path in dict.fromkeys(payload.paths):
+        if await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
+            contained.append(path)
+        else:
+            by_path[path] = {
+                "path": path, "success": False,
+                "error": "Access denied: path outside configured volumes",
+            }
+    requested = await off_loop_bounded(real_path_set, contained)
+    real_of = dict(zip(contained, await off_loop_bounded(
+        lambda paths: [removed_path(p) for p in paths], contained,
+    ), strict=True))
+    companions_of: dict[str, list[str]] = {}
+    owners_cache: dict[str, tuple[dict[str, str] | None, str | None]] = {}
+    members_cache: dict[str, tuple[list[str] | None, str | None]] = {}
+    deleted: set[str] = set()
+    settled: set[str] = set()
+
+    async def ownership(path: str) -> tuple[str | None, bool]:
+        """``(why it is kept, False)``, ``(None, True)`` to wait for its
+        owners, or ``(None, False)`` when it may go now."""
+        if path not in owners_cache:
+            try:
+                owners_cache[path] = await off_loop_bounded(owners_of, path, companions_of)
+            except HTTPException as exc:
+                owners_cache[path] = (None, str(exc.detail))
+        owners, why = owners_cache[path]
+        if owners is None:
+            return why, False
+        name = os.path.basename(path)
+        # A set goes whole or not at all: never its first part without the rest.
+        if path not in members_cache:
+            try:
+                members_cache[path] = await off_loop_bounded(set_members, path)
+            except HTTPException as exc:
+                members_cache[path] = (None, str(exc.detail))
+        members, why = members_cache[path]
+        if members is None:
+            return why, False
+        left = [m for m in members if m not in requested]
+        if left:
+            part = os.path.basename(left[0])
+            return (
+                f"{name} and {part} are one set, and {part} isn't being deleted; "
+                "the set is kept"
+            ), False
+        waiting = False
+        for real, owner in owners.items():
+            if real in deleted:
+                continue
+            if real in requested and real not in settled:
+                waiting = True
+                continue
+            return _still_needed_by(owner, name), False
+        return None, waiting
 
     async def delete_single_file(path: str) -> dict:
         """Delete a single file and return result."""
@@ -1160,14 +1394,40 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
             logger.warning("Delete failed for %s: %s", path, e)
             return {"path": path, "success": False, "error": "File operation failed"}
 
-    # Process all files
-    for path in payload.paths:
-        result = await delete_single_file(path)
-        results.append(result)
-        if result["success"]:
-            success_count += 1
-        else:
-            failed_count += 1
+    # Process the files in rounds: a file named by another file of the request
+    # waits until that one has gone.
+    pending = contained
+    while pending:
+        later = []
+        for path in pending:
+            is_file = await run_in_threadpool(os.path.isfile, path)
+            if is_file:
+                kept, wait = await ownership(path)
+                if wait:
+                    later.append(path)
+                    continue
+                if kept:
+                    by_path[path] = {"path": path, "success": False, "error": kept}
+                    settled.add(real_of[path])
+                    continue
+            result = await delete_single_file(path)
+            by_path[path] = result
+            settled.add(real_of[path])
+            if result["success"]:
+                deleted.add(real_of[path])
+        if len(later) == len(pending):
+            # Files that name each other: none of them can go first.
+            for path in later:
+                by_path[path] = {
+                    "path": path, "success": False,
+                    "error": f"{os.path.basename(path)} is named by another file here that "
+                             "names it back; it is kept",
+                }
+            break
+        pending = later
+    results = [by_path[path] for path in payload.paths]
+    success_count = sum(1 for r in results if r["success"])
+    failed_count = len(results) - success_count
 
     return {
         "total": len(payload.paths),

@@ -85,11 +85,11 @@ const fileBrowser = { rommPlatformId: null, exitRomm() {}, async enterRomm(id) {
   this.rommPlatformId = id;
 } };
 const conversion = {
-  mode: 'createcd', primaryTool: 'chdman',
-  setPrimaryTool(id) { this.primaryTool = id; }, setMode(m) { this.mode = m; },
+  mode: 'createcd',
+  chooseTarget(v) { this.mode = v || null; },
 };
-const ui = { workspaceTool: 'chdman' };
-const registry = { all: () => [], forTool: () => null };
+const ui = {};
+const registry = { all: () => [], forTool: () => null, toolForMode: () => null };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 """
 
@@ -385,6 +385,32 @@ process.stdout.write(JSON.stringify({ afterPolicy, afterUrl, reloads: __reloads 
 """
 
 
+_UNCHANGED_CONNECTION = """
+const store = new RommStore();
+store.settings = { url: 'http://romm:8080', library_root: '/library' };
+const before = __reloads.length;
+// The one form sends the connection on every Save, unchanged here.
+await store.saveSettings({
+  url: 'http://romm:8080', library_root: '/library', repin_enabled: false,
+});
+const unchanged = __reloads.length - before;
+await Promise.race([
+  store.saveSettings({ url: 'http://romm:8080', library_root: '/other' }), tick(),
+]);
+const moved = __reloads.length - before - unchanged;
+process.stdout.write(JSON.stringify({ unchanged, moved }));
+"""
+
+
+def test_an_unchanged_connection_in_the_form_does_not_rescan_the_catalog(tmp_path):
+    """A Save carrying the stored URL and library path is no identity change
+    (CodeRabbit PRRT_kwDOQ9nULM66RLwI); a different value still is."""
+    data = _run(tmp_path, _UNCHANGED_CONNECTION)
+
+    assert data["unchanged"] == 0, data
+    assert data["moved"] > 0, data
+
+
 def test_a_policy_only_save_does_not_rescan_the_catalog(tmp_path):
     """Only an identity change invalidates what is on screen.
 
@@ -503,7 +529,7 @@ process.stdout.write(JSON.stringify({ result, saved, rules: store.rules }));
 
 
 def test_import_saves_new_rules_through_the_rules_api_only_where_none_exists(tmp_path):
-    """Imported Rules go out through PUT /api/romm/rules, and a Rule is never replaced."""
+    """Imported Rules go out through the Rules API, and a Rule is never replaced."""
     data = _run(tmp_path, _IMPORT)
 
     assert data["result"]["created"] == 2, data
@@ -514,8 +540,9 @@ def test_import_saves_new_rules_through_the_rules_api_only_where_none_exists(tmp
     assert sent["8"]["mode"] == "createcd", sent
     # Off until the operator turns it on.
     assert sent["7"]["enabled"] is False, sent
-    # The Wii Rule the operator already had is left exactly as it was.
-    assert sent["10"] == {"mode": "dolphin_wia", "enabled": True}, sent
+    # The Wii Rule the operator already had isn't sent at all (#541): only
+    # the consoles a save changes are, and the server keeps the rest.
+    assert "10" not in sent, sent
 
 
 _SETTINGS_SAVES = """

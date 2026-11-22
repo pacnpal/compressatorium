@@ -439,7 +439,6 @@ async def test_a_job_cancelled_before_its_run_lets_go_of_its_input_locks(tmp_pat
     from datetime import datetime, timezone
 
     from models import ConversionJob, ConversionMode, JobStatus
-    from services.concurrency_manager import concurrency_manager
     from services.job_manager import job_manager
     from services.lock_manager import lock_manager
 
@@ -469,7 +468,6 @@ async def test_a_job_cancelled_before_its_run_lets_go_of_its_input_locks(tmp_pat
         assert job.id not in job_manager._input_locks
     finally:
         lock_manager.release_lock(out)
-        concurrency_manager.release(job.id)
         job_manager.jobs.pop(job.id, None)
         job_manager._cancel_events.pop(job.id, None)
         job_manager._release_inputs(job.id)
@@ -487,7 +485,6 @@ async def test_locks_a_cancelled_job_takes_after_the_cancel_are_released(
     from datetime import datetime, timezone
 
     from models import ConversionJob, ConversionMode, JobStatus
-    from services.concurrency_manager import concurrency_manager
     from services.job_manager import job_manager
     from services.lock_manager import lock_manager
 
@@ -532,7 +529,6 @@ async def test_locks_a_cancelled_job_takes_after_the_cancel_are_released(
     finally:
         go.set()
         lock_manager.release_lock(out)
-        concurrency_manager.release(job.id)
         job_manager.jobs.pop(job.id, None)
         job_manager._cancel_events.pop(job.id, None)
         job_manager._release_inputs(job.id)

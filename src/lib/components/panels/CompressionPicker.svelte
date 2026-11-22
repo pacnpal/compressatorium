@@ -1,54 +1,69 @@
 <script>
-  // Compression configuration. Three "styles" supported, picked off the
-  // tool descriptor:
-  //   - 'multi'             chdman: comma-separated codec list (chips).
-  //   - 'single-with-level' Dolphin RVZ/WIA / CSO: one codec, plus a numeric
-  //                         level only when the mode sets supportsCompressionLevel
-  //                         (CSO's effort presets show the dropdown alone).
-  //   - 'none'              z3ds: fixed compression; renders nothing.
-  // The CompressionPicker has zero tool-specific branches, adding a new
-  // tool means declaring its codec list + style in registry.js and
-  // (optionally) a level range; this file does not need editing.
+  // Compression configuration, controlled: `value` is `{ codecs, level }` (see
+  // $lib/tools/compression.js) and every change goes out through `onchange`.
+  // It reads only the registry and the compat table, never a store, so the
+  // Convert panel, a console's settings and Settings → Defaults share it.
+  //
+  // Three "styles", picked off the mode's tool:
+  //   - 'multi'             chdman: a comma-separated codec list (chips).
+  //   - 'single-with-level' Dolphin RVZ/WIA, nsz, CSO: one codec, plus a level
+  //                         only when the codec takes one.
+  //   - 'none'              fixed compression; renders nothing.
+  // No tool-specific branches: a new tool declares its codecs and style in
+  // registry.js and this file needs no edit.
 
-  import { conversion } from '$lib/stores/conversion.svelte.js';
   import { registry } from '$lib/tools/registry.js';
   import { compat } from '$lib/stores/compat.svelte.js';
   import { compatEntry, compatWarning } from '$lib/tools/compat.js';
+  import {
+    defaultCompression, effectiveCodec, isDefault, levelRange as rangeOf,
+    toggleCodec, withCodec, withLevel,
+  } from '$lib/tools/compression.js';
   import { onMount } from 'svelte';
-  import { toast } from 'svelte-sonner';
   import Check from '@lucide/svelte/icons/check';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 
-  const tool = $derived(conversion.currentTool);
-  const spec = $derived(conversion.currentSpec);
+  /**
+   * @typedef {{ codecs: string[], level: number|null }} Compression
+   * @typedef {Object} Props
+   * @property {string} mode
+   * @property {Compression} value
+   * @property {(value: Compression) => void} onchange
+   * @property {boolean} [compact] no frame, for a table row
+   * @property {string} [label] the legend ("CHD compression")
+   */
+
+  /** @type {Props} */
+  let { mode, value, onchange, compact = false, label = 'Compression' } = $props();
+
+  const spec = $derived(registry.specFor(mode));
+  const tool = $derived(registry.toolForMode(mode));
   // The mode's own codecs where it names them (WIA refuses zstd), else the tool's.
-  const codecs = $derived(registry.codecsForMode(spec?.mode));
+  const codecs = $derived(registry.codecsForMode(mode));
   const style = $derived(tool?.compressionStyle ?? 'none');
-  const selection = $derived(conversion.compressionSelection);
-  // The slider and the number box read this one value and range; the store
-  // reconciles it on every mode or codec change, so they never disagree.
-  const level = $derived(conversion.compressionLevel);
-  // The selected codec's own range (Dolphin's lzma2 takes 1-9, zstd 1-22);
+  const selection = $derived(value?.codecs ?? []);
+  const level = $derived(value?.level ?? '');
+  // The running codec's own range (Dolphin's lzma2 takes 1-9, zstd 1-22);
   // null for a codec that takes no level (none), which hides the control.
-  const levelRange = $derived(conversion.levelRange);
+  const levelRange = $derived(rangeOf(mode, value));
   const supports = $derived(
     !!(spec?.supportsCompression || spec?.supportsCompressionLevel),
   );
-  const singleCodec = $derived(conversion.singleCodec);
-  // True when the current tool's settings already match its defaults; used to
-  // disable the Reset button so it's not a silent no-op.
-  const atDefault = $derived(conversion.isCompressionDefault);
+  const singleCodec = $derived(effectiveCodec(mode, value));
+  // Disables Reset when there is nothing to undo.
+  const atDefault = $derived(isDefault(mode, value));
+  const max = $derived(registry.maxCodecsFor(mode));
 
   // "Compatible with...": the targets that have an entry for this mode, from
   // the table the server serves. Picking one selects its preferred codecs;
   // the warning only advises, it never disables a control.
   let compatId = $state('');
-  const compatTargets = $derived(compat.targetsForMode(spec?.mode));
+  const compatTargets = $derived(compat.targetsForMode(mode));
   const compatTarget = $derived(compatTargets.find((t) => t.id === compatId) ?? null);
   const compatNote = $derived(
     compatWarning(
       compatTarget,
-      spec?.mode,
+      mode,
       style === 'multi' ? selection : [singleCodec],
       compat.table,
     ),
@@ -60,25 +75,20 @@
 
   function chooseCompat(id) {
     compatId = id;
-    const entry = compatEntry(compat.target(id), spec?.mode);
+    const entry = compatEntry(compat.target(id), mode);
     if (!entry) return;
-    if (style === 'multi') conversion.setCompression(entry.preferred);
-    else conversion.setSingleCodec(entry.preferred[0]);
+    if (style === 'multi') onchange({ ...value, codecs: [...entry.preferred] });
+    else onchange(withCodec(mode, value, entry.preferred[0]));
   }
 
-  function isSelected(value) {
-    return selection.includes(value);
-  }
-
-  function resetToDefault() {
-    conversion.resetCompression();
-    toast.success(`${tool?.label ?? 'Compression'} reset to default`, { duration: 2500 });
+  function isSelected(codec) {
+    return selection.includes(codec);
   }
 </script>
 
 {#if supports && codecs.length > 0}
-  <fieldset class="picker">
-    <legend class="legend">Compression</legend>
+  <fieldset class="picker" class:compact>
+    <legend class="legend">{label}</legend>
 
     {#if compatTargets.length > 0}
       <label class="single-codec">
@@ -99,101 +109,101 @@
       {/if}
     {/if}
 
-    {#if style === 'multi'}
-      {@const max = conversion.CHDMAN_MAX_CODECS ?? 4}
-      {@const activeCount = selection.filter(
-        (c) => c && c !== 'none' && codecs.some((k) => k.value === c),
-      ).length}
-      {@const atCap = activeCount >= max}
-      <div class="chips" role="group" aria-label="Codec selection">
-        <button
-          type="button"
-          class="chip"
-          class:active={isSelected('none')}
-          aria-pressed={isSelected('none')}
-          onclick={() => conversion.toggleCodec('none')}
-        >
-          {#if isSelected('none')}<Check size={12} aria-hidden="true" />{/if}
-          None
-        </button>
-        {#each codecs as codec (codec.value)}
-          {#if codec.value !== 'none'}
-            {@const selected = isSelected(codec.value)}
-            {@const capped = atCap && !selected}
-            <button
-              type="button"
-              class="chip"
-              class:active={selected}
-              aria-pressed={selected}
-              title={capped ? `chdman accepts at most ${max} codecs` : (codec.hint ?? '')}
-              disabled={capped}
-              onclick={() => conversion.toggleCodec(codec.value)}
-            >
-              {#if selected}<Check size={12} aria-hidden="true" />{/if}
-              {codec.label}
-            </button>
-          {/if}
-        {/each}
-      </div>
-      <p class="hint">
-        Select up to {max} codecs. chdman tries them in order.
-        {#if atCap}<span class="cap-note">Limit reached, deselect one to add another.</span>{/if}
-      </p>
-
-    {:else if style === 'single-with-level'}
-      <label class="single-codec">
-        <span class="sublabel">Codec</span>
-        <select
-          value={singleCodec}
-          onchange={(e) => conversion.setSingleCodec(e.currentTarget.value)}
-          aria-label="Codec"
-        >
+    <details class="codecs">
+      <summary>Choose codecs</summary>
+      {#if style === 'multi'}
+        {@const activeCount = selection.filter(
+          (c) => c && c !== 'none' && codecs.some((k) => k.value === c),
+        ).length}
+        {@const atCap = activeCount >= max}
+        <div class="chips" role="group" aria-label="Codec selection">
+          <button
+            type="button"
+            class="chip"
+            class:active={isSelected('none')}
+            aria-pressed={isSelected('none')}
+            onclick={() => onchange(toggleCodec(mode, value, 'none'))}
+          >
+            {#if isSelected('none')}<Check size={12} aria-hidden="true" />{/if}
+            None
+          </button>
           {#each codecs as codec (codec.value)}
-            <option value={codec.value} title={codec.hint ?? ''}>{codec.label}</option>
+            {#if codec.value !== 'none'}
+              {@const selected = isSelected(codec.value)}
+              {@const capped = atCap && !selected}
+              <button
+                type="button"
+                class="chip"
+                class:active={selected}
+                aria-pressed={selected}
+                title={capped ? `Up to ${max} codecs` : (codec.hint ?? '')}
+                disabled={capped}
+                onclick={() => onchange(toggleCodec(mode, value, codec.value))}
+              >
+                {#if selected}<Check size={12} aria-hidden="true" />{/if}
+                {codec.label}
+              </button>
+            {/if}
           {/each}
-        </select>
-      </label>
+        </div>
+        <p class="hint">
+          Up to {max}. The first one that fits each block is used.
+          {#if atCap}<span class="cap-note">Limit reached, deselect one to add another.</span>{/if}
+        </p>
 
-      {#if levelRange}
-        <label class="level">
-          <span class="sublabel">Level (compression effort)</span>
-          <div class="level-row">
-            <input
-              type="range"
-              min={levelRange.min}
-              max={levelRange.max}
-              step="1"
-              value={level}
-              oninput={(e) => conversion.setCompressionLevel(e.currentTarget.value)}
-              aria-label="Compression level"
-            />
-            <input
-              class="level-input"
-              type="number"
-              min={levelRange.min}
-              max={levelRange.max}
-              step="1"
-              value={level}
-              oninput={(e) => conversion.setCompressionLevel(e.currentTarget.value)}
-              aria-label="Compression level value"
-            />
-          </div>
-          <p class="hint">
-            {levelRange.min}–{levelRange.max}; default {levelRange.default}{#if singleCodec === 'zstd' && levelRange.default === 19}, which matches MAME Redump{/if}.
-          </p>
+      {:else if style === 'single-with-level'}
+        <label class="single-codec">
+          <span class="sublabel">Codec</span>
+          <select
+            value={singleCodec}
+            onchange={(e) => onchange(withCodec(mode, value, e.currentTarget.value))}
+            aria-label="Codec"
+          >
+            {#each codecs as codec (codec.value)}
+              <option value={codec.value} title={codec.hint ?? ''}>{codec.label}</option>
+            {/each}
+          </select>
         </label>
+
+        {#if levelRange}
+          <label class="level">
+            <span class="sublabel">Level</span>
+            <div class="level-row">
+              <input
+                type="range"
+                min={levelRange.min}
+                max={levelRange.max}
+                step="1"
+                value={level === '' ? levelRange.default : level}
+                oninput={(e) => onchange(withLevel(mode, value, e.currentTarget.value))}
+                aria-label="Compression level"
+              />
+              <input
+                class="level-input"
+                type="number"
+                min={levelRange.min}
+                max={levelRange.max}
+                step="1"
+                value={level}
+                oninput={(e) => onchange(withLevel(mode, value, e.currentTarget.value))}
+                aria-label="Compression level value"
+              />
+            </div>
+            <p class="hint">
+              Higher is smaller and slower. {levelRange.min}–{levelRange.max}; default {levelRange.default}.
+            </p>
+          </label>
+        {/if}
       {/if}
-    {/if}
+    </details>
 
     <div class="picker-footer">
       <button
         type="button"
         class="reset-btn"
-        onclick={resetToDefault}
+        onclick={() => onchange(defaultCompression(mode))}
         disabled={atDefault}
-        title={atDefault
-          ? 'Compression is already at this tool’s default'
-          : 'Reset this tool’s compression settings to the default'}
+        title={atDefault ? 'Already the default' : 'Go back to the default for this format'}
       >
         <RotateCcw size={12} aria-hidden="true" /> Reset to default
       </button>
@@ -213,6 +223,18 @@
     margin: 0;
     min-width: 0;
   }
+  .picker.compact {
+    border: none;
+    padding: 0;
+    background: transparent;
+  }
+  .codecs summary {
+    cursor: pointer;
+    font-size: var(--text-sm);
+    color: var(--text-2);
+  }
+  .codecs[open] summary { margin-bottom: var(--space-2); }
+  .codecs > :not(summary) + :not(summary) { margin-top: var(--space-2); }
   .legend {
     font-size: var(--text-xs);
     text-transform: uppercase;
@@ -299,7 +321,7 @@
     color: var(--text-3);
     font-size: var(--text-xs);
   }
-  .cap-note { color: var(--warning); margin-left: var(--space-1); }
+  .cap-note { color: var(--warning-text); margin-left: var(--space-1); }
   .compat-warning {
     margin: 0;
     padding: var(--space-2);
