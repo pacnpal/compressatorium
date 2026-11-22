@@ -4,7 +4,7 @@
 record's output in the shared threadpool, then checked each one's Volume
 containment the same way: a frozen mount held the request with no answer.
 The same held for ``/api/verified/lookup``, the CHD badge lookup
-(``POST /api/chd-metadata``) and ``POST /api/dat/prune``. Each now runs on a
+(``POST /api/chd-metadata``). Each now runs on a
 detached thread under the no-progress bound, reporting each record, and
 answers 503 like the other bounded routes when a Volume stops answering.
 A record whose file can't be checked is kept: only a confirmed absence
@@ -178,33 +178,16 @@ async def test_a_badge_lookup_of_a_frozen_file_answers_503(vol, frozen):
 
 
 @pytest.mark.asyncio
-async def test_a_dat_prune_over_a_frozen_record_answers_503_and_keeps_it(vol, frozen):
-    from routes import dat
-    from services.dat_store import dat_store
-
-    stuck = _file(vol / "Frozen" / "Stuck.chd")
-    await dat_store.set_match(stuck, {"name": "Stuck"})
-    frozen.freeze()
-
-    assert await _status(dat.prune_missing()) == 503
-    frozen.set()
-    assert dat_store.get_match(stuck) is not None
-
-
-@pytest.mark.asyncio
 async def test_a_record_whose_stat_fails_is_kept_not_pruned(vol, monkeypatch):
     """EIO says nothing about whether the file is there: only a confirmed
     absence prunes a record."""
-    from routes import dat, info
-    from services.dat_store import dat_store
+    from routes import info
     from services.verification_store import verification_store
 
     sick = str(vol / "ps2" / "Sick.chd")      # not created: stat must not decide
     gone = str(vol / "ps2" / "Gone.chd")
     await verification_store.mark_verified(sick)
     await verification_store.mark_verified(gone)
-    await dat_store.set_match(sick, {"name": "Sick"})
-    await dat_store.set_match(gone, {"name": "Gone"})
     real_stat = os.stat
 
     def stat(path, *args, **kwargs):
@@ -215,12 +198,9 @@ async def test_a_record_whose_stat_fails_is_kept_not_pruned(vol, monkeypatch):
     monkeypatch.setattr(os, "stat", stat)
 
     await asyncio.wait_for(info.list_verified(), BOUND)
-    await asyncio.wait_for(dat.prune_missing(), BOUND)
 
     assert await verification_store.get_record(sick) is not None
     assert await verification_store.get_record(gone) is None
-    assert dat_store.get_match(sick) is not None
-    assert dat_store.get_match(gone) is None
 
 
 @pytest.mark.asyncio

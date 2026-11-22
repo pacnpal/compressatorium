@@ -1589,7 +1589,7 @@
       };
       const real = window.fetch.bind(window);
       const live = async (path) => (await real(path)).json();
-      const rules = await live('/api/romm/rules');
+      const rules = await live('/api/libraries/romm/rules');
       const rom = (name, title, identified, match) => ({
         name, display_name: title, path: `/library/roms/ngc/${name}`, type: 'file',
         size: 1459978240, extension: '.iso', convertible_by: ['dolphin'], outputs: [],
@@ -1625,7 +1625,7 @@
           { id: 11, name: 'Game Boy Advance', slug: 'gba', rom_count: 96, tool_ids: ['romz'],
             mode_ids: ['romz_7z', 'romz_zip'] },
         ],
-        '/api/romm/rules': { ...rules, state: {}, rules: {
+        '/api/libraries/romm/rules': { ...rules, state: {}, rules: {
           7: { ...rules.defaults, enabled: true, mode: 'dolphin_rvz', verify_after: true,
             delete_on_verify: true },
           8: { ...rules.defaults, enabled: true, mode: 'createcd', verify_after: true } } },

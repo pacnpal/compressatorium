@@ -46,6 +46,7 @@ from services.rom_converto import (
     ZAR_OUTPUT_EXTENSION,
     ZAR_SOURCE_KEPT_REASON,
     ZAR_VERIFY_EXTENSIONS,
+    RomConvertoError,
     rom_converto_service,
 )
 from utils.path_utils import match_extension
@@ -81,7 +82,6 @@ def _recognized_mode(
 class RomConvertoTool(BaseTool):
     id = "rom_converto"
     display_name = "rom-converto"
-    policy_owner = "rom_converto"
     # The union of every mode's Platform; each mode names its own below.
     platform_slugs = frozenset({"xbox360", "psp"}) | _3DS_SLUGS
     modes = (
@@ -118,6 +118,11 @@ class RomConvertoTool(BaseTool):
     )
     output_extensions = frozenset(ZAR_VERIFY_EXTENSIONS | {".iso", ".cci", ".cia"})
     verify_extensions = frozenset(VERIFY_EXTENSIONS)
+    # `xenon info` describes a ZAR only: the sources, and the ISO/CCI/CIA it
+    # writes, are plain images the other tools describe. A file rom-converto
+    # refuses is a 422.
+    info_extensions = ZAR_VERIFY_EXTENSIONS
+    info_file_errors = (RomConvertoError,)
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)

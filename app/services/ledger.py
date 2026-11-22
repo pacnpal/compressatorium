@@ -3,8 +3,7 @@
 Written by a ``job_manager`` terminal listener (registered in ``main.py``), so
 every runner outcome -- completed, failed, cancelled, external -- lands here
 exactly once while the job object still says how it ended. Rows survive
-restarts and are kept forever unless a retention (days) is set through the
-``ledger`` preference, in which case older rows are pruned on each write.
+restarts and are kept forever.
 
 "Saved" bytes count only completed rows whose Source was deleted: a kept
 Source still occupies its space, so nothing was reclaimed yet.
@@ -26,16 +25,11 @@ from logging_setup import get_logger
 from models import ConversionJob, JobStatus
 from services import db as _db
 from services.job_manager import EXTERNAL_JOB_PATH
-from services.preferences_store import preferences_store
 from services.tools import registry
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 logger = get_logger("ledger")
-
-PREF_KEY = "ledger"
-# 100 years: keeps `now - timedelta(days=…)` far inside datetime's range.
-MAX_RETENTION_DAYS = 36500
 
 
 def _iso(dt: datetime) -> str:
@@ -158,12 +152,12 @@ def _bump_totals(session, row: dict) -> None:
 _write_lock = threading.Lock()
 
 
-def _insert_job_sync(job: ConversionJob, retention_days: int | None) -> None:
+def _insert_job_sync(job: ConversionJob) -> None:
     with _write_lock:
-        _insert_sync(row_from_job(job), retention_days)
+        _insert_sync(row_from_job(job))
 
 
-def _insert_sync(row: dict, retention_days: int | None) -> None:
+def _insert_sync(row: dict) -> None:
     with _session() as session:
         # A job can be announced terminal more than once (a queued cancel is
         # notified by cancel_job and again by the runner), so the same
@@ -175,20 +169,7 @@ def _insert_sync(row: dict, retention_days: int | None) -> None:
         ).rowcount
         if inserted:
             _bump_totals(session, row)
-        if retention_days:
-            cutoff = _iso(datetime.now(timezone.utc) - timedelta(days=retention_days))
-            session.execute(
-                delete(_db.LedgerEntry).where(_db.LedgerEntry.finished_at < cutoff)
-            )
         session.commit()
-
-
-async def retention_days() -> int | None:
-    stored = await preferences_store.get(PREF_KEY) or {}
-    days = stored.get("retention_days")
-    if isinstance(days, int) and 0 < days <= MAX_RETENTION_DAYS:
-        return days
-    return None
 
 
 async def record(job: ConversionJob) -> None:
@@ -198,7 +179,7 @@ async def record(job: ConversionJob) -> None:
     delete, a watch folder's copy): History is everything that ran.
     """
     try:
-        await run_in_threadpool(_insert_job_sync, job, await retention_days())
+        await run_in_threadpool(_insert_job_sync, job)
     except Exception:
         logger.warning("Failed to write Ledger row for job %s", job.id, exc_info=True)
 
@@ -429,7 +410,7 @@ def _open_snapshot():
 
     pysqlite does not emit BEGIN for a SELECT, so without this every page
     would read the latest committed data. Under WAL the snapshot starts at
-    the first read and ignores later commits, including a retention prune.
+    the first read and ignores later commits.
     """
     session = _session()
     session.connection().exec_driver_sql("BEGIN")
@@ -457,9 +438,8 @@ async def export_csv(flt: LedgerFilter):
     """Yield the CSV for every row matching *flt*, newest first.
 
     Keyset-paged on ``(finished_at, id)`` inside one read transaction held for
-    the whole stream, so every page sees the same snapshot: a job finishing or
-    a retention prune committing mid-export can neither repeat, skip nor drop
-    a row. Only one page is in memory at a time.
+    the whole stream, so every page sees the same snapshot: a job finishing
+    mid-export can neither repeat, skip nor drop a row. Only one page is in memory at a time.
     """
     if flt.since:
         # A relative `since` (24h, 7d) is fixed once, as the export starts:
@@ -513,8 +493,7 @@ async def totals() -> dict:
 async def metrics_text(queue_depth: int) -> str:
     """Prometheus text exposition (v0.0.4): running totals plus the live queue.
 
-    The counters come from ``ledger_totals``, which only ever grows, so a
-    retention prune of Ledger rows never makes one go down.
+    The counters come from ``ledger_totals``, which only ever grows.
     """
     by_status, bytes_in, bytes_out = await run_in_threadpool(_metrics_sync)
     statuses = sorted(set(_METRIC_STATUSES) | set(by_status))

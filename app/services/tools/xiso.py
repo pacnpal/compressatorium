@@ -32,6 +32,7 @@ from services.extract_xiso import (
     XISO_CONVERTIBLE_EXTENSIONS,
     XISO_OUTPUT_EXTENSION,
     XISO_VERIFY_EXTENSIONS,
+    XisoImageError,
     detect_console,
     extract_xiso_service,
 )
@@ -46,7 +47,6 @@ class XisoTool(BaseTool):
     id = "xiso"
     # RomM's slugs for the two consoles this serves.
     platform_slugs = frozenset({"xbox", "xbox360"})
-    policy_owner = "xiso"
     display_name = "Xbox"
     # File info walks the XDVDFS tables in Python; extract-xiso isn't run.
     info_needs_tool = False
@@ -69,6 +69,9 @@ class XisoTool(BaseTool):
     )
     output_extensions = frozenset(XISO_VERIFY_EXTENSIONS)
     verify_extensions = frozenset(XISO_VERIFY_EXTENSIONS)
+    # An .iso for another console is a 422, which lets the Info modal move on
+    # to the next tool.
+    info_file_errors = (XisoImageError,)
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)

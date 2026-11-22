@@ -49,31 +49,38 @@ export const TOOL_MEDIA = {
 
 // Build the disc / game extension sets from the registry so a new tool's inputs
 // and outputs are classified automatically from one `TOOL_MEDIA` entry. `.chd`
-// keeps its own glyph (Disc3) in `iconForEntry` below.
-const { DISC_EXTS, GAME_EXTS } = (() => {
-  const disc = new Set();
-  const game = new Set();
-  const buckets = { disc, game };
-  for (const tool of registry.all()) {
-    const target = buckets[TOOL_MEDIA[tool.id]];
-    if (!target) continue;
-    for (const ext of [...tool.sourceExts, ...tool.verifyExts]) target.add(ext);
-  }
-  // A disc classification wins over game for shared extensions (e.g. `.iso`, a
-  // CHDMAN CD/DVD source that Dolphin also accepts) so the common case reads as
-  // a disc — matching how `.iso` verify routing already prefers CHDMAN.
-  for (const ext of disc) game.delete(ext);
-  return { DISC_EXTS: disc, GAME_EXTS: game };
-})();
+// keeps its own glyph (Disc3) in `iconForEntry` below. Built on first use, once
+// the registry has loaded (App.svelte), not at import, when it is still empty.
+let buckets = null;
 
-// Exported for the registry-coverage guard test: every extension the registry
-// can surface must resolve to one of these buckets (or `.chd`), never the
-// generic File glyph.
-export const ICON_EXT_CATEGORIES = {
-  disc: [...DISC_EXTS],
-  game: [...GAME_EXTS],
-  archive: [...ARCHIVE_EXTS],
-};
+function mediaBuckets() {
+  if (!buckets && registry.loaded) {
+    const disc = new Set();
+    const game = new Set();
+    const byMedia = { disc, game };
+    for (const tool of registry.all()) {
+      const target = byMedia[TOOL_MEDIA[tool.id]];
+      if (!target) continue;
+      for (const ext of [...tool.sourceExts, ...tool.verifyExts]) target.add(ext);
+    }
+    // A disc classification wins over game for shared extensions (e.g. `.iso`,
+    // a CHDMAN CD/DVD source that Dolphin also accepts) so the common case reads
+    // as a disc — matching how `.iso` verify routing already prefers CHDMAN.
+    for (const ext of disc) game.delete(ext);
+    buckets = { disc, game };
+  }
+  return buckets ?? { disc: new Set(), game: new Set() };
+}
+
+/**
+ * The extensions drawn as a disc, a game and an archive. Every extension the
+ * registry can surface resolves to one of these (or `.chd`), never the generic
+ * File glyph; the registry-coverage guard test reads it.
+ */
+export function iconExtCategories() {
+  const { disc, game } = mediaBuckets();
+  return { disc: [...disc], game: [...game], archive: [...ARCHIVE_EXTS] };
+}
 
 /**
  * @param {{ type?: string, extension?: string } | null | undefined} entry
@@ -85,7 +92,8 @@ export function iconForEntry(entry) {
   const ext = entry.extension?.toLowerCase() ?? '';
   if (ext === '.chd') return Disc3;
   if (ARCHIVE_EXTS.has(ext)) return Archive;
-  if (DISC_EXTS.has(ext)) return Disc;
-  if (GAME_EXTS.has(ext)) return Gamepad2;
+  const { disc, game } = mediaBuckets();
+  if (disc.has(ext)) return Disc;
+  if (game.has(ext)) return Gamepad2;
   return File;
 }

@@ -29,8 +29,8 @@ export const NO_TOOL_READ_NOTE = 'No tool could read this file, showing the basi
 const UNAVAILABLE = 503;
 
 // Walk the candidate tools and keep the first getInfo() that returns.
-// getInfo is the registry binding (chdman: getCHDInfo, dolphin:
-// getDolphinInfo, rom-converto: getRomConvertoInfo, ...), no per-tool
+// getInfo is the registry binding (every tool: api.getToolInfo(id, path),
+// GET /api/info/{tool}), no per-tool
 // branches here. If none answers, fall back to the basics the listing already
 // knew; `fellBack` flags that for the UI and `notes` says why, one line each:
 // today's line when a tool ran and couldn't read the file, and the server's

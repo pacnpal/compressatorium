@@ -173,26 +173,6 @@ async def test_csv_cells_with_formula_prefixes_are_neutralised(prefix):
 
 
 @pytest.mark.asyncio
-async def test_prune_never_lowers_the_counters(monkeypatch):
-    from services.preferences_store import preferences_store
-
-    old = datetime.now(timezone.utc) - timedelta(days=40)
-    for i in range(3):
-        await ledger.record(_done(f"old{i}", old))
-    before = await ledger.metrics_text(0)
-    assert 'compressatorium_jobs_total{status="completed"} 3' in before
-    await preferences_store.put(ledger.PREF_KEY, {"retention_days": 30})
-    await ledger.record(_done("new", datetime.now(timezone.utc)))
-    # The three old rows are gone from the table...
-    assert [r["job_id"] for r in await ledger.recent(10)] == ["new"]
-    # ...but the counters only went up.
-    after = await ledger.metrics_text(0)
-    assert 'compressatorium_jobs_total{status="completed"} 4' in after
-    assert "compressatorium_input_bytes_total 4000" in after
-    assert "compressatorium_output_bytes_total 1600" in after
-
-
-@pytest.mark.asyncio
 async def test_totals_count_every_finished_job_by_status():
     """The UI's job totals (#533): every status, a zero included."""
     from routes import ledger as routes
@@ -265,7 +245,7 @@ async def test_export_reads_one_snapshot_while_a_prune_commits(monkeypatch):
     async for chunk in ledger.export_csv(ledger.LedgerFilter()):
         chunks.append(chunk)
         if len(chunks) == 1:
-            # A retention prune commits from another connection mid-export.
+            # Rows are deleted from another connection mid-export.
             with _db.SessionLocal() as other:
                 other.execute(_db.LedgerEntry.__table__.delete())
                 other.commit()

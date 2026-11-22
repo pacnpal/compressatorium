@@ -74,6 +74,8 @@ def mock_jwud_service(monkeypatch):
     mock_service.verify_stream = fake_verify_stream
 
     monkeypatch.setattr(info_routes, "jwudtool_service", mock_service)
+    # File info reads through the plugin.
+    monkeypatch.setattr(info_routes.registry.get("jwud"), "_service", mock_service)
     return mock_service
 
 

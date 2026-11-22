@@ -54,6 +54,8 @@ def mock_nsz_service(monkeypatch):
     mock_service.verify_stream = fake_verify_stream
 
     monkeypatch.setattr(info_routes, "nsz_service", mock_service)
+    # File info reads through the plugin.
+    monkeypatch.setattr(info_routes.registry.get("nsz"), "_service", mock_service)
     return mock_service
 
 

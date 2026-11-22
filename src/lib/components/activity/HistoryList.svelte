@@ -311,7 +311,7 @@
         <span class="count">
           {total} {total === 1 ? 'job' : 'jobs'}
           {#if ledger.totals}
-            <!-- All time (#533): a retention prune never lowers these. -->
+            <!-- All time (#533): these totals never go down. -->
             · all time: {ledger.totals.completed ?? 0} done, {ledger.totals.failed ?? 0} failed,
             {ledger.totals.cancelled ?? 0} cancelled
           {/if}

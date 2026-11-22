@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 import pytest
 
-from .test_frontend_registry_derives_186 import _REGISTRY_JS, _find_node, _strip_imports
+from .test_frontend_registry_derives_186 import _find_node, loaded_registry_src
 
 
 def _table() -> dict:
@@ -30,10 +30,10 @@ def _frontend_codecs() -> dict[str, list[str]]:
     node = _find_node()
     if node is None:
         pytest.skip("node not available to evaluate the frontend registry")
-    src = "const api = {};\n" + _strip_imports(_REGISTRY_JS.read_text(encoding="utf-8"))
+    src = loaded_registry_src()
     src += (
         "\nprocess.stdout.write(JSON.stringify(Object.fromEntries("
-        "TOOLS.flatMap((t) => t.modes.map((m) => [m.mode, "
+        "registry.all().flatMap((t) => t.modes.map((m) => [m.mode, "
         "registry.codecsForMode(m.mode).map((c) => c.value)])))));\n"
     )
     with tempfile.TemporaryDirectory() as tmp:
@@ -225,9 +225,9 @@ def test_every_mode_that_can_be_left_empty_declares_what_the_tool_then_uses():
     node = _find_node()
     if node is None:
         pytest.skip("node not available to evaluate the frontend registry")
-    src = "const api = {};\n" + _strip_imports(_REGISTRY_JS.read_text(encoding="utf-8"))
+    src = loaded_registry_src()
     src += (
-        "\nprocess.stdout.write(JSON.stringify(TOOLS.filter((t) => t.compressionStyle === 'multi')"
+        "\nprocess.stdout.write(JSON.stringify(registry.all().filter((t) => t.compressionStyle === 'multi')"
         ".flatMap((t) => t.modes.map((m) => m.mode))));\n"
     )
     with tempfile.TemporaryDirectory() as tmp:
