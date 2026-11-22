@@ -381,6 +381,21 @@ class FileBrowserStore {
   }
 
   /**
+   * The Volume list again, after the backend came back (#569): a restart can
+   * mount other Volumes. A Volume still there stays as it is, folder and all;
+   * one that's gone gives way to the first one left.
+   */
+  async refreshVolumes() {
+    if (!(await this.fetchVolumes())) return;
+    const open = this.selectedVolume?.path;
+    if (!open || this.volumes.some((v) => v.path === open)) return;
+    this.selectedVolume = null;
+    this.currentPath = null;
+    this.entries = [];
+    if (this.volumes.length > 0) await this.selectVolume(this.volumes[0]);
+  }
+
+  /**
    * Load the Volume list only: no Volume is selected and nothing is listed.
    * True when it loaded.
    */

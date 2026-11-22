@@ -382,6 +382,12 @@
 
 ### Fixed
 
+- **An open tab catches up after the container restarts** (#569). Restarted
+  with other Volumes (an upgrade, a compose edit), an open tab kept the old
+  Volume list until reloaded, and a Volume that was gone answered *Access
+  denied: path outside configured volumes*. When the connection comes back
+  the tab now reads the Volumes, the version and which converters are ready
+  again; a Volume that's gone gives way to the first one left.
 - **Delete keeps a file a sheet, playlist or set reaches through a link**
   (#555). A `.cue` in one folder can name a track in another through a folder
   link inside the Volume (`other/A.cue` naming `link/Shared.bin`). Deleting or

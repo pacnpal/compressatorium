@@ -1,5 +1,5 @@
 <script>
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { ui } from '$lib/stores/ui.svelte.js';
   import { startRouter } from '$lib/router/hashRouter.js';
   import Sidebar from '$lib/components/layout/Sidebar.svelte';
@@ -127,6 +127,20 @@
     toast.error('Something went wrong. Try again.', { duration: 6000 });
   }
 
+  // Set by onMount: (re)reads the tools from the backend.
+  let loadTools = () => {};
+
+  // Back after the jobs feed dropped (#569): a restart behind it can bring
+  // another version, other converters and other Volumes.
+  $effect(() => {
+    if (ui.reconnects === 0) return;
+    untrack(() => {
+      ui.loadVersion();
+      loadTools();
+      fileBrowser.refreshVolumes();
+    });
+  });
+
   onMount(() => {
     ui.loadVersion();
     // The tools, their formats and modes come from the backend, and so does
@@ -136,7 +150,8 @@
     // so no older reply can land after a newer one. Nothing runs after unmount.
     let toolsRetry;
     let disposed = false;
-    const loadTools = (delay = 1000) => {
+    loadTools = (delay = 1000) => {
+      clearTimeout(toolsRetry);
       api.getTools()
         .then((t) => {
           if (disposed) return;
