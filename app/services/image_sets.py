@@ -209,9 +209,14 @@ def volume_links(
     while stack:
         folder = stack.pop()
         tick(folder)
+        # Every entry read is reported as it arrives, so a big or slow folder
+        # that keeps answering is never taken for a stalled one.
+        entries = []
         try:
             with os.scandir(folder) as it:
-                entries = list(it)
+                for entry in it:
+                    tick()
+                    entries.append(entry)
         except OSError as exc:
             raise SheetOwnerUnknown(
                 f"{folder} could not be listed ({exc.strerror or exc})",

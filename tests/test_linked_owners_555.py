@@ -172,3 +172,41 @@ async def test_a_file_no_link_reaches_still_goes(vol):
 
     assert result["success"] is True
     assert not loose.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_slow_folder_that_keeps_listing_is_never_cut_off(vol, monkeypatch):
+    """Codex 4658820242: the links walk reports every entry as it is read, so
+    a big or slow folder that keeps answering outlasts the stall bound."""
+    import time
+
+    from routes import volume_guard
+    from services import image_sets
+
+    for n in range(8):
+        _write(vol / "big" / f"Game {n}.iso")
+    real_scandir = os.scandir
+
+    class Slow:
+        """os.scandir that reads one entry every 0.1 s."""
+
+        def __init__(self, path):
+            self.inner = real_scandir(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            self.inner.close()
+
+        def __iter__(self):
+            for entry in self.inner:
+                time.sleep(0.1)
+                yield entry
+
+    monkeypatch.setattr(image_sets.os, "scandir", Slow)
+    monkeypatch.setattr(volume_guard, "WALK_STALL_SECONDS", 0.35)
+
+    links_of = await files_routes.volume_links_of([str(vol / "big" / "Game 0.iso")])
+
+    assert list(links_of.values()) == [[]], links_of
