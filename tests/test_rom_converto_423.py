@@ -517,6 +517,118 @@ async def test_hasheous_unreachable_keeps_the_source(e2e, monkeypatch):
     assert "Hasheous" in job.warning
 
 
+# --------------------------------------------------------------------------- #
+# A DAT fetched over plain HTTP never vouches for a delete (Codex 4659176015)
+# --------------------------------------------------------------------------- #
+
+_PSP = "Sony - PlayStation Portable (Redump)"
+
+
+@pytest.mark.asyncio
+async def test_a_dat_fetched_over_plain_http_does_not_vouch_for_a_delete(e2e):
+    """#557 lets the Redump sync fall back to plain HTTP. A DAT swapped on the
+    way could name any output, so it never lets a Source go: the job
+    completes and the Source stays, saying why."""
+    from services.dat_store import dat_store
+
+    src, sha1 = _pbp(e2e["lib"])
+    await dat_store.import_dat(_dat(_PSP, sha1), transport="http")
+
+    job = await _run(src, "pbp_to_iso", delete_on_verify=True)
+
+    assert job.status.value == "completed", job.error_message
+    assert src.exists()
+    assert (e2e["lib"] / "Game.iso").exists()
+    assert job.check_passed == "intact"
+    assert job.check_dat is None
+    assert job.warning.startswith("converted, source kept: output not Recognized")
+    assert "plain HTTP" in job.warning and _PSP in job.warning
+    row = await _ledger_row(job)
+    assert row["source_deleted"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["https", "manual", None])
+async def test_a_dat_over_https_or_imported_by_hand_still_vouches(e2e, transport):
+    """The same match over HTTPS, a hand import, and a DAT recorded before
+    the transport was (None) prove the output as before."""
+    from services.dat_store import dat_store
+
+    src, sha1 = _pbp(e2e["lib"])
+    kwargs = {} if transport is None else {"transport": transport}
+    await dat_store.import_dat(_dat(_PSP, sha1), **kwargs)
+    if transport is None:
+        from services import db as _db
+
+        with _db.get_session() as session:
+            session.execute(_db.DAT.__table__.update().values(transport=None))
+            session.commit()
+
+    job = await _run(src, "pbp_to_iso", delete_on_verify=True)
+
+    assert job.status.value == "completed", job.error_message
+    assert not src.exists()
+    assert job.check_passed == "recognized"
+    assert job.check_dat == _PSP
+
+
+@pytest.mark.asyncio
+async def test_an_https_dat_vouches_even_when_an_http_dat_also_knows_it(e2e):
+    """Only the plain-HTTP entries are set aside: a trusted DAT knowing the
+    same hash still proves it, and is the one the Ledger names."""
+    from services.dat_store import dat_store
+
+    src, sha1 = _pbp(e2e["lib"])
+    await dat_store.import_dat(_dat("Sony - PSP (Redump, over HTTP)", sha1), transport="http")
+    await dat_store.import_dat(_dat(_PSP, sha1), transport="https")
+
+    job = await _run(src, "pbp_to_iso", delete_on_verify=True)
+
+    assert not src.exists()
+    assert job.check_passed == "recognized"
+    assert job.check_dat == _PSP
+
+
+@pytest.mark.asyncio
+async def test_hasheous_decides_when_only_a_plain_http_dat_knows_the_output(e2e, monkeypatch):
+    """Set aside, the plain-HTTP DAT counts as no DAT at all: Hasheous, when
+    switched on, is asked exactly as it would be with no DAT knowing it."""
+    from services import recognized
+    from services.dat_store import dat_store
+
+    src, sha1 = _pbp(e2e["lib"])
+    await dat_store.import_dat(_dat(_PSP, sha1), transport="http")
+    monkeypatch.setattr(convert_routes.settings, "hasheous_enabled", True)
+    lookup = AsyncMock(return_value=None)
+    monkeypatch.setattr(recognized.hasheous, "lookup", lookup)
+
+    job = await _run(src, "pbp_to_iso", delete_on_verify=True)
+
+    lookup.assert_awaited_once_with(sha1)
+    assert src.exists()
+    assert "plain HTTP" in job.warning
+
+
+@pytest.mark.asyncio
+async def test_a_dat_over_plain_http_still_recognizes_and_names_the_output(e2e):
+    """Only the delete proof sets it aside: matching (what the Library shows
+    and what the Inbox names an Image after) still uses it."""
+    from routes.dat import match_one
+    from services.dat_store import dat_store
+
+    src, sha1 = _pbp(e2e["lib"])
+    await dat_store.import_dat(_dat(_PSP, sha1), transport="http")
+    record = dat_store.lookup_sha1(sha1)
+    assert record["dat_name"] == _PSP and record["transport"] == "http"
+
+    await _run(src, "pbp_to_iso", delete_on_verify=True)
+    result, _cacheable = await match_one(str(e2e["lib"] / "Game.iso"))
+
+    assert result["matched"] is True
+    assert result["dat_name"] == _PSP
+    assert result["game_name"] == "Some Game"
+
+
 @pytest.mark.asyncio
 async def test_container_only_never_skips_the_recognized_proof(e2e):
     src, _sha1 = _pbp(e2e["lib"])

@@ -59,6 +59,10 @@
   instead (#556); a certificate that doesn't check out stops the sync rather
   than falling back. Either way the download is held to the same size caps
   and archive checks, and a failure says which of HTTPS and HTTP it tried.
+  A DAT that came over plain HTTP still names and matches your files, but
+  never vouches for deleting a Source: if only such a DAT knows a converted
+  output, the Source stays and the job says why (Codex 4659176015). DATs you
+  import by hand, and ones fetched over HTTPS, prove outputs as before.
   A Redump DAT you replace by hand
   is fetched again on the next sync. No-Intro stays upload-only, because its
   site is gated.

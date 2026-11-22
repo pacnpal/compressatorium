@@ -257,6 +257,42 @@ async def test_redump_sync_refetches_when_its_dat_was_deleted(store, prefs, fetc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("meta", "transport"), [
+    ({"transport": "https"}, "https"),
+    ({"transport": "http"}, "http"),
+    # A fetch that doesn't say how it arrived is treated as plain HTTP.
+    ({}, "http"),
+])
+async def test_redump_sync_records_how_each_dat_arrived(
+    store, prefs, monkeypatch, tmp_path, meta, transport,
+):
+    """Codex 4659176015: the Recognized delete proof must be able to tell a
+    DAT fetched over plain HTTP from one fetched over HTTPS."""
+    monkeypatch.setattr(dat_import, "present_platforms", lambda: {"psx"})
+    monkeypatch.setattr(dat_import, "REQUEST_GAP_SECONDS", 0)
+    body = _redump_zip("Sony - PlayStation", "a" * 40)
+
+    def fake_fetch(system, cached, dest):
+        path = f"{dest}/{system}.zip"
+        with open(path, "wb") as fh:
+            fh.write(body)
+        return path, {"etag": None, "last_modified": None, **meta}
+
+    monkeypatch.setattr(dat_import, "_fetch", fake_fetch)
+    await dat_import.sync_redump()
+    assert [d["transport"] for d in store.list_dats()] == [transport]
+    assert store.lookup_sha1("a" * 40)["transport"] == transport
+
+
+@pytest.mark.asyncio
+async def test_a_dat_imported_by_hand_is_recorded_as_manual(store, prefs, tmp_path):
+    loose = tmp_path / "gb.dat"
+    loose.write_text(_dat_xml("Nintendo - Game Boy", "G", "a" * 40))
+    await dat_import.import_files([("gb.dat", str(loose))])
+    assert [d["transport"] for d in store.list_dats()] == ["manual"]
+
+
+@pytest.mark.asyncio
 async def test_redump_sync_is_one_at_a_time(store, prefs, fetches, monkeypatch):
     monkeypatch.setattr(dat_import, "present_platforms", lambda: {"psx"})
     assert dat_import._sync_running.acquire(blocking=False)
@@ -764,6 +800,7 @@ def test_redump_is_asked_over_verified_https_first(wire, tmp_path):
     assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
     assert Path(path).read_bytes() == b"PK"
     assert meta["etag"] == '"e"'
+    assert meta["transport"] == "https"
 
 
 @pytest.mark.parametrize("error", [
@@ -789,6 +826,8 @@ def test_https_that_cannot_connect_falls_back_to_plain_http(wire, tmp_path, erro
     assert http["closed"]
     assert Path(path).read_bytes() == b"PK"
     assert meta["etag"] == '"e"'
+    # Recorded with the DAT, so it can never vouch for a delete (4659176015).
+    assert meta["transport"] == "http"
 
 
 @pytest.mark.parametrize("error", [

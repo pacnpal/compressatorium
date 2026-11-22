@@ -183,7 +183,7 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     # #424's 0022 on that, #430's 0023 on that, #423's 0024 on that, #426's
     # 0025 on that, #428's 0026 on that and #431's 0027 on that; see their own
     # tests below.
-    assert script.get_heads() == ["0027"]
+    assert script.get_heads() == ["0028"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
     assert script.get_revision("0012").down_revision == "0011"
@@ -568,6 +568,60 @@ def test_0027_adds_the_inboxes_table(fresh_db_path: str):
 # ---------------------------------------------------------------------------
 # Called-before-init guard
 # ---------------------------------------------------------------------------
+
+
+def test_0028_records_how_each_dat_arrived(fresh_db_path: str):
+    """0028, on #431's 0027 (Codex 4659176015 on #557): each DAT records how
+    it arrived. A DAT the Redump sync imported before this can only have come
+    over #557's plain-HTTP fallback (redump.org serves no HTTPS), so it is
+    marked ``http`` and can't vouch for a delete. Every other DAT was imported
+    by hand or by the HTTPS-only MAME Redump sync: left unset, read as before.
+    """
+    import json
+
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0028").down_revision == "0027"
+
+    command.upgrade(cfg, "0027")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO dats (id, name, description, version, imported_at, file_count, "
+            "family) VALUES ('sync', 'Sony - PlayStation', '', '1', 't', 1, 'Redump'), "
+            "('hand', 'Nintendo - Game Boy', '', '1', 't', 1, 'No-Intro')",
+        )
+        cache = {"psx": {"dat_ids": ["sync", "gone"]}, "gc": {"etag": "x"}, "bad": "x"}
+        conn.exec_driver_sql(
+            "INSERT INTO preferences (key, value, updated_at) VALUES (?, ?, 't')",
+            ("redump_sync", json.dumps(cache)),
+        )
+    command.upgrade(cfg, "0028")
+
+    columns = {c["name"]: c for c in inspect(engine).get_columns("dats")}
+    assert columns["transport"]["nullable"] is True
+    with engine.begin() as conn:
+        assert conn.exec_driver_sql(
+            "SELECT id, transport FROM dats ORDER BY id",
+        ).all() == [("hand", None), ("sync", "http")]
+    assert _current_rev(engine) == "0028"
+
+
+def test_0028_runs_without_a_redump_sync_cache(fresh_db_path: str):
+    from alembic import command
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    command.upgrade(cfg, "0027")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO preferences (key, value, updated_at) "
+            "VALUES ('redump_sync', 'not json', 't')",
+        )
+    command.upgrade(cfg, "0028")
+    assert _current_rev(engine) == "0028"
 
 
 def test_apply_migrations_without_engine_raises():

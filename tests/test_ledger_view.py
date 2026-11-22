@@ -394,7 +394,7 @@ def test_migrations_have_a_single_head():
     # (the DAT that Recognized an output) on that, and #426's 0025 (each
     # DAT's file list) on that, and #428's 0026 (the Ledger's extra inputs)
     # on that, and #431's 0027 (Inboxes) on that.
-    assert heads == ["0027"]
+    assert heads == ["0028"]
 
 
 def test_upgrade_from_0010_seeds_totals_from_populated_ledger(tmp_path):

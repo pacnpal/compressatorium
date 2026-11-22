@@ -97,9 +97,19 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _dat_info(header: dict, entries: list[dict]) -> dict:
-    """The ``dats`` row for a freshly parsed DAT (a new id, its family)."""
+# How a DAT arrived (``dats.transport``). Only PLAIN_HTTP is set aside, by
+# the Recognized delete proof (services.recognized).
+MANUAL, HTTPS, PLAIN_HTTP = "manual", "https", "http"
+TRANSPORTS = (MANUAL, HTTPS, PLAIN_HTTP)
+
+
+def _dat_info(header: dict, entries: list[dict], transport: str) -> dict:
+    """The ``dats`` row for a freshly parsed DAT (a new id, its family, and
+    how it arrived)."""
+    if transport not in TRANSPORTS:
+        raise ValueError(f"unknown DAT transport {transport!r}")
     return {
+        "transport": transport,
         "id": str(uuid.uuid4())[:8],
         "name": header.get("name", "Unknown DAT"),
         "description": header.get("description", ""),
@@ -278,7 +288,9 @@ class DATStore:
     # Import
     # ------------------------------------------------------------------
 
-    def _import_dat_sync(self, source: str, replace: bool = False) -> tuple[dict, list[str]]:
+    def _import_dat_sync(
+        self, source: str, replace: bool = False, transport: str = MANUAL,
+    ) -> tuple[dict, list[str]]:
         """Parse *source* and insert all entries into the DB in one transaction.
 
         With *replace*, an earlier import of the same DAT (same name and
@@ -288,7 +300,7 @@ class DATStore:
         Returns the import result and the paths the invalidation dropped.
         """
         header, entries = parse_dat(source)
-        dat_info = _dat_info(header, entries)
+        dat_info = _dat_info(header, entries, transport)
         hash_rows = _hash_rows(entries, dat_info["id"])
         replaced: list[str] = []
         with self._changing_local_index(), self._session() as session:
@@ -335,6 +347,7 @@ class DATStore:
             file_count=dat_info["file_count"],
             family=dat_info["family"],
             rank=rank,
+            transport=dat_info["transport"],
         ))
         # The multi-row insert bypasses the unit-of-work, so flush the DAT row
         # first or the FK from dat_hashes will fail.
@@ -370,8 +383,12 @@ class DATStore:
 
     async def import_dat(
         self, source: str, *, invalidated: set[str] | None = None, replace: bool = False,
+        transport: str = MANUAL,
     ) -> dict:
         """Parse and import a DAT file (path or XML string).
+
+        *transport* records how it arrived (:data:`TRANSPORTS`): a hand import
+        is ``manual``; a download says ``https`` or ``http``.
 
         *invalidated*, when given, receives the paths whose cached verdicts the
         import's invalidation removed, read inside the import's own
@@ -380,16 +397,18 @@ class DATStore:
         snapshot taken before the import misses a row written between the
         snapshot and the commit.
         """
-        result, dropped = await run_in_threadpool(self._import_dat_sync, source, replace)
+        result, dropped = await run_in_threadpool(
+            self._import_dat_sync, source, replace, transport,
+        )
         if invalidated is not None:
             invalidated.update(dropped)
         return result
 
-    async def import_dat_no_persist(self, source: str) -> dict:
+    async def import_dat_no_persist(self, source: str, *, transport: str = MANUAL) -> dict:
         """Stage a DAT in memory; call :meth:`persist` to atomically commit all staged DATs."""
         def _stage() -> tuple[dict, dict]:
             header, entries = parse_dat(source)
-            dat_info = _dat_info(header, entries)
+            dat_info = _dat_info(header, entries, transport)
             hash_rows = _hash_rows(entries, dat_info["id"])
             with self._pending_lock:
                 self._pending_imports.append((dat_info, hash_rows))
@@ -523,6 +542,7 @@ class DATStore:
             "file_count": r.file_count,
             "family": r.family,
             "rank": r.rank,
+            "transport": r.transport,
         }
 
     def list_dats(self) -> list[dict]:
@@ -540,12 +560,13 @@ class DATStore:
 
         The top-level fields are the oldest import's (a stable order, not a
         ranking: :meth:`with_current_ranking` decides which DAT names a file);
-        ``matches`` lists every DAT's record, each with its DAT's name and
-        family.
+        ``matches`` lists every DAT's record, each with its DAT's name, family
+        and ``transport`` (read in the same query, so the Recognized proof sees
+        how each matching DAT arrived).
         """
         with self._session() as session:
             rows = session.execute(
-                select(_db.DATHash, _db.DAT.name, _db.DAT.family)
+                select(_db.DATHash, _db.DAT.name, _db.DAT.family, _db.DAT.transport)
                 .join(_db.DAT, _db.DAT.id == _db.DATHash.dat_id)
                 .where(
                     _db.DATHash.hash == hex_hash.lower(),
@@ -563,8 +584,9 @@ class DATStore:
                     "game_name": row.game_name,
                     "rom_name": row.rom_name,
                     "size": row.size,
+                    "transport": transport,
                 }
-                for row, dat_name, family in rows
+                for row, dat_name, family, transport in rows
             ]
             return {**matches[0], "matches": matches}
 

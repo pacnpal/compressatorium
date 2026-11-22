@@ -4152,6 +4152,22 @@ declares a different delete proof on the mode contract:
   put first is the one named), then with `hasheous.lookup` when Hasheous is on,
   and passes only on a hit. A miss, an unreachable Hasheous, a hash that did
   not finish or DATs that could not be read all keep the Source.
+- **A DAT that came over plain HTTP never vouches for a delete** (Codex
+  4659176015 on #557). Each DAT records how it arrived in `dats.transport`
+  (`dat_store.TRANSPORTS`: `https`, `http` from the Redump sync's plain-HTTP
+  fallback, or `manual` for a hand import; migration 0028), and
+  `_lookup_hash` returns it on every match in the same query. `recognize`
+  sets the `http` matches aside before ranking: a trusted DAT that also knows
+  the hash still proves it (and is the one named), and an output only
+  plain-HTTP DATs know is treated as if no DAT knew it, so Hasheous is asked
+  when it is on, and otherwise it is a miss whose `keep_reason` names those
+  DATs and says they came over plain HTTP. Only the delete proof sets them
+  aside: matching, the Library's badges and the Inbox's naming use them as
+  any other DAT. A NULL transport (a DAT imported before 0028) reads as
+  before: 0028 marks the DATs the Redump sync's cache (`redump_sync`) names
+  as `http`, since redump.org serves no HTTPS and they can only have come
+  over the fallback, and leaves the rest, hand imports and the HTTPS-only
+  MAME Redump sync, unset.
 - `JobManager._delete_check` returns a `_DeleteCheck`: the check passed, plus a
   `fail_reason` (a failed Round-trip: the job fails, as before) or a
   `keep_reason` (not Recognized: the output is Intact and placed, its record
@@ -10579,7 +10595,10 @@ Redump sync (`POST /dat/redump/sync`) and the CLI (`dat import`, `dat sync`):
   `save_capped`/`MAX_ZIP_SIZE` cap; the zip then goes through every archive
   and DAT check below unchanged. `redump_url(system, scheme)` names the URL
   actually used, and a failure says which transports were tried. Plain HTTP
-  is allowed for redump.org only. One system at a time with
+  is allowed for redump.org only, and each DAT it imports records the
+  transport used (`_fetch`'s `transport`, `dats.transport`; a fetch that
+  doesn't say counts as `http`), so a DAT fetched over plain HTTP never
+  vouches for a delete (the Recognized proof, §3.3.12). One system at a time with
   `REQUEST_GAP_SECONDS` between requests, at most one sync at once. The cache
   (preference `redump_sync`) skips a system synced within `FRESH_FOR` whose
   DATs are still installed, sends `If-None-Match`/`If-Modified-Since` when it

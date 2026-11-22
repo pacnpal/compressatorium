@@ -100,6 +100,12 @@ class DAT(Base):
     # The user's place for this DAT in the one ranked list (0 is first); NULL
     # until they rank it, when its family's default order applies (#424).
     rank = Column(Integer, nullable=True)
+    # How it arrived: "https", "http" (the Redump sync's plain-HTTP fallback,
+    # #557) or "manual" (imported by hand). NULL for a DAT imported before
+    # this was recorded, read as before (migration 0028). A DAT that came over
+    # plain HTTP never vouches for a delete (services.recognized, Codex
+    # 4659176015).
+    transport = Column(String, nullable=True)
 
 
 class DATHash(Base):
