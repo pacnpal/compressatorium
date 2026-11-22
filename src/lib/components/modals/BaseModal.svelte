@@ -30,19 +30,26 @@
 
   // A dialog with a field to type in opens on it (#568): the field marked
   // `data-autofocus`, else bits-ui's default (the first focusable element).
+  // A frame later, as bits-ui's own focus is, so a menu that opened this
+  // dialog has finished handing focus back first.
+  /** @type {HTMLElement | null} */
+  let contentEl = $state(null);
   function focusMarkedField(event) {
-    const field = /** @type {HTMLElement | null} */ (event.currentTarget)
-      ?.querySelector?.('[data-autofocus]');
+    const field = /** @type {HTMLElement | null} */ (contentEl?.querySelector('[data-autofocus]'));
     if (!field) return;
     event.preventDefault();
-    field.focus();
+    requestAnimationFrame(() => field.focus());
   }
 </script>
 
 <Dialog.Root {open} onOpenChange={handleOpenChange}>
   <Dialog.Portal>
     <Dialog.Overlay class="mdl-overlay" />
-    <Dialog.Content class="mdl-content mdl-size-{size}" onOpenAutoFocus={focusMarkedField}>
+    <Dialog.Content
+      bind:ref={contentEl}
+      class="mdl-content mdl-size-{size}"
+      onOpenAutoFocus={focusMarkedField}
+    >
       <header class="mdl-header">
         <Dialog.Title class="mdl-title">
           {#if titleIcon}{@render titleIcon()}{/if}
