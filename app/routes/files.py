@@ -1181,6 +1181,7 @@ def _split_set_by_name(path: str) -> list[str]:
 
 def owners_of(
     path: str, companions_of: dict[str, list[str]] | None = None,
+    links_of: dict[str, list[tuple[str, str]] | str] | None = None,
 ) -> tuple[dict[str, str] | None, str | None]:
     """``(owners, None)``: every file that names *path* as part of itself, as
     normcased real path -> path; or ``(None, why)`` when that can't be told.
@@ -1188,7 +1189,8 @@ def owners_of(
 
     Through ``image_sets.owners_naming``, the one ownership check: a sheet's
     track, a playlist's disc, a set's later volume or part. Fails closed: when
-    the owners can't be told, the caller keeps the file.
+    the owners can't be told, the caller keeps the file. *links_of* holds each
+    Volume's links (:func:`volume_links_of`), or why they can't be told.
     """
     name = os.path.basename(path)
     boundary = lock_boundary_root(path)
@@ -1196,8 +1198,13 @@ def owners_of(
         # The batch checks containment first; never walk outside the Volumes.
         return None, "Access denied: path outside configured volumes"
     stop = str(boundary)
+    links = (links_of or {}).get(stop)
+    if isinstance(links, str):
+        return None, f"{links}, so whether another game still needs {name} is unknown; it is kept"
     try:
-        owners = image_sets.owners_naming(path, stop_at=stop, companions_of=companions_of)
+        owners = image_sets.owners_naming(
+            path, stop_at=stop, companions_of=companions_of, links=links,
+        )
     except (image_sets.SheetOwnerUnknown, OSError, ValueError) as exc:
         return None, f"{exc}, so whether another game still needs {name} is unknown; it is kept"
     return {os.path.normcase(os.path.realpath(o)): o for o in owners}, None
@@ -1220,6 +1227,27 @@ def set_members(path: str) -> tuple[list[str] | None, str | None]:
     return [os.path.normcase(os.path.realpath(m)) for m in dict.fromkeys(members)], None
 
 
+def _volumes_of(paths: list[str]) -> list[str]:
+    """The Volume boundary of each of *paths*, once each. Blocking."""
+    found = (lock_boundary_root(path) for path in paths)
+    return list(dict.fromkeys(str(b) for b in found if b is not None))
+
+
+async def volume_links_of(paths: list[str]) -> dict[str, list[tuple[str, str]] | str]:
+    """Each Volume of *paths*: its links (``image_sets.volume_links``), or why
+    they can't be told. One stall-bounded walk per Volume per request (#555),
+    so a sheet that reaches a file through a link in another folder owns it."""
+    out: dict[str, list[tuple[str, str]] | str] = {}
+    for volume in await off_loop_bounded(_volumes_of, paths):
+        try:
+            out[volume] = await off_loop_until_stalled(
+                image_sets.volume_links, volume, what="Finding the links in a Volume",
+            )
+        except image_sets.SheetOwnerUnknown as exc:
+            out[volume] = str(exc)
+    return out
+
+
 async def _assert_not_named_elsewhere(path: str, *, renaming: bool) -> None:
     """Refuse (409) to delete or rename one file another file still names.
 
@@ -1231,7 +1259,8 @@ async def _assert_not_named_elsewhere(path: str, *, renaming: bool) -> None:
     Fails closed: when the owners can't be told, the file stays as it is.
     """
     name = os.path.basename(path)
-    owners, why = await off_loop_bounded(owners_of, path)
+    links_of = await volume_links_of([path])
+    owners, why = await off_loop_bounded(owners_of, path, None, links_of)
     if owners is None:
         raise HTTPException(status_code=409, detail=why)
     if owners:
@@ -1292,6 +1321,7 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
         lambda paths: [removed_path(p) for p in paths], contained,
     ), strict=True))
     companions_of: dict[str, list[str]] = {}
+    links_of = await volume_links_of(contained)
     owners_cache: dict[str, tuple[dict[str, str] | None, str | None]] = {}
     members_cache: dict[str, tuple[list[str] | None, str | None]] = {}
     deleted: set[str] = set()
@@ -1302,7 +1332,9 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
         owners, or ``(None, False)`` when it may go now."""
         if path not in owners_cache:
             try:
-                owners_cache[path] = await off_loop_bounded(owners_of, path, companions_of)
+                owners_cache[path] = await off_loop_bounded(
+                    owners_of, path, companions_of, links_of,
+                )
             except HTTPException as exc:
                 owners_cache[path] = (None, str(exc.detail))
         owners, why = owners_cache[path]
