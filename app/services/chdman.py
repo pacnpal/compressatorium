@@ -7,7 +7,7 @@ from pathlib import Path
 
 from config import settings
 from services.subprocess_runner import (
-    RunnerService,
+    VerifyingRunnerService,
     ReadCancelled,
     StorageAbandoned,
     abandonment_checkpoint,
@@ -29,7 +29,7 @@ CONVERTIBLE_EXTENSIONS = CHDMAN_CONVERTIBLE_EXTENSIONS
 logger = get_logger("chdman")
 
 
-class ChdmanService(RunnerService):
+class ChdmanService(VerifyingRunnerService):
     """Wrapper for chdman binary."""
 
     verify_fallback_message = "CHD verification failed"

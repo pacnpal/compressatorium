@@ -9,7 +9,7 @@ from pathlib import Path
 from config import settings
 from services.chdman import ConversionCancelled
 from services.subprocess_runner import (
-    RunnerService,
+    VerifyingRunnerService,
     SubprocessRunner,
     ReadCancelled,
     remove_partial_output,
@@ -50,7 +50,7 @@ Z3DS_DECOMPRESS_FORMATS = {
 logger = get_logger("z3ds_compress")
 
 
-class Z3DSCompressService(RunnerService):
+class Z3DSCompressService(VerifyingRunnerService):
     """Wrapper for z3ds_compressor binary."""
 
     def __init__(self):

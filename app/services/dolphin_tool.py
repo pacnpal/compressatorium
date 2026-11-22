@@ -6,7 +6,7 @@ from pathlib import Path
 
 from logging_setup import get_logger
 from services.subprocess_runner import (
-    RunnerService,
+    VerifyingRunnerService,
     StorageAbandoned,
     SubprocessRunner,
     abandonment_checkpoint,
@@ -29,7 +29,7 @@ DEFAULT_DOLPHIN_COMPRESSION_LEVEL = "19"
 logger = get_logger("dolphin_tool")
 
 
-class DolphinToolService(RunnerService):
+class DolphinToolService(VerifyingRunnerService):
     """Wrapper for dolphin-tool binary."""
 
     verify_fallback_message = "Disc verification failed"

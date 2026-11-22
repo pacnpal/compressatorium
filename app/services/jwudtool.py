@@ -51,7 +51,7 @@ from pathlib import Path
 from config import settings
 from logging_setup import get_logger
 from services.subprocess_runner import (
-    RunnerService,
+    VerifyingRunnerService,
     SubprocessRunner,
     ReadCancelled,
     remove_partial_tree,
@@ -341,7 +341,7 @@ def iter_wux_image(file_path: str, stop=None):
             yield bytes(out)
 
 
-class JwudToolService(RunnerService):
+class JwudToolService(VerifyingRunnerService):
     """Wrapper for the JWUDTool CLI."""
 
     def __init__(self):

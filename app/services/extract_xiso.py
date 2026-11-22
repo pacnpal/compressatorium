@@ -39,7 +39,7 @@ from config import settings
 from logging_setup import get_logger
 from services.output_placement import OutputPlacement
 from services.subprocess_runner import (
-    RunnerService,
+    VerifyingRunnerService,
     ConversionCancelled,
     ReadCancelled,
     SubprocessRunner,
@@ -338,7 +338,7 @@ def _probe_convertible(path: str, size: int, mtime_ns: int) -> bool:
         return False
 
 
-class ExtractXisoService(RunnerService):
+class ExtractXisoService(VerifyingRunnerService):
     """Wrapper for the ``extract-xiso`` binary."""
 
     def __init__(self) -> None:

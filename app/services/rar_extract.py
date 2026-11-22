@@ -60,7 +60,7 @@ from services.disk import ensure_headroom
 from services.output_placement import OutputPlacement
 from services.stream_digest import hash_files
 from services.subprocess_runner import (
-    RunnerService,
+    VerifyingRunnerService,
     ConversionCancelled,
     DeadlineExpired,
     ProbeCapacityExceeded,
@@ -289,7 +289,7 @@ def _check_product(work_dir: str, produced: str, size: int) -> None:
         )
 
 
-class RarExtractService(RunnerService):
+class RarExtractService(VerifyingRunnerService):
     """``unar`` over a planned RAR set."""
 
     def __init__(self) -> None:

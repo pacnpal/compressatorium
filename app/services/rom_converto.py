@@ -55,7 +55,7 @@ from services import rom_converto_formats as formats
 from services.extract_xiso import XISO_VERIFY_EXTENSIONS, probe_console
 from services.output_placement import OutputPlacement
 from services.subprocess_runner import (
-    RunnerService,
+    VerifyingRunnerService,
     ConversionCancelled,
     ReadCancelled,
     SubprocessRunner,
@@ -222,7 +222,7 @@ def _call(mode: str) -> _ModeCall:
         raise ValueError(f"Unsupported rom-converto mode: {mode}") from None
 
 
-class RomConvertoService(RunnerService):
+class RomConvertoService(VerifyingRunnerService):
     """Wrapper for the ``rom-converto`` binary."""
 
     def __init__(self) -> None:

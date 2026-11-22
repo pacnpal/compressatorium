@@ -31,7 +31,7 @@ from config import settings
 from logging_setup import get_logger
 from services.chdman import ConversionCancelled
 from services.subprocess_runner import (
-    RunnerService,
+    VerifyingRunnerService,
     SubprocessRunner,
     remove_partial_output,
     verify_preflight,
@@ -119,7 +119,7 @@ def _effort_flags(mode: str, compression: str | None) -> list[str]:
 logger = get_logger("maxcso")
 
 
-class MaxcsoService(RunnerService):
+class MaxcsoService(VerifyingRunnerService):
     """Wrapper for the maxcso binary."""
 
     def __init__(self):

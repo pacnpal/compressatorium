@@ -37,7 +37,7 @@ from services.archive import (
 )
 from services.archive_members import read_archive_members
 from services.subprocess_runner import (
-    RunnerService,
+    VerifyingRunnerService,
     ConversionCancelled,
     SubprocessRunner,
     ReadCancelled,
@@ -188,7 +188,7 @@ def _no_prompt_switch() -> str:
     return "-p" + secrets.token_hex(8)
 
 
-class RomzService(RunnerService):
+class RomzService(VerifyingRunnerService):
     """Wrapper for the 7z binary, packing/unpacking handheld ROM dumps."""
 
     def __init__(self):

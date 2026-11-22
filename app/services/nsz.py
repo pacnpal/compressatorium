@@ -31,7 +31,7 @@ from pathlib import Path
 
 from config import settings
 from services.subprocess_runner import (
-    RunnerService,
+    VerifyingRunnerService,
     ReadCancelled,
     SubprocessRunner,
     remove_partial_tree,
@@ -102,7 +102,7 @@ def xcz_decoded_size(path: str) -> int:
     return size * 4
 
 
-class NszService(RunnerService):
+class NszService(VerifyingRunnerService):
     """Wrapper for the nsz binary."""
 
     def __init__(self):

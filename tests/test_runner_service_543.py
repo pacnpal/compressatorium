@@ -7,7 +7,7 @@ from services import (
     chdman, dolphin_tool, extract_xiso, jwudtool, makeps3iso, maxcso, nkit2iso, nsz,
     rar_extract, rom_converto, romz, z3ds_compress,
 )
-from services.subprocess_runner import RunnerService
+from services.subprocess_runner import RunnerService, VerifyingRunnerService
 
 SERVICES = [
     chdman.ChdmanService, dolphin_tool.DolphinToolService,
@@ -23,14 +23,28 @@ def test_each_service_shares_the_runner_methods(cls):
     assert issubclass(cls, RunnerService)
     for name in ("active_pids", "abandoned_pids"):
         assert name not in vars(cls), f"{cls.__name__} redefines {name}"
-    if "verify_stream" in vars(cls):
-        # Only makeps3iso has a verify of its own (a PARAM.SFO readback).
-        assert ("verify" in vars(cls)) == (cls is makeps3iso.MakePs3IsoService)
+    if issubclass(cls, VerifyingRunnerService):
+        # A streaming service defines its stream and inherits the drain.
+        assert "verify_stream" in vars(cls) and "verify" not in vars(cls)
+
+
+NOT_STREAMING = (makeps3iso.MakePs3IsoService, nkit2iso.Nkit2IsoService)
+
+
+@pytest.mark.parametrize("cls", SERVICES, ids=lambda c: c.__name__)
+def test_only_a_streaming_service_has_a_verify_stream(cls):
+    """makeps3iso keeps its own verify (a PARAM.SFO readback) and nkit2iso
+    has none: neither inherits an abstract stream it never defines."""
+    streaming = cls not in NOT_STREAMING
+    assert issubclass(cls, VerifyingRunnerService) == streaming
+    assert hasattr(cls, "verify_stream") == streaming
+    assert not hasattr(nkit2iso.Nkit2IsoService, "verify")
+    assert "verify" in vars(makeps3iso.MakePs3IsoService)
 
 
 @pytest.mark.asyncio
 async def test_verify_drains_the_stream_with_the_services_fallback():
-    class _Quiet(RunnerService):
+    class _Quiet(VerifyingRunnerService):
         verify_fallback_message = "CHD verification failed"
 
         async def verify_stream(self, path, *, cancel_event=None):

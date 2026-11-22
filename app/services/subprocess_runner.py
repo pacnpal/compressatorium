@@ -1977,12 +1977,11 @@ async def collect_verify(
 class RunnerService:
     """What every tool service shares over its ``SubprocessRunner`` (#543).
 
-    A service sets ``self._runner``; one with a verify defines
-    ``verify_stream`` and gets ``verify`` from here, which drains it.
+    A service sets ``self._runner``. One that streams a verify subclasses
+    :class:`VerifyingRunnerService` instead.
     """
 
     _runner: "SubprocessRunner"
-    verify_fallback_message = "Verification failed"
 
     def active_pids(self) -> list[int]:
         return self._runner.active_pids()
@@ -1990,6 +1989,13 @@ class RunnerService:
     def abandoned_pids(self) -> list[int]:
         """Children that outlived SIGKILL; see ``SubprocessRunner``."""
         return self._runner.abandoned_pids()
+
+
+class VerifyingRunnerService(RunnerService):
+    """A service whose verify streams events: it defines ``verify_stream``,
+    and ``verify`` here drains it (``collect_verify``)."""
+
+    verify_fallback_message = "Verification failed"
 
     def verify_stream(
         self, path: str, *, cancel_event: asyncio.Event | None = None,
