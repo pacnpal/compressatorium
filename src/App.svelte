@@ -12,6 +12,8 @@
   import HelpView from '$lib/components/views/HelpView.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import Button from '$lib/components/ui/Button.svelte';
+  import Spinner from '$lib/components/ui/Spinner.svelte';
+  import { registry } from '$lib/tools/registry.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
   import { terminalJobIds } from '$lib/stores/jobConstants.js';
   import { jobToasts } from '$lib/stores/jobToasts.svelte.js';
@@ -38,6 +40,8 @@
   import MappingModal from '$lib/components/modals/MappingModal.svelte';
 
   let mainEl;
+  // Why the tools have not loaded yet, once a fetch of them failed.
+  let toolsError = $state('');
 
   $effect(() => {
     ui.focusBump;
@@ -126,14 +130,30 @@
 
   onMount(() => {
     ui.loadVersion();
-    // Ask the backend which tools can run, and why the others can't (#515):
-    // the dashboard lists those with their fix. The tool list stays empty
-    // until this answers; on failure every tool is shown rather than none.
-    api.getTools()
-      .then((t) => ui.applyToolAvailability(t?.available, t?.reasons))
-      .catch(() => ui.applyToolAvailability(null));
-    // Load remembered per-tool compression settings from the server.
-    conversion.loadServerPrefs();
+    // The tools, their formats and modes come from the backend, and so does
+    // which of them can run and why the others can't (#515). The views wait
+    // for it; a failed fetch is retried, since nothing converts without it.
+    // One request at a time: the next is only scheduled once this one failed,
+    // so no older reply can land after a newer one. Nothing runs after unmount.
+    let toolsRetry;
+    let disposed = false;
+    const loadTools = (delay = 1000) => {
+      api.getTools()
+        .then((t) => {
+          if (disposed) return;
+          if (!registry.load(t)) throw new Error('The server named no tools');
+          toolsError = '';
+          ui.applyToolAvailability(t?.available, t?.reasons);
+          // Remembered per-tool compression settings, applied over the defaults.
+          conversion.loadServerPrefs();
+        })
+        .catch(() => {
+          if (disposed) return;
+          toolsError = "Can't reach the server to load the tools. Trying again…";
+          toolsRetry = setTimeout(() => loadTools(Math.min(delay * 2, 10000)), delay);
+        });
+    };
+    loadTools();
     // The safety choices new conversions start with.
     defaults.load();
     // Rehydrate the verified set + DAT-library state so OK / DAT badges
@@ -147,6 +167,8 @@
     jobs.connect();
     const stopRouter = startRouter();
     return () => {
+      disposed = true;
+      clearTimeout(toolsRetry);
       datMatching.stopWatchingAvailability();
       stopRouter();
       jobs.dispose();
@@ -198,7 +220,11 @@
     <TopBar />
     <main id="main-content" bind:this={mainEl} class="main" tabindex="-1" aria-label="Main content">
       <svelte:boundary onerror={onBoundaryError}>
-        {#if ui.activeView === 'files'}<FilesView />
+        {#if !ui.toolsKnown}
+          <div class="tools-loading" role="status">
+            <Spinner size="md" /> {toolsError || 'Loading the tools…'}
+          </div>
+        {:else if ui.activeView === 'files'}<FilesView />
         {:else if ui.activeView === 'libraries'}<LibrariesView />
         {:else if ui.activeView === 'activity'}<ActivityView />
         {:else if ui.activeView === 'settings'}<SettingsView />
@@ -261,4 +287,8 @@
     box-shadow: var(--elev-3);
   }
   .error-frame { padding: var(--space-6); }
+  .tools-loading {
+    display: flex; align-items: center; gap: var(--space-2);
+    padding: var(--space-6); color: var(--text-2); font-size: var(--text-sm);
+  }
 </style>

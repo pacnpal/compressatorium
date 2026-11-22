@@ -3,10 +3,14 @@
 * :func:`import_files` takes loose ``.dat``/``.xml`` files and zips of them:
   No-Intro's daily pack (hundreds of DATs) or a Redump per-system zip. The
   upload route and ``compressatorium dat import`` both use it.
-* :func:`sync_redump` downloads ``https://redump.org/datfile/<system>/`` for
-  the disc Platforms the user's Libraries hold, one request at a time, cached.
-  HTTPS only, with the certificate checked: a plaintext answer could be
-  swapped on the way and land in the DAT index (Codex PR #527).
+* :func:`sync_redump` downloads ``redump.org/datfile/<system>/`` for the disc
+  Platforms the user's Libraries hold, one request at a time, cached. Verified
+  HTTPS is tried first (certificate and host name checked). redump.org serves
+  no HTTPS, so when that connection can't be made at all (refused,
+  unreachable, timed out) the same path is asked over plain HTTP: the owner's
+  choice (#556), superseding the HTTPS-only rule from Codex PR #527. A
+  certificate that doesn't check out never falls back. Plain HTTP is allowed
+  for redump.org only.
 
 DATs are metadata only. Nothing here ever asks for a ROM, a key (``/keys/``,
 ``/dkeys/``) or a BIOS set (``-bios``). No-Intro is upload-only: its site is
@@ -54,7 +58,8 @@ MAX_BATCH_SIZE = MAX_ZIP_SIZE
 
 # A generic client name: never the owner's name, email or host.
 USER_AGENT = "compressatorium-dat-sync/1.0"
-# Asked over verified HTTPS only (_fetch); never plain HTTP.
+# Asked over verified HTTPS first, then plain HTTP only when HTTPS can't
+# connect at all (_fetch, #556). The one host anything here may ask in plaintext.
 REDUMP_HOST = "redump.org"
 # A Platform slug (services.platform_detect) -> Redump's system slug. Redump
 # catalogues discs, so a cartridge Platform has no entry.
@@ -242,8 +247,45 @@ def redump_path(system: str) -> str:
     return f"/datfile/{urllib.parse.quote(system, safe='')}/"
 
 
-def redump_url(system: str) -> str:
-    return f"https://{REDUMP_HOST}{redump_path(system)}"
+def redump_url(system: str, scheme: str = "https") -> str:
+    """The URL asked for *system*: *scheme* is the transport actually used."""
+    return f"{scheme}://{REDUMP_HOST}{redump_path(system)}"
+
+
+def _connect_redump() -> tuple[http.client.HTTPConnection, str]:
+    """A connection to redump.org and its scheme. Blocking.
+
+    Verified HTTPS first. Only when that connection can't be made at all
+    (refused, unreachable, timed out) is plain HTTP used (#556). A certificate
+    or host name that doesn't check out fails closed: something answered on
+    443, and asking it again in plaintext would hand it the download.
+    """
+    conn = http.client.HTTPSConnection(
+        REDUMP_HOST, timeout=_HTTP_TIMEOUT, context=ssl.create_default_context(),
+    )
+    try:
+        conn.connect()
+        return conn, "https"
+    except ssl.SSLError as exc:  # CertificateError is an SSLError too
+        conn.close()
+        raise ValueError(
+            f"redump.org's HTTPS certificate didn't check out ({exc}); "
+            "tried HTTPS only, not retried over plain HTTP"
+        ) from None
+    except OSError as exc:
+        conn.close()
+        https_error = exc
+    logger.warning("redump sync: no HTTPS from redump.org (%s); asking over plain HTTP",
+                   https_error)
+    conn = http.client.HTTPConnection(REDUMP_HOST, timeout=_HTTP_TIMEOUT)
+    try:
+        conn.connect()
+    except OSError as exc:
+        conn.close()
+        raise ValueError(
+            f"can't reach redump.org over HTTPS ({https_error}) or plain HTTP ({exc})"
+        ) from None
+    return conn, "http"
 
 
 def present_platforms() -> set[str]:
@@ -272,7 +314,8 @@ def _fetch(system: str, cached: dict, dest: str) -> tuple[str | None, dict]:
     """GET one Redump DAT into *dest*: its path (None on 304) and cache headers.
 
     Conditional on *cached*'s ``etag``/``last_modified`` when given. Talks to
-    the one fixed host over HTTPS with the certificate and host name checked,
+    the one fixed host (:func:`_connect_redump`: verified HTTPS, else plain
+    HTTP when HTTPS can't connect) with the same headers and caps either way,
     and follows no redirect, so nothing but redump.org's ``/datfile/`` is ever
     asked. Blocking.
     """
@@ -281,21 +324,21 @@ def _fetch(system: str, cached: dict, dest: str) -> tuple[str | None, dict]:
         headers["If-None-Match"] = cached["etag"]
     if cached.get("last_modified"):
         headers["If-Modified-Since"] = cached["last_modified"]
-    conn = http.client.HTTPSConnection(
-        REDUMP_HOST, timeout=_HTTP_TIMEOUT, context=ssl.create_default_context(),
-    )
+    conn, scheme = _connect_redump()
+    transport = "HTTPS" if scheme == "https" else "plain HTTP"
     try:
         try:
             conn.request("GET", redump_path(system), headers=headers)
             resp = conn.getresponse()
-        except OSError as exc:  # refused, unreachable, or a bad certificate
-            raise ValueError(f"can't reach redump.org over HTTPS: {exc}") from None
+        except OSError as exc:  # connected, then dropped: no fallback
+            raise ValueError(f"redump.org dropped the request over {transport}: {exc}") from None
         if resp.status == 304:
             return None, {}
         if resp.status != 200:
-            raise ValueError(f"redump.org answered {resp.status} {resp.reason} for {system}")
+            raise ValueError(f"redump.org answered {resp.status} {resp.reason} for {system} "
+                             f"over {transport}")
         path = os.path.join(dest, f"{system}.zip")
-        save_capped(resp, path, redump_url(system), MAX_ZIP_SIZE)
+        save_capped(resp, path, redump_url(system, scheme), MAX_ZIP_SIZE)
         return path, {
             "etag": resp.headers.get("ETag"),
             "last_modified": resp.headers.get("Last-Modified"),

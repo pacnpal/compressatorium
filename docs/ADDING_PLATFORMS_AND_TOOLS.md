@@ -110,7 +110,7 @@ touching the same layers in the same order:
 
 ```
             ┌─────────────────── Web UI (Svelte 5 + Vite, under src/) ───────────────┐
-            │  src/lib/tools/registry.js: one TOOLS entry per tool, drives all UI   │
+            │  src/lib/tools/registry.js: built from GET /api/tools (+ TOOL_UI)    │
             │  src/lib/api/endpoints.js:  HTTP / SSE / batch-verify client methods   │
             └───────────────────────────────────┬───────────────────────────────────┘
                                                  │  POST /api/jobs   (mode=...)
@@ -245,8 +245,8 @@ A plugin subclasses `BaseTool` and provides:
 | `converts_path(path)` | optional per-file refinement of `input_extensions` — the input-side mirror of `verifies_path`. Default is the plain extension match; override when your source is really a *set* of files so only the primary is offered (`jwud` hides the secondary members of a split `game_part1.wud` … `game_part12.wud` dump, which stay listed but non-convertible). Drives `FileEntry.convertible_by`. May do disk I/O — it runs inside the threadpool scan. |
 | `convert_refusal(path)` | optional. Why `converts_path(path)` said False, in the user's words, shown in place of the fixed skip reason. Default `None`. Asked only after `converts_path` refused, and may read the disk (the rar tool names the files a set holds when it holds more than one). |
 | `header_platform(path)` | optional. The Platform your tool reads from the file's own header (a few bytes), or `None`. Default `None`. Platform detection (`services/platform_detect.py`) asks every tool whose `input_extensions` match, maps the answer onto a RomM slug, and uses it for the convert panel's Auto choice. Override it when your consoles can be told apart from the bytes (chdman: `SYSTEM.CNF` / `PARAM.SFO` / sector-0 ids; dolphin: GC/Wii magic; xiso: XDVDFS layout). Never guess: answer `None` when unsure. Add your Platform's folder names to `_ALIASES` and its display name to `_NAMES` in `platform_detect.py`, keyed by RomM's slug (tests fail until you do). If a mode cannot read every input it accepts by hand, set `ModeSpec.reads_extensions`; set `auto_target=False` on a mode that should never be an Auto default, and `auto_platform_slugs` for a Platform a mode should serve in Auto but not by hand. Add your rows to `tests/test_auto_routing_table.py`. If the probe reads other files (a sheet's tracks), list them from `header_reads(path)` so the cache sees them change. If `is_ready()` can be False, set `not_ready_reason` to say why. See design doc §3.3.14. |
-| `ModeSpec.source_kept_reason` | optional. For a mode whose `supports_delete_on_verify` is False on principle (deleting would lose what nothing can rebuild), the reason in the user's words. The refusing 400, the CLI, the convert panel and the Rule editor show it. Mirror it as `sourceKeptReason` in `registry.js` (the parity test compares them). rom-converto's ZAR mode is the example (§20). |
-| `ModeSpec.delete_proof` | optional. The check that lets a delete-source job remove its Source: `DeleteProof.ROUND_TRIP` (the default: the container check, then the Round-trip where `supports_round_trip`) or `DeleteProof.RECOGNIZED`, for a mode whose output can't be Round-tripped but may still free its Source when the output's SHA-1 is in a DAT or Hasheous. A miss keeps the Source and the job completes saying so. The shared delete path reads it (`round_trip.delete_check_level`); never branch on the tool. A `RECOGNIZED` mode sets `supports_delete_on_verify` and never `supports_round_trip`. Mirror it as `deleteProof` in `registry.js` (the parity test compares them). rom-converto's PBP and CIA/CCI modes are the example (§20, design doc §3.3.12). |
+| `ModeSpec.source_kept_reason` | optional. For a mode whose `supports_delete_on_verify` is False on principle (deleting would lose what nothing can rebuild), the reason in the user's words. The refusing 400, the CLI, the convert panel and the Rule editor show it. The frontend reads it as `sourceKeptReason` (from `/api/tools`). rom-converto's ZAR mode is the example (§20). |
+| `ModeSpec.delete_proof` | optional. The check that lets a delete-source job remove its Source: `DeleteProof.ROUND_TRIP` (the default: the container check, then the Round-trip where `supports_round_trip`) or `DeleteProof.RECOGNIZED`, for a mode whose output can't be Round-tripped but may still free its Source when the output's SHA-1 is in a DAT or Hasheous. A miss keeps the Source and the job completes saying so. The shared delete path reads it (`round_trip.delete_check_level`); never branch on the tool. A `RECOGNIZED` mode sets `supports_delete_on_verify` and never `supports_round_trip`. The frontend reads it as `deleteProof` (from `/api/tools`). rom-converto's PBP and CIA/CCI modes are the example (§20, design doc §3.3.12). |
 | `delete_on_verify_is_safe(mode, compression)` | optional per-job guard on delete-on-verify. `ModeSpec.supports_delete_on_verify` says the *mode* offers it; this says the *job* may, given its settings. Default `True` (your `verify()` reads the whole output). Override when a job setting can weaken the guarantee — `jwud` returns `False` for `-noVerify`, because its verify is a structural WUX walk backed by JWUDTool's conversion-time byte-for-byte comparison. `routes/convert.py` rejects the combination for single and batch alike. |
 | `scannable_path(path)` | optional per-file veto on the library metadata / DAT-match walk. `scannable_extensions` selects it by *type*; this drops an individual path. Default `True`; override only when a name matching a produced extension provably is not a standalone artifact (`jwud` vetoes `game_partN.wud` — twelve 2 GiB slices of one disc image that no DAT can match, so hashing them is ~25 GB of pure waste per set). Any tool answering `False` drops the path. May do *bounded* disk I/O — jwud's veto is on membership of a real set, not on the name, so a lone `game_part1.wud` stays scannable and the same path stops being scannable once its siblings appear — but it runs once per candidate across the whole library, so keep it to a stat or two, never a read. It runs inside the threadpool scan walk, never on the event loop. |
 | `source_companions(path)` | optional sibling *input* files this source also consumes, never including `path` — the input-side mirror of `companion_outputs`. Default `[]`. `utils/delete_plan.build_delete_plan` adds them, so delete-on-verify removes a multi-file source whole instead of orphaning the parts the job didn't name. Raise `CompanionsUnknown` when the set can't be read now (the rar tool reads its members from the set's headers); never answer `[]` for a set you can't read. (`.cue`/`.gdi` tracks are still parsed from file *contents* in `delete_plan.py` rather than routed through this hook — see the design doc.) |
@@ -255,7 +255,7 @@ A plugin subclasses `BaseTool` and provides:
 | `active_pids()` | PIDs for the debug heartbeat |
 | `post_convert(input_path, output_path, mode)` | optional hook, default no-op |
 | `embedded_hashes(path, *, cancel_event=None)` | **optional** DAT-match fast path. Return `(sha1, match_type)` tuples your format already carries / can derive cheaply (so matching skips a full file hash); default `[]` → the caller falls back to a file-level SHA1, which is correct for raw formats. Raise `EmbeddedHashUnavailable` (from `services.tools.base`) when you *should* yield a hash but the attempt failed transiently, so it's recorded as a non-cacheable miss instead of a false negative. |
-| `ModeSpec.round_trip_required` | optional, with `supports_round_trip`. The container-only opt-out never applies: every delete-source job in the mode runs the Round-trip. For a mode whose output has no container of its own to check (any extension), so a delete rests on the content comparison; the registry guard accepts such a mode deleting its Source with no `verify_extensions` for its output. Mirror it as `roundTripRequired` in `registry.js`. The rar tool is the example (#476). |
+| `ModeSpec.round_trip_required` | optional, with `supports_round_trip`. The container-only opt-out never applies: every delete-source job in the mode runs the Round-trip. For a mode whose output has no container of its own to check (any extension), so a delete rests on the content comparison; the registry guard accepts such a mode deleting its Source with no `verify_extensions` for its output. The frontend reads it as `roundTripRequired` (from `/api/tools`). The rar tool is the example (#476). |
 | `content_digest(path, *, cancel_event=None)` | **optional** Round-trip check. Return a `ContentDigest(kind, value)` hashing what the file *decodes to*, for both your inputs and your outputs, and set `ModeSpec.supports_round_trip=True` on the modes it covers. Default `None` keeps the container check. Raise `ContentDigestUnavailable` when the hash should exist but could not be read; the Source is then kept. If the output's content can only be hashed from a decoded copy, decode it inside `services.disk.headroom_scratch_dir(prefix, required_bytes)` (headroom-checked, removed on every exit), as chdman does for CD CHDs. See DESIGN §3.3.12. |
 | `embedded_hash_is_exhaustive` | optional flag (default `False`). Set `True` only when your container bytes can never appear in a DAT (e.g. a recompressed image), so a content-hash miss is definitive and the file-level fallback is skipped; leave `False` if your file's own SHA1 might be indexed. |
 
@@ -359,8 +359,8 @@ the non-obvious rows is in §8 to §14.
 
 | # | File | What you do | When |
 |---|------|-------------|------|
-| 20 | `src/lib/api/endpoints.js` | `get<Tool>Info`, `verify<Tool>`, `verifyBatch<Tool>` client methods alongside the existing ones. | New tool |
-| 21 | `src/lib/tools/registry.js` | **One new entry** in the `TOOLS` array. Everything downstream (sidebar, workspace, badges, modals, verify dispatch, SSE URL building, compression defaults, icons, Help) looks up this registry. A tool that claims a shared extension by content sets `contentRefined: true` (§19). | New mode and/or tool |
+| 20 | `src/lib/api/endpoints.js` | `verify<Tool>`, `verifyBatch<Tool>` client methods alongside the existing ones. File info needs none: every tool's goes through `getToolInfo(toolId, path)` (`GET /api/info/{tool_id}`). | New tool that verifies |
+| 21 | `src/lib/tools/registry.js` | **No mirror.** Tools, extensions and every mode's `ModeSpec` fields come from `GET /api/tools` (`registry.load`, design doc §3.7), so a new mode needs nothing here. A new tool may add one `TOOL_UI` entry for what only the UI knows: hint, glyph, accent, `groups` labels, `defaultMode`, the codec words (`compressionCodecs` labels/hints), `compressionStyle`, `verifyPrefix` and the `verify` bindings, `productPath`. A tool that claims a shared extension by content sets `contentRefined: true` (§19). Without an entry the tool still appears, with plain defaults. | New tool (optional) |
 | 22 | `src/styles/tokens.css` | Add a semantic token only if you need a new tool accent / badge color. Most tools reuse existing tokens via `accent: 'var(--badge-<token>)'`. Add it under **both** `:root` and `:root.dark`. | If new visual identity |
 | 22a | `src/lib/util/fileIcon.js` | **One `TOOL_MEDIA` entry** mapping your tool id to `'disc'` or `'game'`. The `DISC_EXTS`/`GAME_EXTS` sets are *derived* from the registry, so you never re-type extensions — you only say which bucket your media reads as. The coverage guard (`tests/test_frontend_registry_derives_186.py`) fails until every registered tool is classified. **If your tool writes an archive container other than `.7z`/`.zip`, also add it to `ARCHIVE_EXTS`** — that set is hard-coded and checked *first*, so otherwise your output renders with a disc/game icon. The guard won't catch it: the extension is classified, just in the wrong bucket. | New tool |
 | 22b | `src/lib/stores/conversion.svelte.js` | **Nothing.** `defaultCompressionFor()` / `defaultLevelFor()` read `defaultCompression` and `compressionLevelRange` off your registry descriptor. Declare them in `registry.js` (item 21) and the initial value, the slider default, and the shared **Reset to default** button in `CompressionPicker.svelte` all work for free. A new delete or Round-trip field on `ModeSpec` is the exception: #476's `round_trip_required` also changed `offersContainerOnly` here, plus `RuleEditor.svelte`, `util/deleteCheck.js` and `registry.js`. | Never for a tool; a new delete-contract field |
@@ -382,7 +382,7 @@ the non-obvious rows is in §8 to §14.
 | 26e | `tests/test_companion_outputs_182.py` | Assert `companion_outputs()` for your mode if it writes sidecars. | If `companion_exts` set |
 | 26f | `tests/test_verify_routes_factory.py` | Covers the generated verify trio generically; extend if your `_VERIFY_CONFIG` entry has unusual naming. | Rare |
 | 26g | `tests/test_modespec_branches_180.py` | Add your tool id to the exact key set `test_bad_extension_reason_covers_non_chdman_tools` asserts for `_BAD_EXTENSION_REASON`. | New tool |
-| 26h | `tests/test_frontend_parity_186.py` | Mirror a new `ModeSpec` field in the registry descriptor and assert the two agree (#476 added `round_trip_required` / `roundTripRequired`). | New ModeSpec field |
+| 26h | `tests/test_tools_payload_27.py` | Nothing to mirror: a new `ModeSpec` field reaches the frontend camelCased (`round_trip_required` → `roundTripRequired`). This test fails if a field is missing from `/api/tools` or the loaded registry answers differently. | New ModeSpec field (check only) |
 | 27 | `tests/conftest.py` | **Add your tool id if it declares `required_binaries`.** The autouse fixture `_programs_as_in_the_image` counts the paths of the tools it lists as installed, so the suite runs as if inside the image. A tool missing from that tuple is probed for real and hidden. It stubs nothing else: per-tool route/service tests define their own mocks (monkeypatch `info_routes.<service>` or `app.services.<tool>.asyncio.create_subprocess_exec`). | New tool with a program |
 
 ### 3.5 CI / quality gates (must stay green)
@@ -470,28 +470,14 @@ the spec flags (`spec.kind`, `spec.allows_archive_input`,
 create-mode rules (for example the `.chd`-input rejection for `kind == CREATE`).
 Add an explicit check only if your mode breaks a spec assumption.
 
-### 4.4 Surface it in the UI: `src/lib/tools/registry.js`
+### 4.4 Surface it in the UI: nothing to do
 
-Append one mode entry to the chdman descriptor's `modes` array (the group's
-human label is already declared via `groups.create: 'Create'`):
-
-```js
-// src/lib/tools/registry.js, inside the chdman TOOLS entry
-modes: [
-  // …existing entries…
-  { mode: 'createcd_audio', kind: 'create', label: 'Create CD CHD (Audio)',
-    group: 'create',
-    outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
-    supportsCompression: true, supportsCompressionLevel: false,
-    supportsDeleteOnVerify: true, allowsArchiveInput: true },
-],
-```
-
-`CHDMAN_SOURCE_EXTS` is a local `const` in `registry.js` (not exported). Because
-the mode reuses the chdman tool and `.chd` output, file badges, the conversion
-config panel, the info modal, and the verify path all already work. The mode
-shows up wherever `registry.modesByGroup('chdman')` or
-`registry.specFor('createcd_audio')` is consulted.
+The frontend registry is built from `GET /api/tools` (design doc §3.7), so the
+new `ModeSpec` is already a mode entry under chdman (`registry.specFor('createcd_audio')`,
+`registry.modesByGroup('chdman')`), with its label, extensions, flags and
+codecs. File badges, the convert panel, the info modal and the verify path all
+already work. Only a word the UI shows and the backend doesn't know (a group
+label for a new group id) goes in `TOOL_UI.chdman` in `registry.js`.
 
 ### 4.5 Test
 
@@ -979,51 +965,33 @@ Both info and verify are **optional**. A tool whose unit of work has no path to
 route on, or that has no meaningful user-facing integrity check, registers
 neither — `makeps3iso` is the precedent (its only check is a backend PARAM.SFO
 `TITLE_ID` readback, and a folder has no extension to route Info on). If you
-skip them, also leave `getInfo` / `verify` / `verifyBatch` **undefined** in the
-frontend descriptor (§5.11) so the row-action helpers skip your tool.
+skip them, also set `noInfo: true` and leave `verify` / `verifyBatch` out of the
+tool's `TOOL_UI` entry (§5.11) so the row-action helpers skip your tool.
 
-Verify endpoints are **factory-generated**. You don't hand-write them, but there
-are **two** edits, not one:
+Verify and File info endpoints come from the registry: **no edit to `info.py`**.
 
-1. **Add a `_VERIFY_CONFIG["<tool>"]` entry** (a `_VerifyRouteConfig` dataclass) near
-   the top of `info.py`. It carries the per-tool facts the factory has no other way
-   to know: `url_prefix` (e.g. `"cso-"` → `/api/cso-verify`; `""` for chdman),
-   `service=lambda: <service_singleton>` (resolved at call time so tests can rebind
-   it), the three FastAPI route names (`verify_<tool>` / `_events` / `_batch_events`),
-   `bad_ext_detail` (the 400 message), and `verify_error_prefix` (the 500 message).
-   The factory reads accepted extensions off `tool.verify_extensions`, so there's no
-   per-tool extension constant here.
-2. **Add the (2-arg) register call** alongside the existing tool registrations. The
-   config is looked up from `_VERIFY_CONFIG` by `tool.id`; it is **not** passed in:
-
-```python
-verify_cso, verify_cso_events, verify_cso_batch_events = register_verify_routes(
-    router, registry.get("cso"),
-)
-```
-
-`register_verify_routes(router, tool)` generates the trio
-(`/api/nszip-verify`, `/api/nszip-verify/events`,
-`/api/nszip-verify-batch/events` — the `url_prefix` prepended to `verify`) from
-the plugin's `verify_extensions`, acquires the global verify lane
-(`_acquire_verify_lane_or_429`, bounded by `workload_limiter`), and calls
-`verification_store.mark_verified(path)` on success. No per-tool extension
-constants are needed; the factory reads them off the plugin.
-
-Info is hand-written per tool. Add a `GET /api/nszip-info` endpoint modeled on
-`get_z3ds_info`, returning your `NszipInfo` model, plus its small
-`_is_<tool>_info_file(path)` guard and `<TOOL>_INFO_EXTENSIONS` constant (mirror
-the z3ds/nsz pair just above the endpoints). No router registration is needed;
-`info.router` is already mounted under `/api` in `app/main.py`. Also import your
-service singleton at the top of `info.py` so the `_VERIFY_CONFIG` lambda can
-resolve it by module global.
+- **Verify.** A loop over `registry.all()` registers the trio for every tool
+  with `verify_extensions`: `/api/nszip-verify`, `/api/nszip-verify/events`,
+  `/api/nszip-verify-batch/events` (`_default_verify_config(tool)`: the prefix
+  is the tool id, `_` as `-`, and the handlers are `verify_nszip`,
+  `verify_nszip_events`, `verify_nszip_batch_events`). Each acquires the global
+  verify lane (`_acquire_verify_lane_or_429`) and records the verdict.
+  `_VERIFY_CONFIG` holds only the legacy prefixes, names and words of the tools
+  that had verify routes before; a new tool adds nothing there.
+- **File info.** `GET /api/info/nszip?path=` answers from the plugin: the 400
+  gate is `info_extensions` (default `input_extensions | verify_extensions`;
+  narrow it when the tool describes only its products), the answer is
+  `describe(path)` (default `info_model(await info(path), path)`; override it to
+  cache or enrich), and an exception in `info_file_errors` is a 422 ("this file
+  is not what its name says"). The per-tool `/api/<tool>-info` URLs are only
+  aliases kept for the tools that had them (`_LEGACY_INFO_ROUTES`).
 
 ### 5.10 Frontend: `src/lib/api/endpoints.js`
 
 Add client methods on the `api` object next to the z3ds ones. The naming
-convention is `get<Tool>Info` / `verify<Tool>` / `verifyBatch<Tool>`:
+convention is `verify<Tool>` / `verifyBatch<Tool>`; File info needs none, since
+the registry binds every tool's `getInfo` to `getToolInfo(toolId, path)`:
 
-- `getNszipInfo(path)`, like `getZ3DSInfo`.
 - `verifyNszip(path, {onProgress})`, single-file SSE. Routes through
   `verifyEventSource` from `sse.js`.
 - `verifyBatchNszip(paths, {onProgress, onFileComplete, signal})`, batch SSE.
@@ -1037,50 +1005,30 @@ descriptor; there's no URL map to edit.
 
 ### 5.11 Frontend: `src/lib/tools/registry.js`
 
-The frontend is a **Svelte 5 + Vite SPA** under `src/`, driven by a single
-declarative tool registry (`src/lib/tools/registry.js`). The registry is the only
-place that knows tool identity; there are no `if (tool === ...)` branches
-downstream. Adding `nszip` is **one new entry** appended to the `TOOLS` array:
+The frontend is a **Svelte 5 + Vite SPA** under `src/`, driven by one tool
+registry (`src/lib/tools/registry.js`) that is **built from the backend**:
+`GET /api/tools` serves every tool's extensions and every mode's `ModeSpec`
+fields, and `registry.load()` turns them into descriptors at start (design doc
+§3.7). So `nszip` already appears, with its modes, extensions, flags and File
+info (`GET /api/info/nszip`), and verify routes at `/api/nszip-verify` (§5.9).
+There are no `if (tool === ...)` branches downstream.
+
+What the backend can't know goes in one optional `TOOL_UI` entry:
 
 ```js
-// src/lib/tools/registry.js
-{
-  id: 'nszip',
-  label: 'Switch',
+// src/lib/tools/registry.js, in TOOL_UI
+nszip: {
   hint: 'Compress Nintendo Switch dumps (NSP / XCI).',
-  // URL segment for /api/{prefix}-verify and /api/{prefix}-verify-batch
-  verifyPrefix: 'nszip',
-  sourceExts: ['.nsp', '.xci'],
-  verifyExts: ['.nsz', '.xcz'],
-  modeGroups: ['nszip'],
+  verifyPrefix: 'nszip',                  // /api/{prefix}-verify (the default is the id)
   groups: { nszip: 'Nintendo Switch' },   // human labels for the tool's group ids
   defaultMode: 'nszip_compress',
-  glyph: 'NSW',                           // 2-3 char affordance for sidebar / dashboard
+  glyph: 'NSW',                           // 2-3 char affordance for the sidebar
   accent: 'var(--badge-dat-match)',       // CSS color or token
-
-  // nszip is a FIXED compressor: no codec dropdown, no level slider, so it
-  // declares no compression fields at all. To expose compression controls,
-  // see "Compression UI fields" right after this block.
+  // A FIXED compressor: no codec dropdown, no level slider. To expose
+  // compression controls, see "Compression UI fields" right after this block.
   compressionStyle: 'none',
-
-  modes: [
-    { mode: 'nszip_compress', kind: 'compress', label: 'Compress to NSZ/XCZ',
-      group: 'nszip',
-      outputExt: null,                    // mapped from input extension
-      inputExtensions: ['.nsp', '.xci'],
-      // inputKinds: ['directory'],       // only for a folder-input mode
-      supportsCompression: false,         // must match the ModeSpec in §5.3
-      supportsCompressionLevel: false,    // ditto — parity is enforced by tests
-      supportsDeleteOnVerify: true,
-      allowsArchiveInput: false,
-      // supportsSplit: true,             // frontend-only capability flag;
-                                          // there is NO ModeSpec.supports_split
-                                          // on the backend — `split` rides the
-                                          // job request and every convert()
-                                          // accepts it (see §5.3)
-    },
-  ],
-  getInfo:     (path) => api.getNszipInfo(path),
+  // Per-mode UI-only flags, by mode id (makeps3iso's supportsSplit).
+  // modes: { nszip_compress: { supportsSplit: true } },
   verify:      (path, opts) => api.verifyNszip(path, opts),
   verifyBatch: (paths, opts) => api.verifyBatchNszip(paths, opts),
   productPath: (path) => path.replace(/\.nsp$/i, '.nsz').replace(/\.xci$/i, '.xcz'),
@@ -1096,17 +1044,15 @@ the rest only when your tool really exposes compression choices:
 | Field | Meaning |
 |-------|---------|
 | `compressionStyle` | `'none'` / `'multi'` (chdman: a comma-joined codec list) / `'single-with-level'` (one codec + a numeric level). Drives which picker `CompressionPicker.svelte` renders. |
-| `compressionCodecs` | `[{ value, label, hint }]` for the dropdown. |
+| `compressionCodecs` | `[{ value, label, hint }]`: the words for each codec value. Which codecs a mode offers is its `ModeSpec.codecs`, and each one's level range its `codec_levels`, both from `/api/tools`. |
 | `compressionLevelRange` | `{ min, max, default }` for the slider. Falls back to `DEFAULT_COMPRESSION_LEVEL_RANGE` when absent. |
-| `defaultCompression` | The initial selection **and** what the shared "Reset to default" button restores. Read by `conversion.svelte.js` — declaring it here is the whole wiring; there is no per-tool branch in the store. |
+| `defaultCompression` | The initial selection **and** what the shared "Reset to default" button restores. It is the tool's `default_compression` from `/api/tools`; declare it in `TOOL_UI` only when the picker seeds a value the backend names no default for (nsz's `solid`). |
 
 **Two invariants, both enforced by tests — get them wrong and CI fails:**
 
-1. **Frontend and backend flags must match.**
-   `tests/test_frontend_parity_186.py` compares each mode's
-   `supportsCompression` / `supportsCompressionLevel` against the Python
-   `ModeSpec`'s `supports_compression` / `supports_compression_level`. Flip a
-   flag in one registry and you must flip it in the other.
+1. **The flags are the backend's.** `supportsCompression` /
+   `supportsCompressionLevel` are the `ModeSpec`'s, served by `/api/tools`, so
+   there is no second copy to keep in step (`tests/test_tools_payload_27.py`).
 2. **The declared flags must match what the service actually does.** Turning on
    `supportsCompressionLevel` gives the user a slider whose value arrives as
    `compression` in `convert()`; if your `_build_command` ignores it, the
@@ -1119,8 +1065,9 @@ The `ToolDescriptor` / `ModeEntry` JSDoc typedefs at the top of `registry.js`
 are the authoritative schema — read them before adding an entry. Two shapes
 worth knowing:
 
-- **No Info/Verify.** Leave `getInfo` / `verify` / `verifyBatch` as `undefined`
-  and `verifyExts` empty; the row-action helpers (`infoToolsForPath`,
+- **No Info/Verify.** Set `noInfo: true` in `TOOL_UI` for a tool with nothing
+  to show beyond name and size, and leave `verify` / `verifyBatch` out for one
+  with no verify routes; the row-action helpers (`infoToolsForPath`,
   `toolForVerifyPath`) then skip the tool. **Keep `sourceExts` populated** for a
   file-based tool. `makeps3iso` empties it only because its input is a
   *directory* with no extension to match. `sourceExts` is a separate fact from
@@ -1128,9 +1075,9 @@ worth knowing:
   (the file-list filter dropdown), `registry.toolsForSourcePath()`, and the
   `fileIcon.js` disc/game buckets — emptying it on a file tool makes its inputs
   unfilterable and unstyled even though conversion still works.
-- **A chain mode lives on an existing tool's entry**, not its own: `cso_to_chd`
-  is a mode inside the `cso` descriptor with `group: 'chain'`. The backend's
-  synthetic `chain` tool has no frontend descriptor of its own.
+- **A chain mode lands on an existing tool's entry**, not its own: `load` puts
+  a mode with `steps` under the tool its first step runs (`cso_to_chd` under
+  `cso`). The backend's synthetic `chain` tool gets no descriptor.
 
 That's the entire frontend change apart from the two one-line registrations in
 §3.3 items 22a and 22c. You do **NOT** need to:
@@ -1306,11 +1253,12 @@ PIPELINE (app/services/job_manager.py)
     prerequisite is present — see §16.5
 
 FRONTEND
-[ ] src/lib/api/endpoints.js: get<Tool>Info, verify<Tool>, verifyBatch<Tool>
-    (skip if the tool has no info/verify routes)
-[ ] src/lib/tools/registry.js: one new entry in the TOOLS array — including
-    defaultCompression / compressionStyle / compressionLevelRange if it has a
-    compression UI; contentRefined: true for a content-refined tool (§19)
+[ ] src/lib/api/endpoints.js: verify<Tool>, verifyBatch<Tool>
+    (skip if the tool has no verify routes; File info needs nothing)
+[ ] src/lib/tools/registry.js: optionally one TOOL_UI entry (hint, glyph,
+    accent, groups, defaultMode, codec words, compressionStyle /
+    compressionLevelRange, verify bindings, productPath); contentRefined: true
+    for a content-refined tool (§19). Modes and extensions need nothing.
 [ ] src/lib/util/fileIcon.js: one TOOL_MEDIA entry ('disc' or 'game'),
     plus ARCHIVE_EXTS if you write a container beyond .7z/.zip
 [ ] src/lib/tools/helpModes.js: MODE_BLURBS line per mode (+ MODE_OUTPUT
@@ -1391,11 +1339,8 @@ this respect however unusual their inputs or hashes are. Two notes on top:
   the `cso` entry under `group: 'chain'`). Adding a second chain mode means a
   new `ChainSpec` and a mode row on an existing descriptor — not a new service
   layer and not a new `TOOLS` entry, both of which would duplicate surface. One
-  test-side edit does come with it: a chain mode's frontend descriptor sits under
-  its *host* tool (`cso`) while its backend `ChainSpec.tool_id` is `"chain"`, so
-  `tests/test_frontend_parity_186.py` skips that field via
-  `_TOOL_ID_EXCEPTIONS` — today `{"cso_to_chd"}`. Add your mode there (or key the
-  exception off `ChainSpec` rather than a literal) or the parity test fails.
+  frontend edit comes with it: `registry.load` lists a mode with `steps` under
+  the tool its first step runs.
 
   Before starting, **`grep -rn 'cso_to_chd\|nkit_to_rvz' app src tests`**. This
   list has been incomplete twice; the grep is the only reliable inventory.
@@ -1714,10 +1659,10 @@ app/models.py                       ConversionMode.NSZIP_COMPRESS; NszipInfo  (F
 app/routes/convert.py               SkipReason + _SKIP_HTTP entry + _BAD_EXTENSION_REASON entry
                                     (+ _NOT_CONVERTIBLE_REASON row if content-refined, §19)
 app/routes/files.py                 NOTHING (registry-driven scan)
-app/routes/info.py                  _VERIFY_CONFIG entry + register_verify_routes(get("nszip")) + /nszip-info + _is_nszip_info_file + service import
+app/routes/info.py                  NOTHING (File info at /api/info/nszip, verify routes from the registry loop)
 app/services/job_manager.py         usually nothing (registry dispatches)
-src/lib/api/endpoints.js            getNszipInfo, verifyNszip, verifyBatchNszip
-src/lib/tools/registry.js           one new entry in TOOLS (+ defaultCompression etc.)
+src/lib/api/endpoints.js            verifyNszip, verifyBatchNszip
+src/lib/tools/registry.js           optionally one TOOL_UI entry (glyph, words, productPath)
 src/lib/util/fileIcon.js            one TOOL_MEDIA entry ('disc' or 'game');
                                     + ARCHIVE_EXTS for a new archive container
 src/lib/tools/helpModes.js          MODE_BLURBS line per mode (+ MODE_OUTPUT if needed)
@@ -1940,11 +1885,6 @@ cross-language parity test, so keep them in sync by hand):
 # app/services/tools/<tool>.py
 ModeSpec(mode="nszip_compress", tool_id="nszip", kind=ModeKind.COMPRESS,
          ..., allows_archive_input=True),
-```
-
-```js
-// src/lib/tools/registry.js, in your tool's modes[]
-{ mode: 'nszip_compress', kind: 'compress', ..., allowsArchiveInput: true },
 ```
 
 That is the entire opt-in for a single-file format. Everything below is either

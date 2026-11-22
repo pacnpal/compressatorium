@@ -23,6 +23,7 @@ from services.lock_manager import lock_manager
 from services.nkit2iso import (
     NKIT2ISO_CONVERTIBLE_EXTENSIONS,
     NKIT2ISO_OUTPUT_EXTENSION,
+    NkitHeaderError,
     nkit2iso_service,
 )
 
@@ -63,6 +64,8 @@ class Nkit2IsoTool(BaseTool):
     # union across tools.
     output_extensions = frozenset({NKIT2ISO_OUTPUT_EXTENSION})
     verify_extensions = frozenset()
+    # A .nkit.iso whose bytes are not an NKit image is a 422, not a 500.
+    info_file_errors = (NkitHeaderError,)
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)

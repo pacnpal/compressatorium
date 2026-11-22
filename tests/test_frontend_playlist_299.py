@@ -5,7 +5,7 @@
   error, so Create can never write a stale name.
 * `registry.discImages` (registry.js): the file-list button appears only for
   two or more disc Images, using the per-tool `discExts` mirrored from the
-  backend (parity is asserted in test_frontend_parity_186.py).
+  backend (the registry loads them from /api/tools).
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from .test_frontend_parity_186 import _eval_registry, _find_node
+from .test_frontend_registry_derives_186 import _find_node, eval_registry
 
 _SRC = Path(__file__).resolve().parents[1] / "src" / "lib"
 _DIALOG = _SRC / "util" / "playlistDialog.js"
@@ -65,7 +65,7 @@ def test_disc_images_filters_by_the_mirrored_disc_extensions(tmp_path):
         "\nprocess.stdout.write(JSON.stringify(registry.discImages("
         "['/a/x.cue', '/a/x.bin', '/a/y.nsz', '/a/Z.CHD', '/a/w.rvz'])));\n"
     )
-    assert _eval_registry(tmp_path, dump, "disc_images_eval.mjs") == [
+    assert eval_registry(tmp_path, dump, "disc_images_eval.mjs") == [
         "/a/x.cue", "/a/Z.CHD", "/a/w.rvz",
     ]
 

@@ -54,9 +54,12 @@
 - **Sync Redump in one click** (#524). Downloads Redump's DAT for each disc
   Platform in your Libraries, one request at a time, and leaves a system
   synced in the last day alone. Only DATs: never keys, BIOS sets or games.
-  It asks over HTTPS only, with the certificate checked, so a DAT can't be
-  swapped on the way in; while redump.org answers only plain HTTP, each
-  system reports that it couldn't connect. A Redump DAT you replace by hand
+  It tries HTTPS first, with the certificate checked. redump.org serves no
+  HTTPS, so when that connection can't be made it asks over plain HTTP
+  instead (#556); a certificate that doesn't check out stops the sync rather
+  than falling back. Either way the download is held to the same size caps
+  and archive checks, and a failure says which of HTTPS and HTTP it tried.
+  A Redump DAT you replace by hand
   is fetched again on the next sync. No-Intro stays upload-only, because its
   site is gated.
 - **Online identification is a single yes/no** (#524). Until you answer, the
@@ -84,6 +87,15 @@
 
 ### Changed
 
+- **The web UI reads its formats from the server** (#539). `GET /api/tools`
+  now also lists every tool's extensions and every mode's settings, and the
+  UI builds its list of converters from it at start, so it can never offer a
+  format or option the server would refuse. The views show a short "Loading
+  the tools" spinner until it arrives.
+- **One File info route for every tool** (#539): `GET /api/info/{tool}?path=`.
+  The old addresses (`/api/info`, `/api/dolphin-info`, `/api/nsz-info`, …)
+  still work. A file a tool doesn't describe is answered "Not a file … describes
+  (…)", naming the extensions it takes.
 - **One page per Library** (#541). **Libraries** lists every Library as a
   card with its consoles, games, whether it converts on its own, its watch
   folders and how many problems need you. A Library's page has **Browse** (its
@@ -320,6 +332,13 @@
 
 ### Fixed
 
+- **Delete keeps a file a sheet, playlist or set reaches through a link**
+  (#555). A `.cue` in one folder can name a track in another through a folder
+  link inside the Volume (`other/A.cue` naming `link/Shared.bin`). Deleting or
+  renaming that track, alone or as part of a delete-on-verify, now keeps it
+  and names the sheet, as it already did for a sheet beside the track. A link
+  to a folder outside the Volume leaves ownership unknown, so the file is
+  kept.
 - **Settings → Game identification** says when it couldn't check which
   consoles Redump covers, with **Try again**, instead of claiming none of
   your Libraries has one (#545 follow-up).

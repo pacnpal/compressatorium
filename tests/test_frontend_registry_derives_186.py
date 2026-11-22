@@ -53,16 +53,46 @@ def _strip_imports(src: str) -> str:
     return "\n".join(kept)
 
 
+def tools_payload() -> dict:
+    """What ``GET /api/tools``'s ``tools`` serves, the registry's only input."""
+    from routes.info import tool_catalog
+
+    return {"tools": tool_catalog()}
+
+
+def loaded_registry_src() -> str:
+    """``registry.js`` as plain Node source, its one import (``api``) stubbed,
+    loaded from the backend's own payload as App.svelte loads it at start."""
+    registry_src = _REGISTRY_JS.read_text(encoding="utf-8")
+    needle = "import { api } from '$lib/api/endpoints.js';"
+    assert needle in registry_src, "registry.js import shape changed; update the stub"
+    return (
+        "const api = {};\n" + _strip_imports(registry_src)
+        + f"\nregistry.load({json.dumps(tools_payload())});\n"
+    )
+
+
+def eval_registry(tmp_path: Path, dump: str, name: str):
+    """Run *dump* after the loaded registry under Node and parse its JSON."""
+    node = _find_node()
+    if node is None:
+        pytest.skip("node not available to evaluate registry.js")
+    script = tmp_path / name
+    script.write_text(loaded_registry_src() + dump, encoding="utf-8")
+    proc = subprocess.run(
+        [node, str(script)], capture_output=True, text=True, timeout=30, check=False,
+    )
+    if proc.returncode != 0:
+        pytest.fail(f"Could not evaluate registry.js via node:\n{proc.stderr}")
+    return json.loads(proc.stdout)
+
+
 def _dump(tmp_path: Path) -> dict:
     node = _find_node()
     if node is None:
         pytest.skip("node not available to evaluate the frontend registry modules")
 
-    # registry.js is the source of truth; its only import (`api`) is stubbed.
-    registry_src = _REGISTRY_JS.read_text(encoding="utf-8")
-    needle = "import { api } from '$lib/api/endpoints.js';"
-    assert needle in registry_src, "registry.js import shape changed; update the stub"
-    registry_src = "const api = {};\n" + _strip_imports(registry_src)
+    registry_src = loaded_registry_src()
 
     # fileIcon.js imports registry (now in scope) + Lucide glyphs (unused here).
     file_icon_src = _strip_imports(_FILE_ICON_JS.read_text(encoding="utf-8"))
@@ -72,7 +102,7 @@ def _dump(tmp_path: Path) -> dict:
     dump = (
         "\nconst __out = {"
         " filterable: registry.allFilterableExts(),"
-        " icon_categories: ICON_EXT_CATEGORIES,"
+        " icon_categories: iconExtCategories(),"
         " tool_ids: registry.all().map((t) => t.id),"
         " tool_media: Object.keys(TOOL_MEDIA),"
         " info_order: Object.fromEntries(["
@@ -156,8 +186,7 @@ def test_every_filter_option_can_match_a_row(tmp_path):
     if node is None:
         pytest.skip("node not available to evaluate the frontend modules")
 
-    registry_src = _REGISTRY_JS.read_text(encoding="utf-8")
-    registry_src = "const api = {};\n" + _strip_imports(registry_src)
+    registry_src = loaded_registry_src()
     # Lift the getter's body out of the class so it can be exercised without
     # Svelte's rune compiler, keeping the assertion on the SHIPPED source.
     browser_src = _FILE_BROWSER_JS.read_text(encoding="utf-8")

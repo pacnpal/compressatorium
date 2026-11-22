@@ -13,6 +13,7 @@ from fastapi.concurrency import run_in_threadpool
 from models import OutputStatus, Z3DSInfo
 from services.lock_manager import lock_manager
 from services.stream_digest import content_digest_of, file_chunks
+from utils.path_utils import match_extension
 from services.z3ds_compress import (
     Z3DS_CONVERTIBLE_EXTENSIONS,
     Z3DS_DECOMPRESS_EXTENSIONS,
@@ -125,6 +126,13 @@ class Z3dsTool(BaseTool):
         *,
         treat_as_stem: bool = False,
     ) -> str:
+        # The service falls back to a default extension for one it does not
+        # know, so refuse here what the mode does not take, as the other tools'
+        # output_path does.
+        if not treat_as_stem and match_extension(
+            input_path, self.spec(mode).input_extensions,
+        ) is None:
+            raise ValueError(f"Unsupported file extension: {Path(input_path).suffix.lower()}")
         return self._service.get_output_path_for_mode(
             mode, input_path, output_dir, treat_as_stem=treat_as_stem,
         )
