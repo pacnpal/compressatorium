@@ -391,7 +391,10 @@ function uiFor(id) {
   };
 }
 
-const camel = (key) => key.replace(/_([a-z])/g, (_m, c) => c.toUpperCase());
+/** `snake_case` → `camelCase`. */
+function camel(key) {
+  return key.replace(/_([a-z])/g, (_m, c) => c.toUpperCase());
+}
 
 /** A codec's `{min, max, default}` from a mode's `codec_levels`, or undefined. */
 function levelRangeIn(codecLevels, codec) {
