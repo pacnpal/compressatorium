@@ -392,6 +392,11 @@
 - **Settings → Game identification** says when it couldn't check which
   consoles Redump covers, with **Try again**, instead of claiming none of
   your Libraries has one (#545 follow-up).
+- **A refused delete says why** (#563). Deleting a disc a playlist still
+  names, or a track its sheet still needs, keeps the file, and the toast now
+  carries the reason (*Final Quest.m3u still needs Final Quest (Disc 1).cue
+  …*) instead of only "Deleted 0; 2 failed". It reads **Kept 2 files**, or
+  **Deleted 1; kept 1**.
 - **Turning Hasheous on, then off quickly** no longer lets the first click
   finish after the second: it can't switch the screen back to on or test
   Hasheous once you've turned it off (#545 follow-up).
