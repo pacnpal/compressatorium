@@ -471,6 +471,11 @@
   Volume list for their own use and Files only picked one when it loaded the
   list itself. A `#/files/<folder>` link, or a folder already open, still
   wins.
+- **Search Everywhere filters as you type** (#574). Everywhere lists every
+  game under the folder; typing then did nothing until Enter, and after an
+  Enter the list kept the old words while the box showed new ones. The words
+  now filter the listed games as you type, with no new scan. Enter still
+  lists them again.
 
 ## 4.6.0 (2026-11-20)
 
