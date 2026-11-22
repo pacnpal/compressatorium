@@ -11,6 +11,7 @@
    * @property {() => void} [onCancel]
    * @property {string} [confirmLabel]
    * @property {string[]} [disabledPaths] folders that can't be picked (already used)
+   * @property {import('svelte').Snippet} [fields] fields and notes above the buttons (#568)
    */
   import { onMount } from 'svelte';
   import { api } from '$lib/api/endpoints.js';
@@ -23,7 +24,7 @@
 
   /** @type {Props} */
   let {
-    start = null, onpick, onCancel, confirmLabel = 'Use this folder', disabledPaths = [],
+    start = null, onpick, onCancel, confirmLabel = 'Use this folder', disabledPaths = [], fields,
   } = $props();
 
   const SETUP_GUIDE = 'https://github.com/pacnpal/compressatorium/blob/latest/docs/DOCKER-COMPOSE.md';
@@ -148,6 +149,8 @@
     {/if}
   </div>
 
+  {#if fields}{@render fields()}{/if}
+
   <div class="actions">
     {#if blocked}<span class="note">This folder is already used.</span>{/if}
     {#if onCancel}<Button variant="ghost" onclick={onCancel}>Cancel</Button>{/if}
@@ -216,9 +219,15 @@
   .row:last-child { border-bottom: none; }
   .row:hover { background: var(--surface-3); }
   .row:focus-visible { outline: none; box-shadow: inset var(--focus-ring); }
-  .name { overflow-wrap: anywhere; }
+  /* A long Drive path wraps; it never squeezes the name or the icon to a
+     sliver (#568). */
+  .row > :global(svg) { flex-shrink: 0; }
+  .name { flex-shrink: 0; max-width: 60%; overflow-wrap: anywhere; }
   .path {
+    flex: 1 1 0;
+    min-width: 0;
     margin-left: auto;
+    text-align: right;
     color: var(--text-2);
     font-family: var(--font-mono);
     font-size: var(--text-xs);

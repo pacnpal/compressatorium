@@ -447,6 +447,12 @@
   through a link. A job already queued before the change still runs as it
   was queued.
 
+- **Dialog fields come before their buttons** (#568). Add a Library put its
+  **Name** field under **Make this a Library**, and a folder dialog's refusal
+  (*This folder is already a Library*) showed under the buttons too; both are
+  above them now. A long Drive path no longer squeezes the Drive's name to two
+  letters a line. **Rename** opens with the name selected (up to its
+  extension), so typing replaces it and Enter saves.
 - **RomM: every Platform gets a folder for new Images, even when RomM keeps
   two records for it** (#512). RomM often keeps an empty record beside the
   real one (`famicom` beside `nes`, `gg` beside `gamegear`), and **Where new

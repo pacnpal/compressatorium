@@ -27,12 +27,22 @@
   function handleOpenChange(value) {
     if (!value) onClose();
   }
+
+  // A dialog with a field to type in opens on it (#568): the field marked
+  // `data-autofocus`, else bits-ui's default (the first focusable element).
+  function focusMarkedField(event) {
+    const field = /** @type {HTMLElement | null} */ (event.currentTarget)
+      ?.querySelector?.('[data-autofocus]');
+    if (!field) return;
+    event.preventDefault();
+    field.focus();
+  }
 </script>
 
 <Dialog.Root {open} onOpenChange={handleOpenChange}>
   <Dialog.Portal>
     <Dialog.Overlay class="mdl-overlay" />
-    <Dialog.Content class="mdl-content mdl-size-{size}">
+    <Dialog.Content class="mdl-content mdl-size-{size}" onOpenAutoFocus={focusMarkedField}>
       <header class="mdl-header">
         <Dialog.Title class="mdl-title">
           {#if titleIcon}{@render titleIcon()}{/if}
