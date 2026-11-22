@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import services.tools.chdman as chdman_tool
+
 from ._chd_fakes import serve_extractraw
 from .test_disc_id import _make_chd_v5, _make_iso
 
@@ -162,7 +164,8 @@ async def test_info_leaves_a_chd_unchecked_when_the_extractor_raises(
     tmp_path, monkeypatch, info_env, caplog, error,
 ):
     info_routes, marked, updated = info_env
-    monkeypatch.setattr(info_routes, "disc_id_extract_from_chd", AsyncMock(side_effect=error))
+    # The CHD info read (the chdman plugin's describe) asks the extractor.
+    monkeypatch.setattr(chdman_tool, "disc_id_extract_from_chd", AsyncMock(side_effect=error))
     chd = _blank_chd(tmp_path)
 
     with caplog.at_level(logging.WARNING):

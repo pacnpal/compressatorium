@@ -6,6 +6,7 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import get_type_hints
 
 from pydantic import BaseModel
 
@@ -14,24 +15,13 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from models import (
     BulkVerifyRequest,
-    CHDInfo,
     ConversionMode,
-    CsoInfo,
-    DolphinDiscInfo,
-    JwudInfo,
     MetadataBatchRequest,
-    NkitInfo,
-    NszInfo,
-    RomConvertoInfo,
-    RomzInfo,
-    XisoInfo,
-    Z3DSInfo,
 )
 from services.archive import ARCHIVE_EXTENSIONS
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import chdman_service
 from services.disc_id import (
-    DiscIdStorageAbandoned,
     extract_from_chd as disc_id_extract_from_chd,
 )
 from services.dolphin_tool import (
@@ -41,19 +31,12 @@ from services.dolphin_tool import (
 from services.event_stream import event_stream
 from services.exodos import exodos_service
 from services.extract_xiso import (
-    XISO_CONVERTIBLE_EXTENSIONS,
-    XISO_VERIFY_EXTENSIONS,
-    XisoImageError,
     extract_xiso_service,
 )
 from services.jwudtool import (
-    JWUD_COMPRESS_EXTENSIONS,
-    JWUD_DECOMPRESS_EXTENSIONS,
     jwudtool_service,
 )
 from services.rom_converto import (
-    ZAR_VERIFY_EXTENSIONS,
-    RomConvertoError,
     rom_converto_service,
 )
 from services.tools import not_ready_message, registry
@@ -75,28 +58,15 @@ from services.job_manager import (
     job_manager,
 )
 from services.maxcso import (
-    MAXCSO_COMPRESS_EXTENSIONS,
-    MAXCSO_DECOMPRESS_EXTENSIONS,
     maxcso_service,
 )
-from services.nkit2iso import (
-    NKIT2ISO_CONVERTIBLE_EXTENSIONS,
-    NkitHeaderError,
-    nkit2iso_service,
-)
 from services.nsz import (
-    NSZ_COMPRESS_EXTENSIONS,
-    NSZ_DECOMPRESS_EXTENSIONS,
     nsz_service,
 )
 from services.romz import (
-    ROMZ_ARCHIVE_EXTENSIONS,
-    ROMZ_COMPRESS_EXTENSIONS,
     romz_service,
 )
 from services.z3ds_compress import (
-    Z3DS_CONVERTIBLE_EXTENSIONS,
-    Z3DS_DECOMPRESS_EXTENSIONS,
     z3ds_compress_service,
 )
 from services.verification_store import cannot_check, record_check, verification_store
@@ -789,75 +759,10 @@ async def get_app_version() -> dict:
 # ============ Z3DS endpoints ============
 
 
-# The verify-class files are the compressed containers (== decompress inputs).
-Z3DS_VERIFY_EXTENSIONS = set(Z3DS_DECOMPRESS_EXTENSIONS)
-Z3DS_INFO_EXTENSIONS = Z3DS_CONVERTIBLE_EXTENSIONS | Z3DS_VERIFY_EXTENSIONS
-
-
-def _is_z3ds_info_file(path: str) -> bool:
-    ext = os.path.splitext(path)[1].lower()
-    return ext in Z3DS_INFO_EXTENSIONS
-
-
-NSZ_INFO_EXTENSIONS = NSZ_COMPRESS_EXTENSIONS | NSZ_DECOMPRESS_EXTENSIONS
-
-
-def _is_nsz_info_file(path: str) -> bool:
-    ext = os.path.splitext(path)[1].lower()
-    return ext in NSZ_INFO_EXTENSIONS
-
-
-CSO_INFO_EXTENSIONS = MAXCSO_COMPRESS_EXTENSIONS | MAXCSO_DECOMPRESS_EXTENSIONS
-
-
-def _is_cso_info_file(path: str) -> bool:
-    ext = os.path.splitext(path)[1].lower()
-    return ext in CSO_INFO_EXTENSIONS
-
-
-ROMZ_INFO_EXTENSIONS = ROMZ_COMPRESS_EXTENSIONS | ROMZ_ARCHIVE_EXTENSIONS
-
-
-def _is_romz_info_file(path: str) -> bool:
-    ext = os.path.splitext(path)[1].lower()
-    return ext in ROMZ_INFO_EXTENSIONS
-
-
-JWUD_INFO_EXTENSIONS = JWUD_COMPRESS_EXTENSIONS | JWUD_DECOMPRESS_EXTENSIONS
-
-
-def _is_jwud_info_file(path: str) -> bool:
-    ext = os.path.splitext(path)[1].lower()
-    return ext in JWUD_INFO_EXTENSIONS
-
-
-# NKit sources only: this endpoint describes a *shrunk* image, and the restored
-# .iso it produces is an ordinary disc image other tools already report on. The
-# extensions are compound, so this uses the shared suffix match rather than
-# os.path.splitext (which would only ever see the generic ".iso"/".gcz").
-def _is_nkit_info_file(path: str) -> bool:
-    return match_extension(path, NKIT2ISO_CONVERTIBLE_EXTENSIONS) is not None
-
-
-# Xbox images are plain ``.iso`` files; the product is the compound
-# ``.xiso.iso``. The route accepts both, and the service's own filesystem probe
-# (a 422 for anything that is not an Xbox image) is what really decides.
-def _is_xiso_info_file(path: str) -> bool:
-    return match_extension(
-        path, XISO_CONVERTIBLE_EXTENSIONS | XISO_VERIFY_EXTENSIONS,
-    ) is not None
-
-
-# rom-converto's products only (a ZAR so far): its sources are plain disc images
-# the xiso tool (and the others) already describe.
-def _is_rom_converto_info_file(path: str) -> bool:
-    return match_extension(path, ZAR_VERIFY_EXTENSIONS) is not None
-
-
 async def _require_info_ready(tool_id: str) -> ToolPlugin:
     """The tool for a File info read, or a 503 saying why it can't run (#488).
 
-    Every info route asks this once its 403/404/400 checks pass. Whether the
+    The info route asks this once its 403/404/400 checks pass. Whether the
     read needs the tool at all is the plugin's ``info_needs_tool``: a header
     read in Python answers without a probe, and one that runs the program asks
     ``is_ready()`` first, so a missing program is a 503 with the plugin's own
@@ -873,143 +778,94 @@ async def _require_info_ready(tool_id: str) -> ToolPlugin:
     return tool
 
 
-@router.get("/info", response_model=CHDInfo)
-async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
-    """Get information about a CHD file (cached with mtime-based invalidation)."""
+# ============ File info (registry-driven) ============
+
+
+async def _describe(tool: ToolPlugin, path: str):
+    """One File info read, the same for every tool (#539).
+
+    403 outside the Volumes, 404 missing, 400 for a file the tool does not
+    describe (``info_extensions``), 503 when the read needs a program that
+    isn't there, then ``tool.describe(path)``: 422 when the file is not what
+    its name says (``info_file_errors``), 503 for a read that left a process
+    on unresponsive storage (a refresh would strand another, #268), 500 else.
+    """
     if not await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
         raise HTTPException(
             status_code=403, detail="Access denied: path outside configured volumes",
         )
-
     if not await run_in_threadpool(os.path.isfile, path):
         raise HTTPException(status_code=404, detail="File not found")
-
-    if not path.lower().endswith(".chd"):
-        raise HTTPException(status_code=400, detail="Not a CHD file")
-    await _require_info_ready("chdman")
-
-    try:
-        # Check cache first
-        cached_info = None
-        cached_media_type = None
-        if not await chd_metadata_store.is_stale(path):
-            cached_info, cached_media_type = await chd_metadata_store.get_full_info(path)
-
-        if cached_info:
-            info = cached_info
-            # cached_media_type is initialised to None on line 683 and only
-            # rebound by the tuple-unpack on line 685; pylint's flow analyser
-            # occasionally misses the unconditional default, so silence the
-            # spurious possibly-used-before-assignment warning explicitly.
-            media_type = cached_media_type  # pylint: disable=possibly-used-before-assignment
-        else:
-            # Run chdman info and cache the result (non-blocking persist)
-            info, record = await chd_metadata_store.read_and_cache(
-                path, lambda: chdman_service.info(path),
-            )
-            if record is None:
-                # Changed while it was read: shown, not cached.
-                record = {"media_type": chd_metadata_store.extract_media_type(info)}
-
-            # Schedule async flush in background with error handling
-            async def safe_flush():
-                try:
-                    await chd_metadata_store.flush_async()
-                except Exception as e:
-                    logger.warning(f"Background metadata flush failed: {e}")
-
-            # Use BackgroundTasks if available, but here we are in a route without it passed
-            # explicitly for flush
-            # We can spawn a task
-            asyncio.create_task(safe_flush())
-            media_type = record.get("media_type")
-
-        # Extract game ID / title.  Prefer the cached value in the metadata
-        # store (written by Phase 2 of the scan or by a prior /api/info call)
-        # to avoid spawning chdman subprocesses on every request.
-        cached_game_id, cached_title = await chd_metadata_store.get_disc_id_info(path)
-        disc_info: dict = {}
-        if cached_game_id is not None:
-            disc_info = {"game_id": cached_game_id}
-            if cached_title is not None:
-                disc_info["title"] = cached_title
-        elif not await chd_metadata_store.is_disc_id_checked(path):
-            # Not yet attempted, run the extractor and cache the outcome (even
-            # "nothing found") so subsequent /api/info calls skip the subprocess.
-            # Caching the outcome is what makes later requests skip the
-            # subprocess -- including a "nothing found" outcome. That is right
-            # for a CHD the extractor actually inspected, and wrong for one it
-            # never got to look at: an abandoned chdman child is a fact about the
-            # storage, not the file, so marking it checked would suppress
-            # extraction for good after the share recovers, until the mtime
-            # changes (issue #268). Raising past the cache write below is what
-            # keeps that case retryable.
-            try:
-                disc_info = await disc_id_extract_from_chd(path, settings.chdman_path) or {}
-            except DiscIdStorageAbandoned as e:
-                # Not cached (above), which on its own would make every refresh
-                # retry and strand another child while the client saw a perfectly
-                # ordinary response with no game ID. So say it: 503, matching
-                # /dat/match, rather than presenting an abandoned read as a
-                # successful partial lookup (issue #268).
-                logger.error("disc_id extraction abandoned for %s: %s", path, e)
-                raise HTTPException(
-                    status_code=503,
-                    detail=(
-                        f"Reading the disc ID left a process stuck on "
-                        f"unresponsive storage: {e}"
-                    ),
-                ) from None
-            except Exception as e:
-                # The read could not run (DiscIdReadFailed: chdman missing,
-                # crashed or timed out), which says nothing about the file. Not
-                # cached, so the next request retries; the rest of the info is
-                # still answered, without a disc ID (issue #490).
-                logger.warning("disc_id extraction could not run for %s: %s", path, e)
-            else:
-                await chd_metadata_store.update_disc_id_info(
-                    path, disc_info.get("game_id"), disc_info.get("title")
-                )
-                await chd_metadata_store.mark_disc_id_checked(path)
-
-        game_id = disc_info.get("game_id")
-        # Only surface a distinct human-readable title; skip when it equals
-        # the serial (e.g. PS2/PS1 CHDs where we wrote serial as both tags).
-        raw_title = disc_info.get("title")
-        title = raw_title if raw_title and raw_title != game_id else None
-
-        return CHDInfo(
-            file=path,
-            input_file=info.get("input_file"),
-            file_version=info.get("file_version"),
-            logical_size=info.get("logical_size"),
-            hunk_size=info.get("hunk_size"),
-            total_hunks=info.get("total_hunks"),
-            unit_size=info.get("unit_size"),
-            total_units=info.get("total_units"),
-            compression=info.get("compression"),
-            chd_size=info.get("chd_size"),
-            ratio=info.get("ratio"),
-            sha1=info.get("sha1"),
-            data_sha1=info.get("data_sha1"),
-            raw_data=info.get("raw_data", ""),
-            media_type=media_type,
-            game_id=game_id,
-            title=title,
+    # Whole-filename suffix match, so a compound extension (`.nkit.iso`) is seen.
+    if match_extension(path, tool.info_extensions) is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Not a file {tool.display_name} describes "
+                f"({', '.join(sorted(tool.info_extensions))})"
+            ),
         )
-
-    except HTTPException:
-        # Already carries its own status (e.g. the 503s above); don't relabel it.
-        raise
+    await _require_info_ready(tool.id)
+    try:
+        return await tool.describe(path)
+    except tool.info_file_errors as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
     except StorageAbandoned as e:
-        # A metadata read that left a child running is transient, not a broken
-        # CHD: 500 would invite a refresh that strands another one (issue #268).
-        logger.error("CHD info abandoned for %s: %s", path, e)
+        logger.error("%s info abandoned for %s: %s", tool.display_name, path, e)
         raise HTTPException(status_code=503, detail=str(e)) from None
     except Exception as e:
+        # Broad by design at the file-read boundary (OSError, struct/zlib
+        # errors, a failed run); logged so the 500 is traceable.
+        logger.exception("Failed to read %s info for %s", tool.display_name, path)
         raise HTTPException(
-            status_code=500, detail=f"Failed to read CHD info: {e!s}",
+            status_code=500, detail=f"Failed to read {tool.display_name} info: {e!s}",
         ) from None
+
+
+@router.get("/info/{tool_id}")
+async def get_tool_info(
+    tool_id: str, path: str = Query(..., description="Path to the file"),
+):
+    """What *tool_id* reads from the file at *path* (its info model)."""
+    try:
+        tool = registry.get(tool_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_id}") from None
+    return await _describe(tool, path)
+
+
+# The URLs each tool's info had before the one route above, kept as aliases so
+# the web UI's older builds and API clients (ROMarr) keep working. Each alias
+# keeps its handler name (the OpenAPI operation id, and the module attribute
+# the route tests call) and its typed response model. A new tool needs no
+# entry: ``/api/info/{tool_id}`` answers for it.
+_LEGACY_INFO_ROUTES = {
+    "chdman": ("info", "get_chd_info"),
+    "dolphin": ("dolphin-info", "get_dolphin_info"),
+    "z3ds": ("z3ds-info", "get_z3ds_info"),
+    "nkit": ("nkit-info", "get_nkit_info"),
+    "xiso": ("xiso-info", "get_xiso_info"),
+    "rom_converto": ("rom-converto-info", "get_rom_converto_info"),
+    "cso": ("cso-info", "get_cso_info"),
+    "romz": ("romz-info", "get_romz_info"),
+    "jwud": ("jwud-info", "get_jwud_info"),
+    "nsz": ("nsz-info", "get_nsz_info"),
+}
+
+
+def _register_legacy_info_route(tool: ToolPlugin, url: str, name: str) -> Callable:
+    async def handler(path: str = Query(..., description="Path to the file")):
+        return await _describe(tool, path)
+
+    handler.__name__ = name
+    handler.__doc__ = f"What {tool.display_name} reads from a file. Alias of /api/info/{tool.id}."
+    model = get_type_hints(tool.info_model).get("return")
+    router.add_api_route(f"/{url}", handler, methods=["GET"], name=name, response_model=model)
+    return handler
+
+
+for _tool_id, (_url, _name) in _LEGACY_INFO_ROUTES.items():
+    globals()[_name] = _register_legacy_info_route(registry.get(_tool_id), _url, _name)
 
 
 @router.post("/chd-metadata")
@@ -1153,357 +1009,42 @@ def _verified_blocking(wanted: frozenset[str] | None, *, progress) -> dict:
     return {"verified": verified, "checks": checks}
 
 
-# ============ Dolphin disc image endpoints ============
+def tool_catalog() -> list[dict]:
+    """Every tool and every mode, as the frontend registry is built from (#539).
 
-
-def _is_dolphin_file(path: str) -> bool:
-    from pathlib import Path as _P
-    return _P(path).suffix.lower() in DOLPHIN_INFO_EXTENSIONS
-
-
-@router.get("/dolphin-info", response_model=DolphinDiscInfo)
-async def get_dolphin_info(
-    path: str = Query(..., description="Path to disc image"),
-):
-    """Get header information about a GameCube/Wii disc image."""
-    if not await run_in_threadpool(
-        is_within_configured_volumes, path, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path outside configured volumes",
-        )
-    if not await run_in_threadpool(os.path.isfile, path):
-        raise HTTPException(status_code=404, detail="File not found")
-    if not _is_dolphin_file(path):
-        raise HTTPException(
-            status_code=400, detail="Not a supported disc image format",
-        )
-    await _require_info_ready("dolphin")
-
-    try:
-        info = await dolphin_tool_service.header(path)
-        return DolphinDiscInfo(
-            file=path,
-            game_id=info.get("game_id"),
-            # dolphin-tool outputs "Internal Name:" in its plain-text format;
-            # "game_name" / "name" cover any future JSON-mode keys.
-            game_name=info.get("game_name") or info.get("internal_name") or info.get("name"),
-            title_id=info.get("title_id"),
-            disc_number=info.get("disc_number") or info.get("disc"),
-            revision=info.get("revision"),
-            region=info.get("region"),
-            country=info.get("country"),
-            format=info.get("format"),
-            # dolphin-tool outputs "Compression Method:" in plain-text mode;
-            # "compression" covers any future JSON-mode key.
-            compression=info.get("compression") or info.get("compression_method"),
-            compression_level=info.get("compression_level"),
-            block_size=info.get("block_size"),
-            file_size=info.get("file_size"),
-            raw_data=info.get("raw_data", ""),
-        )
-    except StorageAbandoned as e:
-        # Transient, not a broken disc image: a 500 invites a refresh that
-        # strands another child (issue #268). Ordered before the broad handler.
-        logger.error("Dolphin header abandoned for %s: %s", path, e)
-        raise HTTPException(status_code=503, detail=str(e)) from None
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to read disc info: {e!s}",
-        ) from None
-
-
-@router.get("/z3ds-info", response_model=Z3DSInfo)
-async def get_z3ds_info(
-    path: str = Query(..., description="Path to 3DS ROM file"),
-):
-    """Get basic information about a Nintendo 3DS ROM file."""
-    if not await run_in_threadpool(
-        is_within_configured_volumes, path, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path outside configured volumes",
-        )
-    if not await run_in_threadpool(os.path.isfile, path):
-        raise HTTPException(status_code=404, detail="File not found")
-    if not _is_z3ds_info_file(path):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Not a supported 3DS ROM format "
-                "(.3ds, .cci, .cia, .cxi, .3dsx, .z3ds, .zcci, .zcia, .zcxi, .z3dsx)"
-            ),
-        )
-    await _require_info_ready("z3ds")
-
-    try:
-        info = await run_in_threadpool(z3ds_compress_service.info, path)
-        return Z3DSInfo(
-            file=info["file"],
-            size=info["size"],
-            size_display=info["size_display"],
-            format=info.get("format"),
-            extension=info["extension"],
-            compressed=info["compressed"],
-            compression_type=info.get("compression_type"),
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to read 3DS ROM info: {e!s}",
-        ) from None
-
-
-@router.get("/nkit-info", response_model=NkitInfo)
-async def get_nkit_info(
-    path: str = Query(..., description="Path to an NKit-shrunk GC/Wii image"),
-):
-    """Describe an NKit image: which disc it is and what it restores to.
-
-    Read straight from the NKit/disc header (no subprocess — nkit2iso has no
-    ``info`` subcommand), so it answers the questions worth asking *before*
-    spending a restore: GameCube or Wii, which game, how big the output will be,
-    and the CRC32 the restore will be checked against.
+    Each tool's extensions and default codec, and each mode's every
+    ``ModeSpec`` field (``ModeSpec.as_json``), with ``reads_extensions``
+    resolved by the registry. ``src/lib/tools/registry.js`` keeps only what is
+    UI (glyphs, labels for codecs and groups, the info and verify bindings),
+    so a new tool or mode reaches the UI without a frontend mirror.
     """
-    if not await run_in_threadpool(
-        is_within_configured_volumes, path, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path outside configured volumes",
-        )
-    if not await run_in_threadpool(os.path.isfile, path):
-        raise HTTPException(status_code=404, detail="File not found")
-    if not _is_nkit_info_file(path):
-        raise HTTPException(
-            status_code=400,
-            detail="Not an NKit-shrunk GameCube/Wii image (.nkit.iso, .nkit.gcz)",
-        )
-    tool = await _require_info_ready("nkit")
-
-    try:
-        info = await run_in_threadpool(nkit2iso_service.info, path)
-    except NkitHeaderError as e:
-        # The name says .nkit.iso but the bytes disagree — a client error about
-        # the file, not a server fault, so 422 rather than 500.
-        raise HTTPException(status_code=422, detail=str(e)) from None
-    except Exception as e:
-        # Broad by design at the file-read boundary (OSError, struct/zlib
-        # errors, ...); logged here so the 500 is traceable.
-        logger.exception("Failed to read NKit info for %s", path)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to read NKit info: {e!s}",
-        ) from None
-    return tool.info_model(info, path)
-
-
-@router.get("/xiso-info", response_model=XisoInfo)
-async def get_xiso_info(
-    path: str = Query(..., description="Path to an Xbox / Xbox 360 disc image or XISO"),
-):
-    """Describe an Xbox / Xbox 360 image from its own XDVDFS filesystem.
-
-    No subprocess: the volume descriptor and directory tables are read directly
-    (kilobytes, not the image), which answers the questions worth asking before
-    a trim — which console and disc layout, how many files, and how much of the
-    image is game data rather than padding.
-    """
-    if not await run_in_threadpool(
-        is_within_configured_volumes, path, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path outside configured volumes",
-        )
-    if not await run_in_threadpool(os.path.isfile, path):
-        raise HTTPException(status_code=404, detail="File not found")
-    if not _is_xiso_info_file(path):
-        raise HTTPException(
-            status_code=400,
-            detail="Not an Xbox / Xbox 360 disc image (.iso, .xiso.iso)",
-        )
-    tool = await _require_info_ready("xiso")
-
-    try:
-        info = await run_in_threadpool(extract_xiso_service.info, path)
-    except XisoImageError as e:
-        # An .iso for some other console: a client error about the file, so
-        # 422 — which is also what lets the Info modal move on to the next tool.
-        raise HTTPException(status_code=422, detail=str(e)) from None
-    except Exception as e:
-        logger.exception("Failed to read Xbox image info for %s", path)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to read Xbox image info: {e!s}",
-        ) from None
-    return tool.info_model(info, path)
-
-
-@router.get("/rom-converto-info", response_model=RomConvertoInfo)
-async def get_rom_converto_info(
-    path: str = Query(..., description="Path to a file rom-converto wrote (.zar)"),
-):
-    """Describe a ZAR with ``rom-converto xenon info``: how many files it holds,
-    their uncompressed size, and whether ``default.xex`` (what Xenia boots) is at
-    its root."""
-    if not await run_in_threadpool(
-        is_within_configured_volumes, path, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path outside configured volumes",
-        )
-    if not await run_in_threadpool(os.path.isfile, path):
-        raise HTTPException(status_code=404, detail="File not found")
-    if not _is_rom_converto_info_file(path):
-        raise HTTPException(status_code=400, detail="Not a ZAR (.zar)")
-    tool = await _require_info_ready("rom_converto")
-
-    try:
-        info = await rom_converto_service.info(path)
-    except RomConvertoError as e:
-        # rom-converto refused the file itself: a client error about the file.
-        raise HTTPException(status_code=422, detail=str(e)) from None
-    except Exception as e:
-        logger.exception("Failed to read ZAR info for %s", path)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to read ZAR info: {e!s}",
-        ) from None
-    return tool.info_model(info, path)
-
-
-@router.get("/cso-info", response_model=CsoInfo)
-async def get_cso_info(
-    path: str = Query(..., description="Path to PSP/PS2 ISO/CSO/ZSO/DAX file"),
-):
-    """Get basic information about a PSP/PS2 ISO/CSO/ZSO/DAX file."""
-    if not await run_in_threadpool(
-        is_within_configured_volumes, path, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path outside configured volumes",
-        )
-    if not await run_in_threadpool(os.path.isfile, path):
-        raise HTTPException(status_code=404, detail="File not found")
-    if not _is_cso_info_file(path):
-        raise HTTPException(
-            status_code=400,
-            detail="Not a supported CSO format (.iso, .cso, .zso, .dax)",
-        )
-    await _require_info_ready("cso")
-
-    try:
-        info = await run_in_threadpool(maxcso_service.info, path)
-        return CsoInfo(
-            file=info["file"],
-            size=info["size"],
-            size_display=info["size_display"],
-            format=info.get("format"),
-            extension=info["extension"],
-            compressed=info["compressed"],
-            compression_type=info.get("compression_type"),
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to read CSO info: {e!s}",
-        ) from None
-
-
-@router.get("/romz-info", response_model=RomzInfo)
-async def get_romz_info(
-    path: str = Query(..., description="Path to a ROM (.gb/.gbc/.gba/.nds) or .7z/.zip"),
-):
-    """Get basic information about a handheld ROM or its .7z/.zip archive."""
-    if not await run_in_threadpool(
-        is_within_configured_volumes, path, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path outside configured volumes",
-        )
-    if not await run_in_threadpool(os.path.isfile, path):
-        raise HTTPException(status_code=404, detail="File not found")
-    if not _is_romz_info_file(path):
-        raise HTTPException(
-            status_code=400,
-            detail="Not a supported ROM format (.gb, .gbc, .gba, .nds, .7z, .zip)",
-        )
-    await _require_info_ready("romz")
-
-    try:
-        info = await run_in_threadpool(romz_service.info, path)
-        return RomzInfo(
-            file=info["file"],
-            size=info["size"],
-            size_display=info["size_display"],
-            format=info.get("format"),
-            extension=info["extension"],
-            compressed=info["compressed"],
-            compression_type=info.get("compression_type"),
-            contained_name=info.get("contained_name"),
-            original_size=info.get("original_size"),
-            ratio=info.get("ratio"),
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to read ROM info: {e!s}",
-        ) from None
-
-
-@router.get("/jwud-info", response_model=JwudInfo)
-async def get_jwud_info(
-    path: str = Query(..., description="Path to a Wii U .wud or .wux image"),
-):
-    """Get basic information about a Wii U disc image."""
-    if not await run_in_threadpool(
-        is_within_configured_volumes, path, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path outside configured volumes",
-        )
-    if not await run_in_threadpool(os.path.isfile, path):
-        raise HTTPException(status_code=404, detail="File not found")
-    if not _is_jwud_info_file(path):
-        raise HTTPException(
-            status_code=400,
-            detail="Not a supported Wii U disc image format (.wud, .wux)",
-        )
-    await _require_info_ready("jwud")
-
-    try:
-        info = await run_in_threadpool(jwudtool_service.info, path)
-        return JwudInfo(
-            file=info["file"],
-            size=info["size"],
-            size_display=info["size_display"],
-            format=info.get("format"),
-            extension=info["extension"],
-            compressed=info["compressed"],
-            compression_type=info.get("compression_type"),
-            original_size=info.get("original_size"),
-            ratio=info.get("ratio"),
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to read Wii U image info: {e!s}",
-        ) from None
+    return [
+        {
+            "id": tool.id,
+            "label": tool.display_name,
+            "input_extensions": sorted(tool.input_extensions),
+            "output_extensions": sorted(tool.output_extensions),
+            "verify_extensions": sorted(tool.verify_extensions),
+            "disc_extensions": sorted(tool.disc_extensions),
+            "default_compression": tool.default_compression,
+            "modes": [
+                {
+                    **spec.as_json(),
+                    "reads_extensions": sorted(registry.mode_reads_extensions(spec.mode)),
+                }
+                for spec in tool.modes
+            ],
+        }
+        for tool in registry.all()
+    ]
 
 
 @router.get("/tools")
 async def list_tools():
-    """Which tools can run, and why each of the others can't.
+    """Every tool's formats and modes, which can run, and why the others can't.
 
-    A tool is unavailable when its own ``is_ready()`` says its runtime
+    ``tools`` is :func:`tool_catalog`, what the frontend registry loads. A
+    tool is unavailable when its own ``is_ready()`` says its runtime
     prerequisites are missing — today that's Switch (nsz), which needs the
     operator's prod.keys, but the check is the plugin's, not this route's, so
     any future gated tool is covered by implementing the hook.
@@ -1524,46 +1065,8 @@ async def list_tools():
         "available": available,
         "unavailable": [t.id for t in unavailable],
         "reasons": {t.id: not_ready_message(t) for t in unavailable},
+        "tools": tool_catalog(),
     }
-
-
-@router.get("/nsz-info", response_model=NszInfo)
-async def get_nsz_info(
-    path: str = Query(..., description="Path to Switch NSP/XCI/NSZ/XCZ file"),
-):
-    """Get basic information about a Nintendo Switch file."""
-    if not await run_in_threadpool(
-        is_within_configured_volumes, path, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path outside configured volumes",
-        )
-    if not await run_in_threadpool(os.path.isfile, path):
-        raise HTTPException(status_code=404, detail="File not found")
-    if not _is_nsz_info_file(path):
-        raise HTTPException(
-            status_code=400,
-            detail="Not a supported Switch format (.nsp, .xci, .nsz, .xcz)",
-        )
-    await _require_info_ready("nsz")
-
-    try:
-        info = await run_in_threadpool(nsz_service.info, path)
-        return NszInfo(
-            file=info["file"],
-            size=info["size"],
-            size_display=info["size_display"],
-            format=info.get("format"),
-            extension=info["extension"],
-            compressed=info["compressed"],
-            compression_type=info.get("compression_type"),
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to read Switch file info: {e!s}",
-        ) from None
 
 
 # ============ Generic verify routes (registry-driven) ============
@@ -2221,9 +1724,10 @@ def register_verify_routes(router_: APIRouter, tool: ToolPlugin) -> tuple:
 
     Paths stay byte-identical via the ``tool_id -> url_prefix`` alias map, and
     each route is named after its legacy handler so OpenAPI operation ids and
-    the module-level attribute names the tests rely on are preserved.
+    the module-level attribute names the tests rely on are preserved. A tool
+    with no entry there gets :func:`_default_verify_config`.
     """
-    cfg = _VERIFY_CONFIG[tool.id]
+    cfg = _verify_config(tool)
     prefix = cfg.url_prefix
 
     @router_.get(f"/{prefix}verify", name=cfg.sync_name)
@@ -2307,36 +1811,38 @@ def register_verify_routes(router_: APIRouter, tool: ToolPlugin) -> tuple:
     return _verify, _verify_events, _verify_batch
 
 
-# Explicit (registry-driven) registration. The factory body has no per-tool
-# branching; binding the returned handlers to their legacy names keeps the
-# ``info_routes.verify_*`` attributes the route tests call directly.
-verify_chd, verify_chd_events, verify_batch_events = register_verify_routes(
-    router, registry.get("chdman"),
-)
-verify_dolphin, verify_dolphin_events, verify_dolphin_batch_events = register_verify_routes(
-    router, registry.get("dolphin"),
-)
-verify_z3ds, verify_z3ds_events, verify_z3ds_batch_events = register_verify_routes(
-    router, registry.get("z3ds"),
-)
-verify_nsz, verify_nsz_events, verify_nsz_batch_events = register_verify_routes(
-    router, registry.get("nsz"),
-)
-verify_cso, verify_cso_events, verify_cso_batch_events = register_verify_routes(
-    router, registry.get("cso"),
-)
-verify_romz, verify_romz_events, verify_romz_batch_events = register_verify_routes(
-    router, registry.get("romz"),
-)
-verify_jwud, verify_jwud_events, verify_jwud_batch_events = register_verify_routes(
-    router, registry.get("jwud"),
-)
-verify_xiso, verify_xiso_events, verify_xiso_batch_events = register_verify_routes(
-    router, registry.get("xiso"),
-)
-verify_rom_converto, verify_rom_converto_events, verify_rom_converto_batch_events = (
-    register_verify_routes(router, registry.get("rom_converto"))
-)
-verify_exodos, verify_exodos_events, verify_exodos_batch_events = register_verify_routes(
-    router, registry.get("exodos"),
-)
+
+
+def _verify_config(tool: ToolPlugin) -> _VerifyRouteConfig:
+    """``tool``'s verify routes: its legacy entry, else :func:`_default_verify_config`."""
+    return _VERIFY_CONFIG.get(tool.id) or _default_verify_config(tool)
+
+
+def _default_verify_config(tool: ToolPlugin) -> _VerifyRouteConfig:
+    """Verify routes for a tool with no legacy entry: ``/api/<id>-verify``,
+    read through the plugin, so a new tool that verifies gets them for free."""
+    prefix = tool.id.replace("_", "-")
+    return _VerifyRouteConfig(
+        url_prefix=f"{prefix}-",
+        service=lambda: tool,
+        sync_name=f"verify_{tool.id}",
+        events_name=f"verify_{tool.id}_events",
+        batch_name=f"verify_{tool.id}_batch_events",
+        bad_ext_detail=(
+            f"Not a file {tool.display_name} verifies "
+            f"({', '.join(sorted(tool.verify_extensions))})"
+        ),
+        verify_error_prefix=f"Failed to verify {tool.display_name}",
+    )
+
+
+# One loop over the registry: every tool that verifies gets the trio. The
+# handlers are bound to their legacy names (``info_routes.verify_chd``, ...),
+# which the route tests call directly.
+for _tool in registry.all():
+    if _tool.verify_extensions:
+        _cfg = _verify_config(_tool)
+        globals().update(zip(
+            (_cfg.sync_name, _cfg.events_name, _cfg.batch_name),
+            register_verify_routes(router, _tool),
+        ))

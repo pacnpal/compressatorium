@@ -268,6 +268,13 @@ class ToolPlugin(Protocol):
     # file's size) and answers whether or not the tool could convert here.
     # Asked through ``ToolRegistry.tool_is_ready(tool, purpose="info")``.
     info_needs_tool: bool
+    # The files ``GET /api/info/{tool}`` describes (others are a 400), and the
+    # exceptions meaning "this file is not what its name says" (a 422).
+    info_extensions: frozenset[str]
+    info_file_errors: tuple[type[Exception], ...]
+
+    async def describe(self, path: str) -> BaseModel:
+        """The File info answer for *path* (``GET /api/info/{tool}``)."""
 
     def spec(self, mode: str) -> ModeSpec:
         """Return the ModeSpec for a mode this tool owns."""
@@ -342,6 +349,17 @@ class ToolPlugin(Protocol):
         asks only after ``converts_path`` said False, and shows this in place
         of the fixed message. ``BaseTool`` returns None (the fixed message
         stands). May do disk I/O; call it off the event loop.
+        """
+
+    def plan_problem(self, path: str, mode: str) -> str | None:
+        """The ``SkipReason`` value a job of *mode* on *path* is refused with
+        before its output is planned, or None to plan it.
+
+        For a mode whose output name is read from the Source and whose fallback
+        name would be wrong: romz's extract names its output after the one ROM
+        in the archive, so an archive holding none or several is refused here,
+        before an overwrite could remove an unrelated file of the fallback
+        name. ``BaseTool`` returns None. May do disk I/O; call it off the loop.
         """
 
     def delete_on_verify_is_safe(self, mode: str, compression: str | None) -> bool:
@@ -796,6 +814,22 @@ class BaseTool:
     # A tool whose ``info()`` reads the file in Python sets False, so its File
     # info keeps answering when the program is missing (#488).
     info_needs_tool: bool = True
+    # The exceptions ``describe`` raises when the file is not what its name
+    # says (an ``.iso`` for another console): ``GET /api/info/{tool}`` answers
+    # 422, a fact about the file, which lets the Info modal try the next tool.
+    info_file_errors: tuple[type[Exception], ...] = ()
+
+    @property
+    def info_extensions(self) -> frozenset[str]:
+        """The files ``GET /api/info/{tool}`` describes: what it converts and
+        what it verifies. A tool that describes only its products (chdman's
+        ``.chd``, rom-converto's ``.zar``) narrows it."""
+        return self.input_extensions | self.verify_extensions
+
+    async def describe(self, path: str) -> BaseModel:
+        """The File info answer for *path*: ``info_model(info(path))``. A tool
+        that caches or enriches it (chdman's metadata store) overrides this."""
+        return self.info_model(await self.info(path), path)
 
     @property
     def required_binaries(self) -> tuple[RequiredBinary, ...]:
@@ -963,6 +997,10 @@ class BaseTool:
 
     def convert_refusal(self, path: str) -> str | None:
         # Default: nothing to add to the skip reason's fixed message.
+        return None
+
+    def plan_problem(self, path: str, mode: str) -> str | None:
+        # Default: the output name does not depend on reading the Source.
         return None
 
     def source_companions(self, path: str) -> list[str]:
