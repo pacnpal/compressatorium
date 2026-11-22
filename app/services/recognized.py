@@ -8,6 +8,13 @@ streamed on a detached thread that a cancel stops, under the caller's bound),
 looks the hash up in the local DATs, then in Hasheous when that is switched
 on, and passes only on a hit.
 
+A DAT that came over plain HTTP (the Redump sync's fallback, #557) never
+vouches: it could have been swapped on the way (Codex 4659176015). It still
+names and matches files everywhere else; here its entries are set aside, so
+an output only it knows is a miss that says so, and the Source stays. A DAT
+imported by hand, fetched over HTTPS, or recorded before the transport was
+(NULL, migration 0028) vouches as before.
+
 The outcome never deletes anything. A miss, a lookup that couldn't run or a
 hash that didn't finish all keep the Source, and the job still completes,
 saying "converted, source kept: output not Recognized".
@@ -21,7 +28,7 @@ from dataclasses import dataclass
 from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from services import hasheous
-from services.dat_store import dat_store
+from services.dat_store import PLAIN_HTTP, dat_store
 from services.hasheous import HasheousUnavailable
 from services.stream_digest import hash_files
 from services.subprocess_runner import ReadCancelled
@@ -54,16 +61,42 @@ def _kept(why: str = "", *, timed_out: bool = False) -> RecognizedOutcome:
     return RecognizedOutcome(passed=False, message=message, timed_out=timed_out)
 
 
-def _local_hit(sha1: str, path: str) -> dict | None:
-    """The top-ranked local DAT record for *sha1*, or None. Blocking."""
+def _may_vouch(match: dict) -> bool:
+    """Whether a DAT match may prove a delete: never one that came over plain
+    HTTP, nor a Redump DAT whose transport was never recorded, which may have
+    come over the fallback (Codex 4659261220; migration 0028 marks those
+    ``http`` already, this holds whatever wrote the row)."""
+    transport = match.get("transport")
+    if transport == PLAIN_HTTP:
+        return False
+    return transport is not None or match.get("family") != "Redump"
+
+
+def _local_hit(sha1: str, path: str) -> tuple[dict | None, list[str]]:
+    """The top-ranked local DAT record for *sha1* that may vouch for a delete,
+    or None, and the names of the DATs set aside because they came over plain
+    HTTP. Blocking."""
     record = dat_store.lookup_sha1(sha1)
     if not record:
-        return None
+        return None, []
+    matches = record.get("matches") or [record]
+    trusted = [m for m in matches if _may_vouch(m)]
+    untrusted = sorted({m.get("dat_name") or "?" for m in matches if m not in trusted})
+    if not trusted:
+        return None, untrusted
     # Ranked as everywhere else (DESIGN 3.3.5.2), so the Ledger names the DAT
     # the user put first. Any DAT knowing the hash Recognizes it; a ranking
     # conflict only changes which name is shown.
-    ranked = dat_store.with_current_ranking({"matched": True, **record}, path)
-    return ranked or None
+    ranked = dat_store.with_current_ranking(
+        {"matched": True, **record, **trusted[0], "matches": trusted}, path,
+    )
+    return ranked or None, untrusted
+
+
+def _over_http(names: list[str]) -> str:
+    """Why a match only untrusted DATs make keeps the Source."""
+    return (f"only {', '.join(names)} knows it, and that came or may have come "
+            "over plain HTTP, so it can't vouch for a delete")
 
 
 async def recognize(
@@ -99,7 +132,7 @@ async def recognize(
         return RecognizedOutcome(passed=False, cancelled=True)
 
     try:
-        local = await run_in_threadpool(_local_hit, sha1, path)
+        local, over_http = await run_in_threadpool(_local_hit, sha1, path)
     except (SQLAlchemyError, RuntimeError, OSError) as exc:
         # DATs that could not be read prove nothing: the Source stays.
         logger.warning(
@@ -113,8 +146,10 @@ async def recognize(
         )
     if _is_cancelled():
         return RecognizedOutcome(passed=False, cancelled=True)
+    # Only plain-HTTP DATs know it: as if no DAT did, Hasheous may still vouch.
+    why = _over_http(over_http) if over_http else ""
     if not hasheous.enabled():
-        return _kept()
+        return _kept(why)
     try:
         remote = await hasheous.lookup(sha1)
     except HasheousUnavailable as exc:
@@ -123,7 +158,7 @@ async def recognize(
     if _is_cancelled():
         return RecognizedOutcome(passed=False, cancelled=True)
     if remote is None:
-        return _kept()
+        return _kept(why)
     return RecognizedOutcome(
         passed=True, dat_name=remote.get("dat_name") or "Hasheous",
         game_name=remote.get("game_name"), source="hasheous",

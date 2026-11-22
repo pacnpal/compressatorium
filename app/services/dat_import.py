@@ -190,13 +190,15 @@ async def _snapshot() -> list[str]:
 
 
 async def _import_each(
-    sources: list[tuple[str, str]], invalidated: set[str],
+    sources: list[tuple[str, str]], invalidated: set[str], transport: str = "manual",
 ) -> tuple[list[dict], list[dict]]:
     imported: list[dict] = []
     errors: list[dict] = []
     for label, path in sources:
         try:
-            result = await _store().import_dat(path, invalidated=invalidated, replace=True)
+            result = await _store().import_dat(
+                path, invalidated=invalidated, replace=True, transport=transport,
+            )
         except (ValueError, OSError) as exc:
             # An unreadable file (PermissionError) is that file's error, never
             # the batch's (CodeRabbit PR #527).
@@ -342,6 +344,9 @@ def _fetch(system: str, cached: dict, dest: str) -> tuple[str | None, dict]:
         return path, {
             "etag": resp.headers.get("ETag"),
             "last_modified": resp.headers.get("Last-Modified"),
+            # Recorded with each DAT: one over plain HTTP never vouches for a
+            # delete (services.recognized, Codex 4659176015).
+            "transport": scheme,
         }
     finally:
         conn.close()
@@ -413,12 +418,20 @@ async def _sync_redump(platforms, *, force: bool, rematch: bool) -> dict:
             if asked:
                 await asyncio.sleep(REQUEST_GAP_SECONDS)
             asked = True
+            # A DAT that didn't come over HTTPS is asked for unconditionally:
+            # a 304 can't show its bytes were genuine, a full answer can.
+            trusted = entry.get("transport") == "https"
             try:
                 path, meta = await run_in_threadpool(
-                    _fetch, system, entry if present else {}, work,
+                    _fetch, system, entry if present and trusted else {}, work,
                 )
                 digest = await run_in_threadpool(_sha256, path) if path else None
                 if digest is None or (present and digest == entry.get("sha256")):
+                    if digest is not None and meta.get("transport") == "https" and not trusted:
+                        # The same bytes over HTTPS prove the earlier plain-HTTP
+                        # download genuine (Codex 4659261223); never the reverse.
+                        await _store().upgrade_to_https(entry["dat_ids"])
+                        entry.update({k: v for k, v in meta.items() if v is not None})
                     entry["synced_at"] = _now().isoformat()
                     cache[system] = entry
                     results.append({"system": system, "status": "up_to_date"})
@@ -430,7 +443,10 @@ async def _sync_redump(platforms, *, force: bool, rematch: bool) -> dict:
                 sources, refused = await run_in_threadpool(
                     _expand, [(f"{system}.zip", path)], work,
                 )
-                imported, errors = await _import_each(sources, invalidated)
+                # A fetch that doesn't say how it arrived counts as plain HTTP.
+                imported, errors = await _import_each(
+                    sources, invalidated, meta.get("transport") or "http",
+                )
             except (OSError, ValueError, http.client.HTTPException) as exc:
                 logger.warning("redump sync: %s failed: %s", system, exc)
                 results.append({"system": system, "status": "failed", "error": str(exc)})

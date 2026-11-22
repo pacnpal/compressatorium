@@ -411,7 +411,8 @@ class DATSyncService:
                 tmp_path = await run_in_threadpool(
                     self._download_dat, file_info["path"], tag,
                 )
-                result = await dat_store.import_dat_no_persist(tmp_path)
+                # Downloaded over https only (_require_https).
+                result = await dat_store.import_dat_no_persist(tmp_path, transport="https")
                 new_dat_ids.append(result["id"])
                 new_keys.add((result.get("name"), result.get("family")))
                 imported += 1
