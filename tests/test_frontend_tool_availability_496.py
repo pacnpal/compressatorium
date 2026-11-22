@@ -105,16 +105,18 @@ process.stdout.write(JSON.stringify({{ shown: {_ids('store.visibleTools')} }}));
     assert data["shown"] == ["chdman", "dolphin", "nsz"], data
 
 
-def test_a_hidden_convert_tool_falls_back_to_a_visible_one():
-    """The Convert panel's tool follows availability: App moves it off a tool
-    the backend can't run, onto the first one it can."""
-    app = (_SRC / "App.svelte").read_text(encoding="utf-8")
-    assert "const tools = ui.visibleTools;" in app
-    assert "conversion.setPrimaryTool(tools[0].id)" in app
+def test_the_convert_to_choices_leave_out_a_tool_that_cannot_run():
+    """The Convert panel offers only formats a tool here can make: its "Convert
+    to" choices are narrowed to the tools availability says can run."""
+    panel = (_SRC / "lib" / "components" / "panels" / "ConvertPanel.svelte").read_text(
+        encoding="utf-8",
+    )
+    assert "ui.visibleTools.map((t) => t.id)" in panel
+    assert "convertTargets({" in panel and "ready," in panel
 
 
 def test_the_consumers_read_the_store_and_a_failed_fetch_is_retried():
-    for rel in ("components/panels/ModeSelect.svelte", "components/settings/Converters.svelte"):
+    for rel in ("components/panels/ConvertPanel.svelte", "components/settings/Converters.svelte"):
         text = (_SRC / "lib" / rel).read_text(encoding="utf-8")
         assert "ui.visibleTools" in text or "ui.toolsKnown" in text, rel
         assert "hiddenTools" not in text, rel

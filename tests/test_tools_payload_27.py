@@ -209,6 +209,18 @@ process.stdout.write(JSON.stringify([results, registry.loaded, registry.specFor(
     assert got == [[False, False, False], True, "copy"]
 
 
+def test_the_archives_a_mode_reads_whole_come_from_the_payload(tmp_path):
+    """The convert store offers an archive row when some mode reads it whole
+    (#538), by walking `registry.all()` modes' `inputExtensions`. Those come
+    from the backend now: a RAR set and an eXoDOS game zip are read whole."""
+    got = _node(tmp_path, """
+const reads = (name) => registry.all().some((tool) => (tool.modes ?? [])
+  .some((spec) => (spec.inputExtensions ?? []).some((ext) => name.endsWith(ext))));
+process.stdout.write(JSON.stringify(['set.part1.rar', 'Game (1995).zip', 'notes.7q'].map(reads)));
+""")
+    assert got == [True, True, False]
+
+
 def test_app_retries_the_tools_until_they_load_and_stops_when_unmounted():
     """App loads the registry once: a failure says so and retries with a
     growing delay, a reply after unmount is ignored, and no retry is left

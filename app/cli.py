@@ -594,7 +594,7 @@ def _route_to(items: list[Item], args, prefs: dict, ready: list[str]) -> list[It
         CONFLICT,
         detect_platform,
         format_candidates,
-        format_route,
+        route_for,
         serves_platform,
     )
     from services.tools import not_ready_message, registry
@@ -608,22 +608,17 @@ def _route_to(items: list[Item], args, prefs: dict, ready: list[str]) -> list[It
         candidates = format_candidates(item.path, target, registry)
         if not item.explicit and not candidates:
             continue
-        if args.any_platform:
-            platform = None
-        else:
+        detection = None
+        if not args.any_platform:
             detection = detect_platform(item.path)
             item.platform, item.detection = detection.platform, detection.how
-            if detection.how == CONFLICT:
-                item.status = "skipped"
-                item.reason = f"Platform conflict: {detection.reason}"
-                kept.append(item)
-                continue
             platform = detection.platform
-            if not item.explicit and platform and not any(
+            if detection.how != CONFLICT and not item.explicit and platform and not any(
                 serves_platform(spec, platform, registry) for spec in candidates
             ):
                 continue  # another Platform's Image: not in scope for this target
-        item.mode, item.reason = format_route(item.path, target, platform, registry)
+        # The Convert panel's plan makes the same decision (plan_auto).
+        item.mode, item.reason = route_for(item.path, detection, target, registry)
         tool = registry.for_mode(item.mode) if item.mode else None
         if tool is not None and tool.id not in ready:
             item.mode = None

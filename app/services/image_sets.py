@@ -128,6 +128,149 @@ def owning_sheet(
     to delete *path* treats that as "it may be a track", never as "standalone".
     *progress* is called per folder and per sheet, for a stall-bounded caller.
     """
+    return next(_sheets_naming(path, stop_at, progress), None)
+
+
+def sheets_naming(
+    path: str, *, stop_at: str, progress: Callable[..., None] | None = None,
+) -> list[str]:
+    """Every ``.cue``/``.gdi`` that lists *path* as a track. Blocking.
+
+    :func:`owning_sheet`'s walk, carried on past the first sheet: two games'
+    sheets can share a track, and deleting it for one breaks the other.
+    Raises :class:`SheetOwnerUnknown` exactly as :func:`owning_sheet` does.
+    """
+    return list(_sheets_naming(path, stop_at, progress))
+
+
+PLAYLIST_EXTENSIONS = (".m3u", ".m3u8")
+# A playlist is a few lines; a bigger file is not one to read for this.
+PLAYLIST_READ_BYTES = 64 * 1024
+
+
+def owners_naming(
+    path: str, *, stop_at: str, progress: Callable[..., None] | None = None,
+    companions_of: dict[str, list[str]] | None = None,
+) -> list[str]:
+    """Every file that names *path* as part of itself. Blocking.
+
+    The one ownership question every delete asks before it takes a file that
+    belongs to a game: a ``.cue``/``.gdi`` that lists it as a track
+    (:func:`sheets_naming`, from its folder up to *stop_at*), a ``.m3u``/``.m3u8``
+    that lists it as a disc (the same walk), and a file beside it whose tools
+    read it with them (``registry.source_companions``: a RAR set's later
+    volume, a split dump's part; ``registry.split_members``). A file is safe
+    to delete with its game only when every owner is going too.
+
+    Fails closed: a folder that can't be listed, a sheet or playlist that
+    can't be read, or a set whose members can't be told raises
+    :class:`SheetOwnerUnknown`, never "no owner". *companions_of* caches each
+    sibling's companions across the calls of one batch.
+    """
+    owners = list(_sheets_naming(path, stop_at, progress))
+    owners += _playlists_naming(path, stop_at, progress)
+    owners += _companion_owners(path, stop_at, progress, companions_of)
+    return list(dict.fromkeys(owners))
+
+
+def _folders_up(real: str, stop_at: str, path: str):
+    boundary = os.path.normpath(os.path.realpath(stop_at))
+    folder = os.path.normpath(os.path.dirname(real))
+    if folder != boundary and not folder.startswith(boundary.rstrip(os.sep) + os.sep):
+        raise SheetOwnerUnknown(f"{path} is not under {stop_at}")
+    while True:
+        yield folder
+        if folder == boundary:
+            return
+        parent = os.path.dirname(folder)
+        if parent == folder:
+            return
+        folder = parent
+
+
+def _listdir(folder: str) -> list[str]:
+    try:
+        return sorted(os.listdir(folder))
+    except OSError as exc:
+        raise SheetOwnerUnknown(f"{folder} could not be listed ({exc.strerror or exc})") from exc
+
+
+def _own_stat(path: str) -> tuple[str, os.stat_result]:
+    real = os.path.realpath(path)
+    try:
+        return real, os.stat(real)
+    except OSError as exc:
+        raise SheetOwnerUnknown(f"{path} could not be read ({exc.strerror or exc})") from exc
+
+
+def _playlists_naming(path: str, stop_at: str, progress: Callable[..., None] | None):
+    """Every playlist from *path*'s folder up to *stop_at* that lists it."""
+    from services.referrers import m3u
+    from utils.path_utils import read_beneath
+
+    tick = progress or (lambda *_args: None)
+    real, own = _own_stat(path)
+    for folder in _folders_up(real, stop_at, path):
+        tick(folder)
+        for name in _listdir(folder):
+            playlist = os.path.join(folder, name)
+            if not name.lower().endswith(PLAYLIST_EXTENSIONS) or playlist == real:
+                continue
+            tick(playlist)
+            if os.path.isdir(playlist):
+                continue
+            try:
+                data = read_beneath(folder, name, max_bytes=PLAYLIST_READ_BYTES)
+            except (OSError, ValueError) as exc:
+                raise SheetOwnerUnknown(f"{name} could not be read ({exc})") from exc
+            entries = m3u.every_entry(data)
+            if any(_is_track(own, real, os.path.join(folder, entry)) for entry in entries):
+                yield playlist
+
+
+def _inside(path: str, boundary: str) -> bool:
+    real = os.path.normpath(os.path.realpath(path))
+    return real == boundary or real.startswith(boundary.rstrip(os.sep) + os.sep)
+
+
+def _companion_owners(
+    path: str, stop_at: str, progress: Callable[..., None] | None,
+    companions_of: dict[str, list[str]] | None,
+) -> list[str]:
+    """The files beside *path* whose tools read it as part of their set."""
+    from services.tools.base import CompanionsUnknown
+
+    tick = progress or (lambda *_args: None)
+    real, own = _own_stat(path)
+    folder = os.path.dirname(real)
+    boundary = os.path.normpath(os.path.realpath(stop_at))
+    cache = companions_of if companions_of is not None else {}
+    owners = []
+    for name in _listdir(folder):
+        sibling = os.path.join(folder, name)
+        if sibling == real or os.path.isdir(sibling):
+            continue
+        tick(sibling)
+        # A link out of the Volume is never opened (its tools would read
+        # whatever it points at); whether it owns *path* is unknown.
+        if not _inside(sibling, boundary):
+            raise SheetOwnerUnknown(f"{name} points outside the Volume, so it isn't read")
+        members = cache.get(sibling)
+        if members is None:
+            try:
+                members = [
+                    *registry.source_companions(sibling, strict=True),
+                    *registry.split_members(sibling),
+                ]
+            except CompanionsUnknown as exc:
+                raise SheetOwnerUnknown(f"the set {name} belongs to can't be told ({exc})") from exc
+            cache[sibling] = members
+        if any(_is_track(own, real, member) for member in members):
+            owners.append(sibling)
+    return owners
+
+
+def _sheets_naming(path: str, stop_at: str, progress: Callable[..., None] | None):
     from utils.sheet_text import sheet_is_readable, sheet_track_list
 
     tick = progress or (lambda *_args: None)
@@ -155,6 +298,9 @@ def owning_sheet(
             tick(sheet)
             if os.path.isdir(sheet):
                 continue
+            # A sheet linked from outside the Volume is never opened.
+            if not _inside(sheet, boundary):
+                raise SheetOwnerUnknown(f"{name} points outside the Volume, so it isn't read")
             if not sheet_is_readable(sheet):
                 raise SheetOwnerUnknown(f"{name} could not be read (unreadable or too large)")
             tracks = sheet_track_list(sheet)
@@ -163,12 +309,12 @@ def owning_sheet(
                     f"{name} names a track it may not use, so its tracks are unknown",
                 )
             if any(_is_track(own, real, str(track)) for track in tracks):
-                return sheet
+                yield sheet
         if folder == boundary:
-            return None
+            return
         parent = os.path.dirname(folder)
         if parent == folder:
-            return None
+            return
         folder = parent
 
 
@@ -412,8 +558,10 @@ def _is_track(own: os.stat_result, real: str, track: str) -> bool:
         st = os.stat(track)
     except FileNotFoundError:
         return os.path.realpath(track).casefold() == real.casefold()
-    except OSError as exc:
-        raise SheetOwnerUnknown(f"{track} could not be read ({exc.strerror or exc})") from exc
+    except (OSError, ValueError) as exc:
+        # A name the filesystem can't even look up (an embedded NUL) is a
+        # reference that can't be told, never "not this file".
+        raise SheetOwnerUnknown(f"{track!r} could not be read ({exc})") from exc
     return (st.st_dev, st.st_ino) == (own.st_dev, own.st_ino)
 
 

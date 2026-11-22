@@ -55,15 +55,6 @@
     });
   });
 
-  // The Convert panel never sits on a tool the backend can't run (Switch with
-  // no prod.keys): once availability is known, move it to the first that can.
-  $effect(() => {
-    const tools = ui.visibleTools;
-    if (tools.length && !tools.some((t) => t.id === conversion.primaryTool)) {
-      conversion.setPrimaryTool(tools[0].id);
-    }
-  });
-
   // Refresh the file listing when terminal job events arrive, newly
   // written outputs need to appear, delete-on-verify removals need to
   // disappear, sibling badges flip.
@@ -152,7 +143,6 @@
           if (disposed) return;
           if (!registry.load(t)) throw new Error('The server named no tools');
           toolsError = '';
-          conversion.adoptRegistry();
           ui.applyToolAvailability(t?.available, t?.reasons);
           // Remembered per-tool compression settings, applied over the defaults.
           conversion.loadServerPrefs();

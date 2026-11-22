@@ -155,6 +155,13 @@ def _lines(data: bytes) -> list[bytes]:
     return data.splitlines()
 
 
+def _text_lines(text: str) -> list[str]:
+    """Split decoded text the way :func:`_lines` splits bytes: on CR and LF
+    only. ``str.splitlines`` would also break a name at U+2028, NEL (U+0085)
+    and the other breaks a byte reader keeps as ordinary characters."""
+    return re.split(r"\r\n|\r|\n", text)
+
+
 def entries(data: bytes) -> list[str]:
     """The entries a reader sees in playlist *data*, as posix paths, in order."""
     found = []
@@ -163,6 +170,49 @@ def entries(data: bytes) -> list[str]:
         if parsed is not None:
             found.append(parsed.posix)
     return found
+
+
+def every_entry(data: bytes) -> list[str]:
+    """Every entry any reader could see in playlist *data*, as posix paths.
+
+    Plain 8-bit text as :func:`entries` (UTF-8), cp1252 and Latin-1. A playlist
+    that isn't (UTF-16, or any
+    NUL byte) is read every way :func:`_wide_text_check` reads it: UTF-16 by
+    its BOM or NUL parity (strictly, else with replacements), both byte orders,
+    and with NULs dropped as UTF-8 and cp1252. The union is what a check that
+    must not miss a disc (who else needs this file?) compares against; a
+    reading that leaves a NUL in a name is no path and is dropped.
+    """
+    encoding = _utf16_encoding(data)
+    if encoding is None and b"\x00" not in data:
+        # A player may read 8-bit text in a legacy code page, so a name is
+        # owned if any reading spells it; Latin-1 decodes every byte, so no
+        # line is left unread.
+        found = entries(data)
+        body = data.removeprefix(_BOM)
+        for codec in ("cp1252", "latin-1"):
+            for line in _text_lines(body.decode(codec, errors="replace")):
+                parsed = _parse_line(line)
+                if parsed is not None:
+                    found.append(parsed.posix)
+        return list(dict.fromkeys(found))
+    texts: list[str] = []
+    if encoding is not None:
+        texts.append(data.decode(encoding, errors="replace"))
+    stripped = data.replace(b"\x00", b"")
+    texts += [
+        stripped.decode("utf-8", errors="replace"),
+        stripped.decode("cp1252", errors="replace"),
+        data.decode("utf-16-le", errors="replace"),
+        data.decode("utf-16-be", errors="replace"),
+    ]
+    found: list[str] = []
+    for text in texts:
+        for line in _text_lines(text.lstrip("\ufeff")):
+            parsed = _parse_line(line)
+            if parsed is not None and "\x00" not in parsed.posix:
+                found.append(parsed.posix)
+    return list(dict.fromkeys(found))
 
 
 def _variants(candidate: str, backslashed: bool) -> list[str]:
@@ -294,7 +344,7 @@ def _legacy_text_check(playlist: str, data: bytes, renames: Renames) -> None:
     except UnicodeDecodeError:
         pass
     text = data.removeprefix(_BOM).decode("cp1252", errors="replace")
-    for line in text.splitlines():
+    for line in _text_lines(text):
         parsed = _parse_line(line)
         if parsed is not None and named_file(parsed.path) in renames.names:
             raise ReferrerError(
@@ -396,7 +446,7 @@ def _entry_reaches_replaced(
 def _text_reaches_replaced(text: str, playlist_dir: str, renames: Renames) -> str | None:
     """The first replaced file decoded playlist *text* still reaches, by any
     reading of any entry line (``_entry_reaches_replaced``), or None."""
-    for line in re.split(r"\r\n|\r|\n", text):
+    for line in _text_lines(text):
         parsed = _parse_line(line)
         if parsed is None:
             continue
