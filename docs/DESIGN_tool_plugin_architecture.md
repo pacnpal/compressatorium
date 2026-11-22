@@ -7204,7 +7204,13 @@ up to `MAX_LISTED_FAILURES` of them, with `data = {library_id, failed: [{image,
 path, error}]}`, through `notifications.notify`. The run's job is external, so
 the sweep's own `sweep_finished` message does not count it.
 
-**Ledger.** Every finished job writes its Ledger row, external jobs included
+**Ledger.** A job that ended only to wait (`finish_external_job_waiting`: an
+Inbox archive with no room to unpack, `result["waiting"]` and a `warning`) is
+recorded with status `waiting` (`ledger.WAITING`) and its warning in `error`,
+never as `completed`: it did nothing yet, so it counts toward no savings or
+conversion, and History shows "Waiting:" and why.
+
+Every finished job writes its Ledger row, external jobs included
 (restructure PR 4: History is everything that ran, so Activity's Running list
 can be the queue only). An external job's `file_path` is a placeholder under
 `job_manager.EXTERNAL_JOB_PATH`, so `ledger.row_from_job` records its
@@ -8547,10 +8553,18 @@ its tracks (`_members`), moves into `<inbox>/<canonical slug>/` through the same
 all-or-none anchored move `_move_to_processed` uses (`_move_all`, over
 `move_anchored`): both folders opened beneath the Inbox with no link followed,
 each file's identity checked, a no-replace rename each, the ones already moved
-put back on a failure. Refused, with nothing moved: a path outside the Inbox
-(or in `processed/`) or not confirmed inside a Volume (403), a folder Image
-(400), files in more than one folder or a name already taken in the console
-folder (409, checked before anything moves). A file already gone is a 404 that
+put back on a failure. The file set is worked out first (`_place_files`):
+a sheet's references go through `sheet_reference_problems` exactly as `_take`
+checks them, since the confined track resolver drops a `../Tracks/Game.bin`
+and the sheet would otherwise look trackless and move alone. The move then runs
+under the lock manager's exclusive locks on every file (`_place_locked`, the
+`_lock_all` that `_finish` takes before `processed/`): a job reading any of them
+(a conversion from Files holds shared input locks) makes it a 409, and the locks
+go on every outcome. Refused, with nothing moved: a path outside the Inbox (or
+in `processed/`) or not confirmed inside a Volume (403), a folder Image or a
+sheet intake wouldn't take as it is (400), files in more than one folder, a
+file in use by a job, or a name already taken in the console folder (409,
+checked before anything moves). A file already gone is a 404 that
 clears its Finding. Then its Finding is cleared and it is marked settled
 (`state.seen[new] = _Seen(fingerprint, now - settle_seconds)`), so the next poll
 takes it through the normal path; the route starts that poll in the background.

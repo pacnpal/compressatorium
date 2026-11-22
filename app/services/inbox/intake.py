@@ -2996,13 +2996,13 @@ class PlaceRefused(Exception):
 PLACEABLE_KINDS = (findings.INBOX_UNSORTED, findings.INBOX_CONFLICT)
 
 
-def _place_blocking(
-    inbox: inbox_store.Inbox, path: str, slug: str,
-) -> tuple[str, str]:
-    """Move the Image at *path* (a sheet with its tracks) into
-    ``<inbox>/<slug>/``: anchored and all or none, as the move to
-    ``processed/`` is, and never over another file (``FileExistsError``,
-    nothing moved). Returns its new path and fingerprint. Blocking."""
+def _place_files(inbox: inbox_store.Inbox, path: str) -> list[str]:
+    """Every file Place it would move for the Image at *path*: the file, then
+    a sheet's tracks. Refuses (:class:`PlaceRefused`) a path outside its
+    watch folder or a Drive, a folder Image, a sheet whose references intake
+    wouldn't take as they are (``../Tracks/Game.bin`` is dropped by the
+    confined track resolver, so the sheet would look trackless and move
+    alone, Codex 4658826953), and files in more than one folder. Blocking."""
     if volume_containment(inbox.folder, treat_archives=False) is not True:
         raise PlaceRefused(403, "The watch folder isn't confirmed inside a Drive")
     if (
@@ -3016,11 +3016,30 @@ def _place_blocking(
         raise FileNotFoundError(errno.ENOENT, f"{os.path.basename(path)} is gone")
     if not os.path.isfile(path):
         raise PlaceRefused(400, "Only a file can be placed: move this folder by hand")
+    # The same check intake makes before it takes a sheet in (`_take`).
+    sheet = sheet_reference_problems(path, within=[inbox.folder])
+    if sheet:
+        raise PlaceRefused(
+            400,
+            "Its track sheet can't be placed as it is: " + "; ".join(sheet[:3])
+            + ". Fix the sheet or move the game by hand",
+        )
     files = [path, *_members(path)]
     if any(os.path.dirname(f) != os.path.dirname(path) for f in files):
         # ponytail: tracks in another folder are moved by hand; keep their
         # layout below the console folder if it ever comes up.
         raise PlaceRefused(409, "Its files sit in more than one folder: move it by hand")
+    return files
+
+
+def _place_blocking(
+    inbox: inbox_store.Inbox, path: str, files: list[str], slug: str,
+) -> tuple[str, str]:
+    """Move *files*, the Image at *path* (:func:`_place_files`), into
+    ``<inbox>/<slug>/``: anchored and all or none, as the move to
+    ``processed/`` is, and never over another file (``FileExistsError``,
+    nothing moved). Its caller holds the exclusive locks on every one of
+    *files*. Returns its new path and fingerprint. Blocking."""
     identities = _identities(inbox, files)
     src, names = _folder_beneath(inbox, files)
     try:
@@ -3068,7 +3087,8 @@ async def place(row: dict[str, Any], platform: str, *, now: float | None = None)
     if path in state.flights:
         raise PlaceRefused(409, "It's being taken in right now")
     try:
-        moved, fingerprint = await _step(_place_blocking, inbox, path, slug)
+        files = await _step(_place_files, inbox, path)
+        moved, fingerprint = await _place_locked(inbox, path, files, slug)
     except FileNotFoundError:
         await _clear(inbox, path)
         raise PlaceRefused(404, f"{os.path.basename(path)} isn't in the watch folder any more")
@@ -3087,6 +3107,33 @@ async def place(row: dict[str, Any], platform: str, *, now: float | None = None)
     state.seen.pop(path, None)
     state.seen[moved] = _Seen(fingerprint, now - inbox.settle_seconds)
     return {"path": moved, "platform": slug, "inbox_id": inbox.id}
+
+
+async def _place_locked(
+    inbox: inbox_store.Inbox, path: str, files: list[str], slug: str,
+) -> tuple[str, str]:
+    """:func:`_place_blocking` under the lock manager's exclusive locks on
+    every file, the ones intake's own move to ``processed/`` takes
+    (`_finish`, Codex 4658826950): while any job reads one (a conversion
+    started from Files holds shared input locks), nothing moves and the
+    user is told to try again. The locks go on every outcome."""
+    try:
+        refused = await _lock_all(files, allow_existing=True)
+    except DeadlineExpired:
+        refused = "(no answer)"
+    except (asyncio.TimeoutError, LockFailed) as exc:
+        raise PlaceRefused(503, f"Its files couldn't be locked to move them: {exc}") from None
+    if refused is not None:
+        raise PlaceRefused(
+            409, f"{os.path.basename(refused)} is in use by a job: try again once it ends",
+        )
+    try:
+        return await _step(_place_blocking, inbox, path, files, slug)
+    finally:
+        try:
+            await _step(_release_locks, files)
+        except (asyncio.TimeoutError, OSError):
+            logger.warning("inbox: could not release the locks of %s", path, exc_info=True)
 
 
 # ---- copying an Image in as it is ----------------------------------------

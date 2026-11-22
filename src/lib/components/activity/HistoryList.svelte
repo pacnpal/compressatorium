@@ -37,6 +37,7 @@
     { value: 'failed', label: 'Failed' },
     { value: 'checked', label: 'Checked' },
     { value: 'cancelled', label: 'Cancelled' },
+    { value: 'waiting', label: 'Waiting' },
   ];
   const STATUSES = new Set(STATUS_OPTIONS.map((o) => o.value));
 
@@ -197,6 +198,8 @@
   function result(row) {
     if (row.status === 'failed') return `Failed: ${row.error || 'no reason given'}`;
     if (row.status === 'cancelled') return 'Cancelled';
+    // Ended only to wait (a watch folder's archive with no room yet): why.
+    if (row.status === 'waiting') return `Waiting: ${row.error || 'it will be tried again'}`;
     const did = DID[row.mode];
     if (!row.output_path) return did ?? registry.specFor(row.mode)?.label ?? 'Done';
     const ext = row.output_path.match(/(\.xiso\.iso|\.[^./\\]+)$/)?.[0] ?? '';
@@ -281,7 +284,7 @@
                   {/each}
                 </td>
                 <td>{consoleName(row.platform)}</td>
-                <td class="result" class:failed={row.status === 'failed'} title={result(row)}>
+                <td class="result" class:failed={row.status === 'failed'} class:waiting={row.status === 'waiting'} title={result(row)}>
                   {result(row)}
                   {#if row.status === 'completed' && row.output_path && !row.source_deleted}
                     <span class="muted">original kept</span>
@@ -338,6 +341,7 @@
   .extra { display: block; color: var(--text-2); font-size: var(--text-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .result { max-width: 320px; overflow-wrap: anywhere; }
   .result.failed { color: var(--error); }
+  .result.waiting { color: var(--warning-text); }
   .check { white-space: nowrap; }
 
   .foot { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); margin-top: var(--space-3); flex-wrap: wrap; }

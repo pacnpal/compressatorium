@@ -62,8 +62,13 @@ def _tool_and_platform(mode: str) -> tuple[str | None, str | None]:
     return tool, (next(iter(slugs)) if len(slugs) == 1 else None)
 
 
+# The Ledger status of a job that ended only to wait (no work done yet).
+WAITING = "waiting"
+
+
 def row_from_job(job: ConversionJob) -> dict:
     mode = getattr(job.mode, "value", str(job.mode))
+    waited = job.status == JobStatus.COMPLETED and bool((job.result or {}).get("waiting"))
     tool, mode_platform = _tool_and_platform(mode)
     # The Library's Platform or the detected one (#346); else the mode's own
     # when it serves only one. None files the row under "unsorted".
@@ -87,7 +92,10 @@ def row_from_job(job: ConversionJob) -> dict:
         "input_bytes": job.input_bytes,
         "output_bytes": job.output_size,
         "duration_s": duration,
-        "status": getattr(job.status, "value", str(job.status)),
+        # A job that only had to wait (a watch-folder archive with no room to
+        # unpack, `finish_external_job_waiting`) did nothing yet: its row says
+        # "waiting" and why, never "completed" (Codex 4658826956).
+        "status": WAITING if waited else getattr(job.status, "value", str(job.status)),
         "check_passed": job.check_passed or "none",
         "check_dat": getattr(job, "check_dat", None),
         "source_deleted": bool(job.deleted_paths),
@@ -96,7 +104,7 @@ def row_from_job(job: ConversionJob) -> dict:
         "library_id": None,
         "image_key": None,
         "platform": platform,
-        "error": job.error_message,
+        "error": job.warning if waited else job.error_message,
         "extra_inputs": [dict(item) for item in job.extra_inputs],
     }
 

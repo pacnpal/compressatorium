@@ -111,3 +111,33 @@ async def test_the_csv_export_takes_the_same_filters():
     )
     body = "".join([chunk async for chunk in resp.body_iterator])
     assert "recent.iso" in body and "old.iso" not in body
+
+
+@pytest.mark.asyncio
+async def test_a_job_that_only_waited_is_recorded_as_waiting_with_why():
+    """Codex 4658826956: a watch-folder archive with no room to unpack ends
+    COMPLETED with `result.waiting` and a warning (finish_external_job_waiting).
+    History says it waited, and why, instead of "Unpacked"."""
+    from services.job_manager import JobManager
+
+    manager = JobManager()
+    job = manager.create_external_job("Game.7z", ConversionMode.INBOX_UNPACK)
+    await manager.finish_external_job_waiting(job.id, "Waiting for room: 2 GB free, 9 GB needed")
+    await ledger.record(job)
+
+    [row] = await ledger.recent(5)
+    assert row["status"] == "waiting"
+    assert row["error"] == "Waiting for room: 2 GB free, 9 GB needed"
+    assert _ids(await ledger.list_page(ledger.LedgerFilter(status="waiting"))) == [job.id]
+    # Waiting saved nothing and counts as no conversion.
+    assert (await ledger.savings())["conversions"] == 0
+
+
+def test_history_shows_a_waiting_row_as_waiting_with_its_reason():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "src" / "lib" / "components" / "activity"
+           / "HistoryList.svelte").read_text(encoding="utf-8")
+    assert "{ value: 'waiting', label: 'Waiting' }" in src
+    assert "row.status === 'waiting'" in src
+    assert "`Waiting: ${row.error" in src

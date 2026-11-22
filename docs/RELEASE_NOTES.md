@@ -109,7 +109,8 @@
   duplicate deletes, renames and a watch folder's copies now write their row
   too, named by what they did ("Check 12 games in Roms"). Its columns are When,
   Game, Console, Result ("CHD · saved 312 MB") and Check ("✓ Exact copy"). Filter
-  by Done, Failed, Checked or Cancelled, by format and by console;
+  by Done, Failed, Checked, Cancelled or Waiting (a watch folder's archive
+  that's waiting for room, with why), by format and by console;
   `#/activity/history?status=failed` opens it on the failures.
   `GET /api/ledger` and its CSV export take `since` (`24h`, `7d` or an ISO time)
   and `checked=true`.
