@@ -793,7 +793,9 @@ class FileBrowserStore {
       // leaving searchMode false keeps the user looking at the current
       // directory's entries instead of an empty search view.
       this.searchResults = data;
-      this.searchQuery = query;
+      // Words typed while the tree was being listed win over the ones it
+      // was asked with (#574).
+      this.searchQuery = this._pendingSearchQuery ?? query;
       this.searchMode = true;
       this.page = 1;
       // Drop the current directory's selection set, those paths
@@ -834,6 +836,22 @@ class FileBrowserStore {
       return;
     }
     await this._enterSearch(query);
+  }
+
+  /**
+   * Everywhere, as you type (#574): the words filter the tree already listed
+   * (the scan takes no query, so there's nothing to ask again), or the one
+   * being listed. Before Everywhere has listed anything, and in This folder,
+   * it does nothing.
+   */
+  filterSearch(query) {
+    if (this.searching) {
+      this._pendingSearchQuery = query ?? '';
+      return;
+    }
+    if (!this.searchMode) return;
+    this.searchQuery = query ?? '';
+    this.page = 1;
   }
 
   /** Search this folder or everywhere under it, keeping the words typed. */
