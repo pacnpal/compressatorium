@@ -1702,6 +1702,48 @@ async def run_detached_within_stall_bound(
                 await task
 
 
+def run_blocking_within_stall_bound(
+    func: Callable, *args: object, what: str, stall: float, **kwargs: object,
+) -> object:
+    """:func:`run_detached_within_stall_bound` (``report_progress=True``) for
+    blocking code already off the event loop (a job's worker thread).
+
+    *func* runs on a throwaway daemon thread with a ``progress=<Progress>``
+    keyword it reports every step to; the clock restarts on each report. After
+    *stall* seconds with no report the thread is abandoned (told to stop at its
+    next report) and :class:`Stalled` is raised. A call that finished just as
+    the bound ran out is answered. Its own exceptions propagate as themselves.
+    """
+    progress = Progress()
+    box: dict = {}
+    done = threading.Event()
+
+    def _worker() -> None:
+        try:
+            box["value"] = func(*args, progress=progress, **kwargs)
+        except Exception as exc:
+            # Relayed to the caller, who raises it as itself.
+            _probe_logger.debug("Stall-bounded call failed", exc_info=True)
+            box["error"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(target=_worker, daemon=True, name="fs-walk").start()
+    try:
+        while not done.is_set():
+            at, where = progress.snapshot()
+            remaining = at + stall - time.monotonic()
+            if remaining > 0:
+                done.wait(remaining)
+            elif not done.is_set():
+                raise Stalled(what, where, stall)
+    finally:
+        progress.abandon()
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
 def _open_for_verify(path: str) -> int:
     """Size *path*, then open it for reading as its verifier will. Blocking:
     run detached (:func:`_probe_for_verify`). ``O_NONBLOCK`` changes nothing

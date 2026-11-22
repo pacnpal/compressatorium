@@ -1526,6 +1526,26 @@ tracks keep their names). A game row's Delete goes through the batch, whole.
 The next companion type only has to answer through the registry hook to be
 covered by all of them.
 
+**Through links (#555).** A sheet or playlist names files in its folder and
+below, and a link inside the Volume reaches another folder from there. So
+`owners_naming` reads every folder that reaches the file, not just the file's
+own folder and its parents. `image_sets.volume_links(volume)` lists each link
+with its real target, and `_reaching_folders` takes the folder of every link
+whose target is the file or holds it (or holds a folder already found). Each
+of those folders and its parents is read for sheets and playlists, and each
+one's own files for sets. Matching stays by file identity (`_is_track`), so any
+spelling through any link counts. The walk fails closed: a folder it can't
+list, or a link to a folder outside the Volume (which may lead back in, and is
+never walked), makes ownership unknown and the file is kept. The routes walk
+each Volume once per request, stall-bounded (`files.volume_links_of`), and
+`build_delete_plan` once per plan, stall-bounded too from its worker thread
+(`subprocess_runner.run_blocking_within_stall_bound`). The walk reports every
+entry as it is read, so a big folder that keeps answering is never cut off. A
+walk that stalls leaves the owners unknown and the file kept: in a batch, only
+that Volume's files are kept, and the other Volumes' files still go. Link
+targets are compared with case folded (`_under`, as `_is_track` folds), which
+can only add a folder to read.
+
 **Every RAR header read is bounded and detached.** `archive_members` reads a
 RAR header in one way only, `_bounded_header_read`: the listing
 (`read_archive_members`), a later volume's flag (`later_volume_of`), a set's
