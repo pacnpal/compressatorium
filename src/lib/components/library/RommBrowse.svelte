@@ -32,6 +32,7 @@
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+  import { rommProblem } from '$lib/util/rommState.js';
 
   let dragStartRight = 0;
 
@@ -267,7 +268,7 @@
   {:else if !romm.connected}
     <div class="notice error">
       <TriangleAlert size={16} />
-      <span>Couldn't reach RomM.{status?.error ? ` ${String(status.error).replace(/^[^:]*:\s*/, '')}` : ''}</span>
+      <span>{rommProblem(status)}</span>
       <Button size="sm" variant="secondary" onclick={() => romm.loadStatus()}>Try again</Button>
       <Button size="sm" variant="ghost" onclick={() => ui.navigate('libraries', { id: 'romm', tab: 'connection' })}>
         Check the connection

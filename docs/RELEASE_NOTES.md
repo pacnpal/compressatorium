@@ -430,6 +430,12 @@
 - muOS is no longer listed as reading `gamelist.xml`. It keeps its artwork in
   its own catalogue (`MUOS/info/catalogue`), by game name.
 
+- **RomM that isn't answering says so** (#566). With RomM set up but
+  unreachable, the RomM page's header said **Connected to …**; it now says
+  **Not answering at …**, as the Libraries card and Settings do. Browse shows
+  the reason once and whole: it read *Couldn't reach RomM. Could not reach
+  RomM. …*, and for a 404 cut the reason at its first colon, leaving only
+  *it's the address you open RomM at.*
 - **Sync MAMERedump no longer deletes your other DATs** (#525). It used to
   delete every DAT in the store after a successful sync, including No-Intro
   packs and Redump DATs you had imported or synced. It now replaces only the
