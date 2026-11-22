@@ -399,6 +399,11 @@
   the server, so a change saved meanwhile from another tab is kept
   (#545 follow-up).
 
+- **A watch folder's toast names the game** (#565). The live toast for a
+  watch folder's copy, a check run, find duplicates or a rename to DAT names
+  was titled with the job's id (`5d7c1691`), since those jobs have no file of
+  their own. It now names them the way their row in Activity does
+  (`shadow-colossus.iso`, *Find duplicates in Main Library*).
 - **Quick wins, contrast and plain details** (#521).
   - The RomM page's hints point to its own Settings tab, with a **Connect
     RomM** button, instead of a "Settings → Metadata" page that doesn't exist.
