@@ -106,7 +106,37 @@ class Event:
 
 
 class NotificationError(Exception):
-    """A user-facing reason a destination could not be saved or reached."""
+    """A user-facing reason a destination could not be saved or reached.
+
+    Whatever shows or logs one for a destination asks for :meth:`redacted`,
+    since its text can quote the destination's URL. Raised as
+    ``NotificationError(text)`` (a transport someone else wrote), the whole
+    text is redacted. This module raises through :meth:`said` instead: its
+    template is the module's own wording and is never redacted, so a URL whose
+    path is ``/webhook`` leaves "Could not reach the webhook" readable (#567),
+    and only the parts filled into it (an OS reason, a server header), which
+    came from elsewhere, are.
+    """
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self._template: str | None = None
+        self._parts: dict[str, Any] = {}
+
+    @classmethod
+    def said(cls, template: str, /, **parts: Any) -> NotificationError:
+        """This module's own message: *template* with *parts* filled in."""
+        err = cls(template.format(**parts))
+        err._template, err._parts = template, parts
+        return err
+
+    def redacted(self, url: str | None) -> str:
+        """The text with every piece of *url* that came from elsewhere removed."""
+        if self._template is None:
+            return _redact(str(self), url)
+        return self._template.format(
+            **{key: _redact(str(value), url) for key, value in self._parts.items()},
+        )
 
 
 # ----------------------------------------------------------------------
@@ -118,16 +148,16 @@ def _check_http_url(url: str) -> None:
     # Whitespace and control characters make http.client raise InvalidURL, whose
     # message echoes the path and query (the token).
     if any(c.isspace() or ord(c) < 32 for c in url):
-        raise NotificationError("The URL must not contain spaces or control characters")
+        raise NotificationError.said("The URL must not contain spaces or control characters")
     try:
         parts = urlparse.urlsplit(url)
         port = parts.port  # raises ValueError when out of range
     except ValueError:
-        raise NotificationError("That is not a valid URL") from None
+        raise NotificationError.said("That is not a valid URL") from None
     if port == 0:
-        raise NotificationError("That is not a valid URL")
+        raise NotificationError.said("That is not a valid URL")
     if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise NotificationError("A webhook URL must start with http:// or https://")
+        raise NotificationError.said("A webhook URL must start with http:// or https://")
 
 
 def _abort(conn: http.client.HTTPConnection) -> None:
@@ -256,19 +286,25 @@ def _post_json(url: str, body: dict, secret: str | None = None) -> None:
         response.close()
     except (OSError, http.client.HTTPException) as exc:
         if expired.is_set():
-            raise NotificationError("The webhook did not finish in time") from None
+            raise NotificationError.said("The webhook did not finish in time") from None
         # str(exc) can echo the URL; the reason alone is safe.
         reason = getattr(exc, "strerror", None) or type(exc).__name__
-        raise NotificationError(f"Could not reach the webhook: {reason}") from None
+        raise NotificationError.said(
+            "Could not reach the webhook: {reason}", reason=reason,
+        ) from None
     finally:
         timer.cancel()
         conn.close()
     if status == 429:
         # Never retried here: the next event is the retry.
-        wait = f", retry after {retry_after[:20]} s" if retry_after else ""
-        raise NotificationError(f"The webhook is rate limiting this destination (HTTP 429{wait})")
+        if retry_after:
+            raise NotificationError.said(
+                "The webhook is rate limiting this destination (HTTP 429, retry after"
+                " {wait} s)", wait=retry_after[:20],
+            )
+        raise NotificationError.said("The webhook is rate limiting this destination (HTTP 429)")
     if status >= 300:
-        raise NotificationError(f"The webhook answered HTTP {status}")
+        raise NotificationError.said("The webhook answered HTTP {status}", status=status)
 
 
 def apprise_available() -> bool:
@@ -279,10 +315,10 @@ def _send_apprise(url: str, event: Event) -> None:
     try:
         import apprise  # lazy: the webhook path never needs it
     except ImportError:
-        raise NotificationError(_APPRISE_MISSING) from None
+        raise NotificationError.said(_APPRISE_MISSING) from None
     notifier = apprise.Apprise()
     if not notifier.add(url):
-        raise NotificationError("Apprise does not recognise that URL")
+        raise NotificationError.said("Apprise does not recognise that URL")
     # Apprise reports why a send failed only through its log; capture the last
     # warning so Test can say "error=401" or "connection error", not just "failed".
     for service in notifier:  # cap each plugin's own per-operation waits (not an overall deadline)
@@ -294,10 +330,11 @@ def _send_apprise(url: str, event: Event) -> None:
         captured = capture.getvalue()
     if not delivered:
         reason = _apprise_reason(captured, url)
-        raise NotificationError(
-            f"Apprise could not deliver the message: {reason}" if reason
-            else "Apprise could not deliver the message",
-        )
+        if reason:
+            raise NotificationError.said(
+                "Apprise could not deliver the message: {reason}", reason=reason,
+            )
+        raise NotificationError.said("Apprise could not deliver the message")
 
 
 def _apprise_reason(captured: str, url: str) -> str:
@@ -315,14 +352,14 @@ _APPRISE_MISSING = (
 def _check_https_url(url: str) -> None:
     _check_http_url(url)
     if urlparse.urlsplit(url).scheme != "https":
-        raise NotificationError("A Discord webhook URL must start with https://")
+        raise NotificationError.said("A Discord webhook URL must start with https://")
 
 
 def _check_apprise_url(url: str) -> None:
     if not apprise_available():
-        raise NotificationError(_APPRISE_MISSING)
+        raise NotificationError.said(_APPRISE_MISSING)
     if "://" not in url:
-        raise NotificationError("An Apprise URL looks like discord://id/token")
+        raise NotificationError.said("An Apprise URL looks like discord://id/token")
 
 
 def _host_hint(url: str) -> str:
@@ -391,7 +428,7 @@ async def _send_one(
     """
     if slot is not None:
         if slot in _in_flight:
-            raise NotificationError("The previous send to this destination is still running")
+            raise NotificationError.said("The previous send to this destination is still running")
         _in_flight.add(slot)
 
     def run() -> None:
@@ -407,16 +444,16 @@ async def _send_one(
     except ProbeCapacityExceeded:
         if slot is not None:
             _in_flight.discard(slot)  # the thread never started
-        raise NotificationError("Too many sends are stuck; try again later") from None
+        raise NotificationError.said("Too many sends are stuck; try again later") from None
     except asyncio.TimeoutError:
-        raise NotificationError(f"Timed out after {SEND_TIMEOUT_S:g}s") from None
+        raise NotificationError.said("Timed out after {limit:g}s", limit=SEND_TIMEOUT_S) from None
     except NotificationError:
         raise
     except Exception as exc:
         # Whatever a transport raised, callers only ever see a NotificationError:
         # the type name, never the text (it can echo the destination URL). The
         # original rides along as __cause__ only; nothing logs a traceback of it.
-        raise NotificationError(f"The send failed ({type(exc).__name__})") from exc
+        raise NotificationError.said("The send failed ({kind})", kind=type(exc).__name__) from exc
 
 
 # ----------------------------------------------------------------------
@@ -476,7 +513,7 @@ def public_view(dest: dict) -> dict:
 def _clean_events(events: list[str]) -> list[str]:
     unknown = [e for e in events if e not in _EVENTS]
     if unknown:
-        raise NotificationError(f"Unknown event: {unknown[0][:40]}")
+        raise NotificationError.said("Unknown event: {event}", event=unknown[0][:40])
     return list(dict.fromkeys(events))
 
 
@@ -484,19 +521,21 @@ def _clean_secret(kind: str, secret: str) -> str:
     """*secret* stripped, or NotificationError: only a signing kind takes one."""
     secret = secret.strip()
     if secret and not _KINDS[kind].signs:
-        raise NotificationError("Only a generic webhook can have a signing secret")
+        raise NotificationError.said("Only a generic webhook can have a signing secret")
     if len(secret) > MAX_SECRET_LEN:
-        raise NotificationError(f"The signing secret is longer than {MAX_SECRET_LEN} characters")
+        raise NotificationError.said(
+            "The signing secret is longer than {limit} characters", limit=MAX_SECRET_LEN,
+        )
     return secret
 
 
 def validate(kind: str, url: str) -> str:
     """Return the cleaned URL or raise NotificationError."""
     if kind not in KINDS:
-        raise NotificationError("Unknown destination type")
+        raise NotificationError.said("Unknown destination type")
     url = (url or "").strip()
     if not url or len(url) > MAX_URL_LEN:
-        raise NotificationError("Enter a URL")
+        raise NotificationError.said("Enter a URL")
     _KINDS[kind].check(url)
     return url
 
@@ -525,7 +564,7 @@ async def add_destination(
     async with _store_lock:
         dests = await _load()
         if len(dests) >= MAX_DESTINATIONS:
-            raise NotificationError(f"At most {MAX_DESTINATIONS} destinations")
+            raise NotificationError.said("At most {limit} destinations", limit=MAX_DESTINATIONS)
         await _save(dests + [dest])
     return public_view(dest)
 
@@ -583,7 +622,7 @@ async def test_destination(
         secret = _clean_secret(kind, secret or "")
         await _send_one(kind, url, event, secret=secret)
     except NotificationError as exc:
-        return {"ok": False, "error": _redact(str(exc), url)}
+        return {"ok": False, "error": exc.redacted(url)}
     return {"ok": True, "error": None}
 
 
@@ -691,7 +730,7 @@ def _log_failure(dest: dict, event: Event, exc: Exception) -> None:
     # Not exc_info and not str(exc) of a foreign exception: both can carry the
     # URL. Our own NotificationError texts are redacted too.
     reason = (
-        _redact(str(exc), dest["url"]) if isinstance(exc, NotificationError)
+        exc.redacted(dest["url"]) if isinstance(exc, NotificationError)
         else type(exc).__name__
     )
     logger.warning(
