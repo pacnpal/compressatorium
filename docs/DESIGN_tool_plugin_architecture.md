@@ -10487,11 +10487,20 @@ Redump sync (`POST /dat/redump/sync`) and the CLI (`dat import`, `dat sync`):
   and `dat sync` reads RomM's saved settings (`romm_settings.load`) before it
   asks which consoles are present (PR #527).
 - `sync_redump` maps Platform slugs (`REDUMP_SYSTEMS`) to Redump's systems,
-  asks `https://redump.org/datfile/<system>/` through `http.client` on the
-  fixed host (`HTTPSConnection` with `ssl.create_default_context()`, so the
-  certificate and host name are checked; never plain HTTP, whose answer could
-  be swapped on the way into the DAT index, Codex on PR #527; no redirect
-  followed, generic `USER_AGENT`), one system at a time with
+  asks `redump.org/datfile/<system>/` through `http.client` on the fixed host
+  (`_connect_redump`). Verified HTTPS comes first (`HTTPSConnection` with
+  `ssl.create_default_context()`, so the certificate and host name are
+  checked). redump.org serves no HTTPS, so when that connection can't be made
+  at all (refused, unreachable, timed out) the same path is asked over plain
+  `HTTPConnection`: the owner's choice (#556), superseding the HTTPS-only rule
+  from Codex on PR #527. A certificate or host-name failure (`ssl.SSLError`,
+  `ssl.CertificateError`) never falls back; nor does a connection that drops
+  after it was made. Both transports send the same headers, follow no
+  redirect, use the generic `USER_AGENT`, and are held to the same
+  `save_capped`/`MAX_ZIP_SIZE` cap; the zip then goes through every archive
+  and DAT check below unchanged. `redump_url(system, scheme)` names the URL
+  actually used, and a failure says which transports were tried. Plain HTTP
+  is allowed for redump.org only. One system at a time with
   `REQUEST_GAP_SECONDS` between requests, at most one sync at once. The cache
   (preference `redump_sync`) skips a system synced within `FRESH_FOR` whose
   DATs are still installed, sends `If-None-Match`/`If-Modified-Since` when it
