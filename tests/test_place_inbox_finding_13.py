@@ -321,3 +321,56 @@ async def test_a_track_another_sheet_now_names_is_not_moved(vol, db):
     assert "B.cue" in caught.value.message
     assert a_cue.exists() and shared.exists() and b_cue.exists()
     assert not (vol / "Downloads" / "psx").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_slow_move_keeps_its_locks_until_it_ends(vol, db, monkeypatch):
+    """Codex 4658979972: a move that outlasts its bound may still land, so the
+    exclusive locks stay held, and its outcome stays owned, until the worker
+    has actually finished (intake's `_owned`, as `_move_to_processed` runs).
+    Let go at the bound, a conversion could take input locks on files the
+    worker is still moving."""
+    import threading
+
+    from services.lock_manager import lock_manager
+
+    box = _watch_folder(vol)
+    cue = _drop(vol / "Downloads" / "Game.cue", CUE.encode())
+    _drop(vol / "Downloads" / "Game.bin", b"\0" * 2352 * 4)
+    row = await _problem(box)
+
+    real = intake._place_blocking
+    entered, release = threading.Event(), threading.Event()
+
+    def slow(*args):
+        entered.set()
+        release.wait(10)
+        return real(*args)
+
+    monkeypatch.setattr(intake, "_place_blocking", slow)
+    # The bound a step or a move gets, cut short so the move outlasts it.
+    monkeypatch.setattr(intake, "_STEP_SECONDS", 0.5)
+    monkeypatch.setattr(intake, "_MOVE_SECONDS", 0.5)
+    task = asyncio.create_task(_place(row, "psx"))
+    for _ in range(100):
+        if entered.is_set():
+            break
+        await asyncio.sleep(0.02)
+    assert entered.is_set()
+    await asyncio.sleep(1.0)  # well past the bound; the worker is still going
+
+    try:
+        assert not task.done()
+        # Still exclusively locked: a reader can't take the file it would move.
+        taken = lock_manager.acquire_input_lock(str(cue.resolve()))
+        if taken:
+            lock_manager.release_input_lock(str(cue.resolve()))
+        assert not taken
+    finally:
+        release.set()
+    placed = await task
+
+    assert placed["path"] == str((vol / "Downloads" / "psx" / "Game.cue").resolve())
+    # Let go once the worker ended.
+    assert lock_manager.acquire_input_lock(str(cue.resolve()))
+    lock_manager.release_input_lock(str(cue.resolve()))

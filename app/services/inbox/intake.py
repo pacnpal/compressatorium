@@ -3127,6 +3127,8 @@ async def place(row: dict[str, Any], platform: str, *, now: float | None = None)
         raise PlaceRefused(409, f"{exc.strerror}: rename one of them first") from None
     except asyncio.TimeoutError:
         raise PlaceRefused(504, "The watch folder didn't answer in time") from None
+    except MutationNotStarted:
+        raise PlaceRefused(503, "No worker was free to move it: try again") from None
     except _SourceChanged:
         raise PlaceRefused(409, "It changed while it was being placed: try again") from None
     except OSError as exc:
@@ -3159,7 +3161,13 @@ async def _place_locked(
             409, f"{os.path.basename(refused)} is in use by a job: try again once it ends",
         )
     try:
-        return await _step(_place_blocking, inbox, path, files, slug)
+        # Owned (`_owned`), as `_move_to_processed` is: a move past its bound
+        # may still land, so the locks stay held and its outcome is waited
+        # for until the worker has actually finished (Codex 4658979972).
+        return await _owned(
+            _place_blocking, inbox, path, files, slug,
+            timeout=_MOVE_SECONDS, what=f"placing {os.path.basename(path)}",
+        )
     finally:
         try:
             await _step(_release_locks, files)

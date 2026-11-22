@@ -8567,7 +8567,9 @@ under the lock manager's exclusive locks on every file (`_place_locked`, the
 go on every outcome. Under those locks the watch folder's ownership holds are
 read again as a poll applies them (`_ownership_problem`: `_sharing` and
 `_behind_unreadable_sheets` over the folder as it is now), so a sheet dropped
-after the Finding that names the same track makes it a 409 and nothing moves. Refused, with nothing moved: a path outside the Inbox (or
+after the Finding that names the same track makes it a 409 and nothing moves. The move runs owned
+(`_owned`, `_MOVE_SECONDS`), as `_move_to_processed` does: one past its bound may still
+land, so the locks stay held and its outcome is waited for until the worker ends. Refused, with nothing moved: a path outside the Inbox (or
 in `processed/`) or not confirmed inside a Volume (403), a folder Image or a
 sheet intake wouldn't take as it is (400), files in more than one folder, a
 file in use by a job, or a name already taken in the console folder (409,
