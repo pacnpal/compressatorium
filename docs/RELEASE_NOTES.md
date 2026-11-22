@@ -84,6 +84,15 @@
 
 ### Changed
 
+- **The web UI reads its formats from the server** (#539). `GET /api/tools`
+  now also lists every tool's extensions and every mode's settings, and the
+  UI builds its list of converters from it at start, so it can never offer a
+  format or option the server would refuse. The views show a short "Loading
+  the tools" spinner until it arrives.
+- **One File info route for every tool** (#539): `GET /api/info/{tool}?path=`.
+  The old addresses (`/api/info`, `/api/dolphin-info`, `/api/nsz-info`, …)
+  still work. A file a tool doesn't describe is answered "Not a file … describes
+  (…)", naming the extensions it takes.
 - **One page per Library** (#541). **Libraries** lists every Library as a
   card with its consoles, games, whether it converts on its own, its watch
   folders and how many problems need you. A Library's page has **Browse** (its

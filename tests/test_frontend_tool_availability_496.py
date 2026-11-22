@@ -115,13 +115,17 @@ def test_the_convert_to_choices_leave_out_a_tool_that_cannot_run():
     assert "convertTargets({" in panel and "ready," in panel
 
 
-def test_the_consumers_read_the_store_and_a_failed_fetch_marks_it_known():
+def test_the_consumers_read_the_store_and_a_failed_fetch_is_retried():
     for rel in ("components/panels/ConvertPanel.svelte", "components/settings/Converters.svelte"):
         text = (_SRC / "lib" / rel).read_text(encoding="utf-8")
         assert "ui.visibleTools" in text or "ui.toolsKnown" in text, rel
         assert "hiddenTools" not in text, rel
+    # The registry itself comes from /api/tools (#539), so a failed fetch is
+    # retried rather than shown as "every tool": with no payload there is none.
     app = (_SRC / "App.svelte").read_text(encoding="utf-8")
-    assert "applyToolAvailability(null)" in app
+    assert "registry.load(t)" in app
+    assert "ui.applyToolAvailability(t?.available, t?.reasons)" in app
+    assert "setTimeout(() => loadTools(" in app
 
 
 def test_an_unavailable_tool_is_listed_with_its_reason(tmp_path):

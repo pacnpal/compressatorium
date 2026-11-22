@@ -6,7 +6,7 @@ equals a ``ConversionMode`` value (the validated wire type in ``models.py``).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 
 # ``InputKind`` lives in ``models`` so ``ConversionJob`` can type its field
@@ -165,6 +165,19 @@ class ModeSpec:
     # be run by hand (the eXoDOS repack writes a second, playable copy of every
     # game beside its Source, which a Rule over a RomM folder would multiply).
     automatable: bool = True
+    # Why this mode refuses a compression a request names, in the user's
+    # words, for a mode that takes none and says so (chdman's extract modes,
+    # Dolphin's ISO and GCZ). Empty: a mode without a codec choice ignores one
+    # (a chain drops a stale preset). Read by the routes' compression check.
+    no_compression_reason: str = ""
+    # The tool takes one codec at a time (dolphin-tool's RVZ and WIA), so a
+    # comma-separated list is refused rather than passed on.
+    single_codec: bool = False
+    # The ``SkipReason`` value a file this mode's ``input_extensions`` don't
+    # match is skipped with, for a tool outside the routes' per-tool extension
+    # gate: chdman's extract and copy read only a ``.chd``. Empty leaves it to
+    # that gate.
+    bad_input_skip: str = ""
 
     def level_range(self, codec: str) -> tuple[int, int, int] | None:
         """``(min, max, default)`` level for *codec*, or None when it takes none."""
@@ -179,6 +192,36 @@ class ModeSpec:
         without them (nsz) answers False, and the tool's own range applies.
         """
         return _takes_no_level(self, codec)
+
+    def as_json(self) -> dict:
+        """Every field as JSON, for ``GET /api/tools`` (:func:`spec_json`)."""
+        return spec_json(self)
+
+
+def spec_json(spec: ModeSpec | ChainSpec) -> dict:
+    """A spec's every dataclass field, JSON-shaped, so no field list is kept
+    by hand: frozensets become sorted lists, enums their value, a chain's
+    steps dicts, and ``codec_levels`` a list of ``{codec, min, max, default}``.
+    The frontend registry is built from this (``GET /api/tools``), so a new
+    field reaches the UI without a mirror to update."""
+    return {f.name: _json_value(f.name, getattr(spec, f.name)) for f in fields(spec)}
+
+
+def _json_value(name: str, value):
+    if name == "codec_levels":
+        return [
+            {"codec": codec, "min": low, "max": high, "default": default}
+            for codec, low, high, default in value
+        ]
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, frozenset):
+        return sorted(_json_value(name, v) for v in value)
+    if isinstance(value, (tuple, list)):
+        return [_json_value(name, v) for v in value]
+    if is_dataclass(value):
+        return {f.name: _json_value(f.name, getattr(value, f.name)) for f in fields(value)}
+    return value
 
 
 def _takes_no_level(spec: ModeSpec | ChainSpec, codec: str | None) -> bool:
@@ -234,6 +277,8 @@ class ChainSpec:
     codecs: frozenset[str] = frozenset()
     default_compression: str | None = None
     codec_levels: tuple[tuple[str, int, int, int], ...] = ()
+    implicit_codecs: tuple[str, ...] = ()
+    implicit_codecs_unknown: bool = False
     # Structural parity with ModeSpec: each step's own mode names its block size.
     block_size: int | None = None
     block_size_rule: tuple[int, int | None] | None = None
@@ -269,6 +314,11 @@ class ChainSpec:
     auto_platform_slugs: frozenset[str] = frozenset()
     # Structural parity with ModeSpec.automatable.
     automatable: bool = True
+    # Structural parity with ModeSpec.no_compression_reason / single_codec /
+    # bad_input_skip; a chain's input gate is the per-tool one.
+    no_compression_reason: str = ""
+    single_codec: bool = False
+    bad_input_skip: str = ""
 
     def level_range(self, codec: str) -> tuple[int, int, int] | None:
         """Structural parity with :meth:`ModeSpec.level_range`."""
@@ -277,3 +327,7 @@ class ChainSpec:
     def takes_no_level(self, codec: str | None) -> bool:
         """Structural parity with :meth:`ModeSpec.takes_no_level`."""
         return _takes_no_level(self, codec)
+
+    def as_json(self) -> dict:
+        """Structural parity with :meth:`ModeSpec.as_json`."""
+        return spec_json(self)
