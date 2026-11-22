@@ -11,6 +11,7 @@
   import { registry } from '$lib/tools/registry.js';
   import { verification } from '$lib/stores/verification.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
+  import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { libraries } from '$lib/stores/libraries.svelte.js';
   import { findings } from '$lib/stores/findings.svelte.js';
   import { toast } from 'svelte-sonner';
@@ -187,6 +188,12 @@
   }
 
   function handleDelete() {
+    // A game with files folded under it is deleted whole, through the batch's
+    // ownership check; one file alone goes through the single delete.
+    if (entry?.parts?.length) {
+      ui.bulkDeleteEntries = fileBrowser.filesOfRow(entry);
+      return;
+    }
     ui.deleteTarget = entry;
   }
 </script>

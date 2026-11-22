@@ -1,54 +1,24 @@
-// Conversion config store, selected tool, mode, compression, output dir,
-// delete-on-verify, duplicate-check / delete-plan results. Drives the
-// ConversionConfig panel and the submission path into JobsStore.
+// The Convert panel's store. Auto is the only way to convert: the panel sends
+// the selected games and its "Convert to" (`target`: '' for each game's best
+// format, a format such as `.chd`, or a mode id) to `/api/jobs/auto-plan`,
+// shows the plan, and queues it through `/api/jobs/auto` with the safety
+// choices. One queue path, so the RomM metadata snapshot, the plan the user
+// saw and what is queued always agree.
 
 import { toast } from 'svelte-sonner';
 import { api } from '$lib/api/endpoints.js';
-import { registry, DEFAULT_COMPRESSION_LEVEL_RANGE } from '$lib/tools/registry.js';
-import { clampLevel, fitLevel } from '$lib/tools/levels.js';
-import {
-  STORAGE_KEYS, readBool, readString, writeBool, writeString,
-} from '$lib/util/localStorage.js';
+import { registry } from '$lib/tools/registry.js';
+import { formatCompression, parseCompression } from '$lib/tools/compression.js';
+import { specsForTarget } from '$lib/tools/convertTargets.js';
+import { hashFor } from '$lib/router/routes.js';
 import { jobs } from './jobs.svelte.js';
 import { deleteCheckFor } from '$lib/util/deleteCheck.js';
 
-function loadPrimaryTool() {
-  const raw = readString(STORAGE_KEYS.PRIMARY_TOOL, 'chdman') ?? 'chdman';
-  return registry.forTool(raw) ? raw : 'chdman';
-}
-
-// Each tool declares its own `defaultMode` in the registry descriptor.
-// chdman picks `createcd` (legacy/backend default for cue/bin/ISO), dolphin
-// picks rvz, z3ds picks compress. No tool-specific branching here.
-function defaultModeFor(toolId) {
-  return registry.defaultMode(toolId) ?? 'createcd';
-}
-
-// Per-tool default compression seed. chdman accepts a comma-separated codec
-// list (zlib is the historical default); Dolphin RVZ/WIA codecs are a
-// disjoint set (`dolphin-tool -c [none|zstd|bzip|lzma|lzma2]`), so a chdman
-// codec like 'zlib' would be rejected by the dolphin binary if the user
-// submitted a Dolphin job without first opening the codec picker. Seed with
-// a tool-appropriate default so the first submission always works.
-function defaultCompressionFor(toolId) {
-  // The per-tool default codec seed now lives on each registry descriptor
-  // (`defaultCompression`), so this is a lookup instead of an
-  // `if (toolId === ...)` ladder. Each tool's rationale (Dolphin zstd, Switch
-  // 'solid', CSO/romz 'max' effort preset) is documented inline in registry.js.
-  return registry.forTool(toolId)?.defaultCompression ?? ['zlib'];
-}
-
-// The slider level a tool boots / resets to: its registry range default, or the
-// shared fallback for tools that declare no range (they hide the slider). Used
-// at construction so the very first submit after a reload — before the async
-// `loadServerPrefs()` resolves — already matches the selected tool's default
-// (e.g. Switch's 18, not Dolphin's 19).
-function defaultLevelFor(toolId) {
-  const range = registry.forTool(toolId)?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE;
-  return String(range.default ?? DEFAULT_COMPRESSION_LEVEL_RANGE.default);
-}
-
 const PREF_SAVE_DEBOUNCE_MS = 500;
+// How long the selection or Convert to must hold still before it is planned.
+const PLAN_DEBOUNCE_MS = 400;
+// Above this many games the plan is fetched only when Convert is pressed.
+export const PLAN_LIVE_LIMIT = 500;
 const isBrowser = typeof window !== 'undefined';
 
 // What `untilAborted` settles with when the signal wins.
@@ -85,6 +55,14 @@ function untilAborted(promise, signal) {
 // How many skipped files a submit toast names before it counts the rest.
 const SKIP_REASONS_SHOWN = 3;
 
+function baseName(path) {
+  return String(path ?? '').split('::').pop().split(/[\\/]/).pop();
+}
+
+function games(n) {
+  return n === 1 ? 'game' : 'games';
+}
+
 /**
  * The toast description for a batch's skipped files (#504): the first few as
  * "name: reason", then how many more. Null when the backend reported none.
@@ -93,7 +71,7 @@ const SKIP_REASONS_SHOWN = 3;
 function skipReasons(skipped) {
   if (!Array.isArray(skipped) || skipped.length === 0) return null;
   const lines = skipped.slice(0, SKIP_REASONS_SHOWN).map((skip) => {
-    const name = String(skip?.path ?? '').split(/[\\/]/).pop();
+    const name = baseName(skip?.path);
     return name ? `${name}: ${skip?.reason ?? 'skipped'}` : (skip?.reason ?? 'skipped');
   });
   const rest = skipped.length - SKIP_REASONS_SHOWN;
@@ -101,38 +79,47 @@ function skipReasons(skipped) {
   return lines.join('; ');
 }
 
-const INITIAL_TOOL = loadPrimaryTool();
+// One toast for a submit: what started converting, and what was left out.
+function convertedToast(created, requested, skipped) {
+  const view = {
+    label: 'View',
+    onClick: () => { if (isBrowser) window.location.hash = hashFor('activity', { tab: 'running' }); },
+  };
+  const left = Array.isArray(skipped) && skipped.length ? skipped : null;
+  if (created === 0) {
+    toast.warning(`Nothing converted: all ${requested} skipped`, {
+      description: skipReasons(left) ?? undefined, duration: 10000,
+    });
+  } else if (left) {
+    toast.success(`Converting ${created}. ${left.length} skipped: ${left[0].reason ?? 'skipped'}`, {
+      description: left.length > 1 ? skipReasons(left) : undefined, duration: 10000, action: view,
+    });
+  } else {
+    toast.success(`Converting ${created} ${games(created)}`, { action: view });
+  }
+}
+
+// The checks a delete can rest on, weakest first.
+const CHECK_STRENGTH = ['intact', 'recognized', 'round_tripped'];
 
 class ConversionStore {
-  primaryTool = $state(INITIAL_TOOL);
-  // Mode must initialize from the persisted tool, defaulting to a chdman
-  // mode (createcd) when the persisted tool is dolphin/z3ds would submit
-  // wrong duplicate checks and compression flags before setPrimaryTool runs.
-  mode = $state(defaultModeFor(INITIAL_TOOL));
-  compressionSelection = $state(defaultCompressionFor(INITIAL_TOOL));
-  compressionLevel = $state(defaultLevelFor(INITIAL_TOOL));
+  // "Convert to": '' (each game's best format), a format (`.chd`) or a mode id.
+  // Session-only: the panel resets it when the selection is cleared.
+  target = $state('');
+  // Where the new files go: '' writes each next to its original.
   outputDir = $state('');
-  deleteOnVerify = $state(false);
-  // The named opt-out from the Round-trip check: delete on the container
-  // check alone. Only meaningful with deleteOnVerify on a round-trip mode.
-  containerOnly = $state(false);
   split = $state(false);
-  customFilterMode = $state(false);
-  // Auto: the backend works out each selected Image's Platform and sends it to
-  // that Platform's default target with the saved compression, instead of the
-  // mode picked here. The plan it returns is shown before anything is queued.
-  #auto = $state(readBool(STORAGE_KEYS.AUTO_CONVERT, false));
-  autoPlan = $state(null);
+  // The safety choices, seeded once a session from Settings → Defaults
+  // (`seedSafety`): `{ checkAfter, deleteOriginal, quickCheck }`.
+  safety = $state(null);
+  // Path -> the console the user picked for it this session (Pick console).
+  overrides = $state({});
 
-  get auto() {
-    return this.#auto;
-  }
-
-  set auto(on) {
-    this.#auto = !!on;
-    writeBool(STORAGE_KEYS.AUTO_CONVERT, this.#auto);
-    this.autoPlan = null;
-  }
+  // The plan for the current selection, and for what (`planKey`).
+  plan = $state(null);
+  planKey = $state(null);
+  planning = $state(false);
+  planError = $state(null);
 
   // How many re-pin rows the last submit recorded, for the caller to surface.
   lastRepinRecorded = $state(0);
@@ -142,14 +129,15 @@ class ConversionStore {
   // row without changing the total. Null when nothing was planned.
   lastRepinPending = $state(null);
 
-  duplicateCheck = $state(null);
   deletePlan = $state(null);
   converting = $state(false);
 
-  // Server-saved per-tool compression defaults ({ [toolId]: "<wire value>" }).
-  // Loaded once on boot; updated and PUT (debounced) whenever the user changes
-  // compression, so the choice follows them across sessions and browsers.
-  #compressionPrefs = {};
+  // Server-saved per-tool compression ({ [toolId]: "<wire value>" }), loaded
+  // once on boot and PUT (debounced) on every change. The plan uses it, so a
+  // change bumps `prefsVersion` and the panel plans again.
+  prefs = $state({});
+  prefsVersion = $state(0);
+  #touched = {};
   #saveTimer = null;
   // The preference PUTs, one at a time in the order asked for, so an older
   // body can never land after a newer one.
@@ -158,9 +146,6 @@ class ConversionStore {
   // Defaults shows it with Try again; the failure is also toasted, so an
   // edit made in the Convert panel never fails silently either.
   compressionSaveError = $state(null);
-  // Set once the user changes any compression control, so a late boot
-  // preference fetch can't revert an edit made while it was in flight.
-  #compressionTouched = false;
   // Bumped by every read of the remembered compression and every local
   // change to it; a read adopts its answer only if nothing came after it, so
   // a late boot read can't put old values over a newer edit (Codex 4652391157).
@@ -168,317 +153,165 @@ class ConversionStore {
   // The tools whose compression changed here and isn't on the server yet. A
   // save sends only these over the server's current copy (CodeRabbit
   // 4652269814), so it never writes back what another tab saved meanwhile.
-  #dirtyTools = new Set();
+  #dirtyTools = {};
+  // Only the newest delete-plan ask may answer; an older one, landing late or
+  // failing late, is dropped (null) instead of replacing or clearing it.
+  #deletePlanRequest = 0;
 
-  // ─── Derived ──────────────────────────────────────────────────────────
+  #planTimer = null;
+  #planAbort = null;
+  #planResolve = null;
+  #planSeq = 0;
+  // The modes the last delete plan covered, for the check it rests on.
+  #deleteModes = [];
+
+  // ─── The Convert-to value ─────────────────────────────────────────────
+  /** The mode a mode-id target names, else null (a format or Best). */
+  get mode() {
+    return this.target && !this.target.startsWith('.') && registry.specFor(this.target)
+      ? this.target : null;
+  }
+
+  /** The tool of a mode-id target, else null. */
   get currentTool() {
-    return registry.forTool(this.primaryTool);
+    return this.mode ? registry.toolForMode(this.mode) ?? null : null;
   }
 
-  get currentSpec() {
-    return registry.specFor(this.mode);
+  /** The format Convert to makes (`.chd`): the format itself, or the mode's; null for Best. */
+  get targetExt() {
+    if (this.target.startsWith('.')) return this.target;
+    return this.mode ? registry.specFor(this.mode)?.outputExt ?? null : null;
   }
 
-  /**
-   * The one codec a single-codec mode (Dolphin RVZ/WIA) sends: the first one
-   * selected, unless the current mode doesn't take it, in which case the
-   * mode's own default. The selection is kept per tool, so a codec picked for
-   * RVZ (zstd) must not reach WIA, which refuses it (#345). 'none' when
-   * nothing is selected.
-   */
-  get singleCodec() {
-    const codec = this.compressionSelection.find((c) => c && c !== 'none') ?? 'none';
-    const allowed = registry.codecsForMode(this.mode).map((c) => c.value);
-    if (allowed.length && !allowed.includes(codec)) {
-      return registry.defaultCompressionForMode(this.mode)?.[0] ?? 'none';
+  chooseTarget(value) {
+    const next = value ?? '';
+    if (next === this.target) return;
+    this.target = next;
+    if (!specsForTarget(next).some((s) => s.supportsSplit)) this.split = false;
+  }
+
+  /** Remember a console for games detection couldn't place; null forgets it. */
+  setOverride(paths, slug) {
+    const next = { ...this.overrides };
+    for (const path of paths ?? []) {
+      if (slug) next[path] = slug;
+      else delete next[path];
     }
-    return codec;
+    this.overrides = next;
   }
 
+  overridesFor(paths) {
+    const out = {};
+    for (const path of paths ?? []) {
+      if (this.overrides[path]) out[path] = this.overrides[path];
+    }
+    return out;
+  }
+
+  /** Seed the safety choices from Settings → Defaults, once a session. */
+  seedSafety(values) {
+    if (this.safety) return;
+    this.safety = {
+      checkAfter: values?.verify_after ?? true,
+      deleteOriginal: !!values?.delete_on_verify,
+      quickCheck: !!values?.container_only,
+    };
+  }
+
+  setSafety(state) {
+    this.safety = { ...state };
+  }
+
+  // ─── What a row may be offered for ────────────────────────────────────
   /**
-   * The level range `{min, max, default}` of the codec this mode sends, or
-   * null when there is no level to set (the mode takes none, or the codec
-   * takes none: Dolphin's 'none'). `registry.levelRangeFor` decides, as it
-   * does for the Rule editor. The picker's slider and number box both read
-   * it, with `compressionLevel`, and show only when it is non-null.
-   */
-  get levelRange() {
-    if (!this.supportsCompressionLevel) return null;
-    return registry.levelRangeFor(this.mode, this.singleCodec);
-  }
-
-  get supportsCompression() {
-    return !!this.currentSpec?.supportsCompression;
-  }
-
-  get supportsCompressionLevel() {
-    return !!this.currentSpec?.supportsCompressionLevel;
-  }
-
-  get supportsDeleteOnVerify() {
-    return !!this.currentSpec?.supportsDeleteOnVerify;
-  }
-
-  get supportsRoundTrip() {
-    return !!this.currentSpec?.supportsRoundTrip;
-  }
-
-  /**
-   * Whether the current mode offers the container-only opt-out: a Round-trip
-   * runs and a job may skip it (not where it is required, #476).
-   */
-  get offersContainerOnly() {
-    return this.supportsRoundTrip && !this.currentSpec?.roundTripRequired;
-  }
-
-  /** Why the current mode always keeps its Source ('' when it doesn't say). */
-  get sourceKeptReason() {
-    return this.currentSpec?.sourceKeptReason ?? '';
-  }
-
-  /** Which proof lets the current mode's Source go: 'round_trip' or 'recognized'. */
-  get deleteProof() {
-    return this.currentSpec?.deleteProof ?? 'round_trip';
-  }
-
-  /** The check a delete-source job will pass before its sources go. */
-  get deleteCheck() {
-    return deleteCheckFor({
-      supportsRoundTrip: this.supportsRoundTrip,
-      containerOnly: this.containerOnly,
-      deleteProof: this.deleteProof,
-      roundTripRequired: !!this.currentSpec?.roundTripRequired,
-    });
-  }
-
-  get supportsSplit() {
-    return !!this.currentSpec?.supportsSplit;
-  }
-
-  get allowsArchiveInput() {
-    return !!this.currentSpec?.allowsArchiveInput;
-  }
-
-  /**
-   * True when the active mode's unit of work is a directory (makeps3iso
-   * folder_to_iso), declared via the registry mode's `inputKinds`. A
-   * directory mode accepts only convertible folders, never files.
-   */
-  get isDirectoryMode() {
-    const kinds = this.currentSpec?.inputKinds;
-    return Array.isArray(kinds) && kinds.includes('directory');
-  }
-
-  /**
-   * Whether the given listing entry is a valid input for the active mode.
-   * The entry-aware companion to `allowsInput(path)`: it can see `entry.type`
-   * and the backend's `entry.convertible_by`, which a bare path can't. Used by
-   * fileBrowser for both selection gating and the convertible subset, so a
-   * directory mode only ever submits convertible folders and a file mode never
-   * submits a folder.
-   *
-   * - Directory mode: only a directory row the backend marked convertible by
-   *   THIS tool qualifies (folders the detector accepts).
-   * - File/archive mode: a directory never qualifies; otherwise fall back to
-   *   the path-based `allowsInput`.
+   * Whether a listing row may be converted. A file always may: the plan says
+   * which ones it leaves alone and why. A folder only when the backend marked
+   * it convertible by a tool with a folder mode (a PS3 disc folder). An
+   * archive container only when the Convert-to target takes the archive
+   * itself (romz's "Game from 7z/zip").
    */
   allowsInputEntry(entry) {
     if (!entry) return false;
-    // Auto decides per Image on the backend; any file can be offered, and the
-    // plan reports the ones it leaves alone. A folder qualifies when the
-    // backend marked it convertible by a tool that has a folder-input mode
-    // (`inputKinds: ['directory']`, e.g. a PS3 disc folder for folder_to_iso).
-    if (this.auto) {
-      if (entry.type === 'archive') return false;
-      if (entry.type !== 'directory') return true;
+    if (entry.type === 'directory') {
       return Array.isArray(entry.convertible_by)
         && entry.convertible_by.some((id) => (registry.forTool(id)?.modes ?? [])
           .some((m) => Array.isArray(m.inputKinds) && m.inputKinds.includes('directory')));
     }
-    if (this.isDirectoryMode) {
-      return (
-        entry.type === 'directory'
-        && Array.isArray(entry.convertible_by)
-        && entry.convertible_by.includes(this.currentTool?.id)
-      );
-    }
-    if (entry.type === 'directory') return false;
-    // NOTE: deliberately does NOT narrow by `entry.convertible_by`. That flag is
-    // a tool-level, mode-agnostic listing annotation, while this gate is
-    // mode-specific, and the two disagree by design: chdman drops `.chd` from
-    // `input_extensions` (so a finished `.chd` isn't badged as a convertible
-    // source and its `convertible_by` is empty), yet `.chd` is exactly what
-    // extract/copy take. Gating on it made every CHDMAN extract/copy row
-    // unselectable. The mode-aware rejection lives in `plan_job`, which asks the
-    // owning tool's `converts_path` — so a split Wii U dump's `game_part2.wud`
-    // can still be ticked here but is rejected on submit with a clear message,
-    // the same way the other per-file plan rejections behave. A mode-aware
-    // listing annotation would let this gate narrow correctly; that's a
-    // listing-surface change, not a selection-store one.
-    //
-    // The one exception is a `contentRefined` tool (xiso): its claim on a
-    // generic extension (`.iso`) only means anything once the backend's content
-    // probe agreed, and it has no extract/copy mode for the disagreement above
-    // to bite. Without this, every PSP/PS2/CD `.iso` would be tickable (and
-    // swept up by select-all) in Xbox mode, only to be rejected on submit.
-    // A row with no `convertible_by` at all (`null` claims) is left to the
-    // extension gate below and `plan_job`, as before.
-    if (this.currentTool?.contentRefined) {
-      const claims = registry.contentClaimsFor(entry);
-      if (claims && !claims.some((t) => t.id === this.currentTool.id)) return false;
-    }
-    return this.allowsInput(entry.path);
+    if (entry.type === 'archive') return this.allowsInput(entry.path);
+    return true;
   }
 
-  /**
-   * True when the given path is a valid input for the currently
-   * selected mode. Used by fileBrowser to gate selection so users
-   * can't queue jobs the worker would just reject, e.g. selecting a
-   * `.rvz` while in CHDMAN `createcd` mode.
-   *
-   * Paths inside archives (`archive.zip::dir/disc.cue`) are matched
-   * against their internal extension, but only when the current spec
-   * actually accepts archive input. Every convertible-source mode
-   * (CHDMAN create, Dolphin, 3DS) now sets `allowsArchiveInput: true`,
-   * so any supported file inside an archive can be converted. Only
-   * CHDMAN extract/copy (which take a finished `.chd`, not a source)
-   * keep `allowsArchiveInput: false`; submitting an archive member
-   * there just makes `plan_job()` skip it and the user ends up with
-   * zero queued jobs, so reject those up-front.
-   *
-   * When no mode is active or the spec has no `inputExtensions`
-   * declared (the registry guarantees one, but defensively), we accept
-   * anything to avoid silently blocking selection.
-   */
+  /** Whether the Convert-to target reads *path* by name (archives, members). */
   allowsInput(path) {
     if (!path) return false;
-    const isArchiveMember = path.includes('::');
-    if (isArchiveMember && !this.allowsArchiveInput) return false;
-    const exts = this.currentSpec?.inputExtensions;
-    if (!Array.isArray(exts) || exts.length === 0) return true;
-    const member = isArchiveMember ? path.split('::').pop() : path;
-    const lower = (member ?? '').toLowerCase();
-    return exts.some((ext) => lower.endsWith(ext));
-  }
-
-  /**
-   * The wire-format compression value sent to the backend.
-   *
-   * - chdman create/copy modes: comma-separated codec list (e.g. "zlib,lzma").
-   * - Dolphin RVZ/WIA: "<codec>:<level>" (e.g. "zstd:19"). The backend's
-   *   dolphin_tool service splits on `:` and passes the codec to
-   *   `dolphin-tool -c <codec> -l <level>`. Sending only the level (e.g.
-   *   "19") would be interpreted as the codec name and fail.
-   * - "none" selection: the literal string "none".
-   * - null when compression is not configurable for the current mode.
-   */
-  get compressionValue() {
-    if (!this.supportsCompression && !this.supportsCompressionLevel) return null;
-    const selection = this.compressionSelection.filter((v) => v && v !== 'none');
-    if (this.compressionSelection.includes('none') && selection.length === 0) {
-      return 'none';
+    const member = path.includes('::');
+    const name = (member ? path.split('::').pop() : path).toLowerCase();
+    const specs = specsForTarget(this.target);
+    if (specs.length === 0) {
+      if (member || !this.#isArchiveName(name)) return true;
+      // Best: an archive some mode reads whole (an eXoDOS game zip, a RAR
+      // set) is offered, so it can be ticked and its Convert to picked.
+      return registry.all().some((tool) => (tool.modes ?? [])
+        .some((spec) => (spec.inputExtensions ?? []).some((ext) => name.endsWith(ext))));
     }
-    if (this.supportsCompressionLevel) {
-      // Dolphin RVZ/WIA: one codec the mode takes, paired with the level.
-      const codec = this.singleCodec;
-      if (codec === 'none') return 'none';
-      // Normalize the level, the picker's number input lets the user
-      // clear it temporarily (browsers allow empty string). If we
-      // forwarded that we'd build "<codec>:" and the backend would
-      // reject the token. Fall back to the registered default range
-      // value when the field is empty or non-numeric, then clamp into
-      // [min, max] so out-of-range edits also stay safe.
-      // The codec's own range (lzma2 takes 1-9, zstd 1-22). A level it does
-      // not take is sent as the codec's default, never as itself.
-      return `${codec}:${fitLevel(this.levelRange, this.compressionLevel)}`;
-    }
-    // chdman's list is kept per tool, so CD codecs picked for Create CD are
-    // still selected on Create DVD, which can't use them (#471). Send only
-    // the codecs this mode takes; none left means chdman's own.
-    const taken = registry.offeredCodecs(this.mode, selection);
-    if (taken.length === 0) return null;
-    return taken.join(',');
+    return specs.some((spec) => (!member || spec.allowsArchiveInput)
+      && (spec.inputExtensions ?? []).some((ext) => name.endsWith(ext)));
   }
 
-  // ─── Setters ──────────────────────────────────────────────────────────
-  setPrimaryTool(toolId) {
-    const tool = registry.forTool(toolId);
-    if (!tool) return;
-    // No-op guard so a caller that re-asserts the current tool (App's
-    // availability fallback, a RomM platform pick) never resets the user's
-    // customized mode / compression selection.
-    if (this.primaryTool === toolId) return;
-    this.primaryTool = toolId;
-    writeString(STORAGE_KEYS.PRIMARY_TOOL, toolId);
-    // Same default-mode logic as the initial load, chdman keeps createcd
-    // as its default, others use their first registered mode.
-    this.mode = defaultModeFor(toolId);
-    // Seed compression from the saved server preference for this tool, falling
-    // back to the per-tool default.
-    this.#applyCompressionPref(toolId);
+  #isArchiveName(name) {
+    return /\.(zip|7z|rar)$/.test(name);
   }
 
-  // ─── Server-saved compression preference ────────────────────────────────
-  /** Fetch saved per-tool compression defaults and apply the current tool's. */
+  // ─── Compression, remembered per tool ─────────────────────────────────
+  /** Fetch the saved per-tool compression. Best-effort. */
   async loadServerPrefs() {
     const generation = ++this.#prefsGeneration;
     try {
       const prefs = await api.getConversionPrefs();
       if (generation !== this.#prefsGeneration) return;
       if (prefs && typeof prefs === 'object') {
-        this.#compressionPrefs = prefs;
-        // Don't clobber a selection the user made while the fetch was in flight.
-        if (!this.#compressionTouched) this.#applyCompressionPref(this.primaryTool);
+        // A choice made while the fetch was in flight wins.
+        this.prefs = { ...prefs, ...this.#touched };
+        this.prefsVersion += 1;
       }
     } catch {
-      // Best-effort; leave the local defaults in place.
+      // Keep the tool defaults.
     }
   }
 
-  /** Apply a saved compression string for `toolId`, else the tool default. */
-  #applyCompressionPref(toolId) {
-    this.#seedCompressionPref(toolId);
-    // A saved level the codec no longer takes (lzma2:19, from before the
-    // per-codec ranges) is brought into range like any other change.
-    this.#reconcileLevel();
+  /** The compression *mode* runs with: its tool's saved choice, else its default. */
+  compressionFor(mode) {
+    const tool = registry.toolForMode(mode);
+    return parseCompression(mode, tool ? this.prefs[tool.id] : null);
   }
 
-  #seedCompressionPref(toolId) {
-    const value = this.#compressionPrefs[toolId];
-    const tool = registry.forTool(toolId);
-    const isLevel = (tool?.compressionStyle ?? 'none') === 'single-with-level';
-    // Seed the level from this tool's own default first, so a value from a
-    // previously selected single-with-level tool can't leak across (e.g.
-    // Dolphin's 19 bleeding into Switch, which defaults to 18).
-    if (isLevel) {
-      this.compressionLevel = defaultLevelFor(toolId);
-    }
-    if (!value) {
-      this.compressionSelection = defaultCompressionFor(toolId);
-      return;
-    }
-    if (value === 'none') {
-      this.compressionSelection = ['none'];
-      return;
-    }
-    if (isLevel) {
-      const [codec, lvl] = value.split(':');
-      this.compressionSelection = codec ? [codec] : defaultCompressionFor(toolId);
-      if (lvl) this.compressionLevel = String(lvl);
-      return;
-    }
-    this.compressionSelection = value.split(',').filter(Boolean);
+  /** Remember *value* as *mode*'s tool's compression, here and on the server. */
+  setCompressionFor(mode, value) {
+    const tool = registry.toolForMode(mode);
+    if (!tool) return;
+    this.setPref(tool.id, formatCompression(mode, value));
   }
 
-  /** Remember the current tool's compression value on the server (debounced). */
-  #persistCompression() {
-    this.#compressionTouched = true;
-    const value = this.compressionValue;
-    if (value == null) return; // mode without compression, nothing to save
+  /** Save one tool's wire value (null: the tool's own default). */
+  setPref(toolId, wire) {
     this.#prefsGeneration += 1;
-    this.#compressionPrefs = { ...this.#compressionPrefs, [this.primaryTool]: value };
-    this.#dirtyTools.add(this.primaryTool);
+    const next = { ...this.prefs };
+    if (wire == null) delete next[toolId];
+    else next[toolId] = wire;
+    this.prefs = next;
+    this.#touched = { ...this.#touched, [toolId]: wire ?? undefined };
+    this.#dirtyTools = { ...this.#dirtyTools, [toolId]: true };
+    this.prefsVersion += 1;
     this.#schedulePrefsSave();
+  }
+
+  /**
+   * Settings → Defaults saved *toolId*'s compression (*wire*, or null for the
+   * tool's own default): it becomes the live choice the plan uses, even over
+   * an edit made in the Convert panel, and is saved.
+   */
+  applySavedDefault(toolId, wire) {
+    this.setPref(toolId, wire);
   }
 
   // The debounce lives here, in the store, so leaving the screen that made
@@ -494,9 +327,9 @@ class ConversionStore {
 
   #putPrefs() {
     this.#saveChain = this.#saveChain.then(async () => {
-      const tools = [...this.#dirtyTools];
+      const tools = Object.keys(this.#dirtyTools);
       if (!tools.length) return;
-      const local = { ...this.#compressionPrefs };
+      const local = { ...this.prefs };
       try {
         // The PUT replaces the whole object: start from the server's copy as
         // it is now and change only the tools edited here. A tool set back to
@@ -508,9 +341,11 @@ class ConversionStore {
         }
         await api.putConversionPrefs(body);
         // Saved, unless it changed again while this save was out.
+        const dirty = { ...this.#dirtyTools };
         for (const tool of tools) {
-          if (this.#compressionPrefs[tool] === local[tool]) this.#dirtyTools.delete(tool);
+          if (this.prefs[tool] === local[tool]) delete dirty[tool];
         }
+        this.#dirtyTools = dirty;
         this.compressionSaveError = null;
       } catch (e) {
         this.compressionSaveError = e?.message ?? 'Request failed';
@@ -537,314 +372,128 @@ class ConversionStore {
     return this.#saveChain;
   }
 
-  /**
-   * Settings → Defaults saved *toolId*'s compression (*wire*, or null for the
-   * tool's own default): remember it, make it the live choice when it's the
-   * current tool, even after the user picked codecs here (an explicit save
-   * wins over the touched guard, which only shields an edit from a late boot
-   * fetch), and save it.
-   */
-  applySavedDefault(toolId, wire) {
-    this.#prefsGeneration += 1;
-    const next = { ...this.#compressionPrefs };
-    if (wire == null) delete next[toolId];
-    else next[toolId] = wire;
-    this.#compressionPrefs = next;
-    this.#dirtyTools.add(toolId);
-    if (toolId === this.primaryTool) this.#applyCompressionPref(toolId);
-    this.#schedulePrefsSave();
+  // ─── The plan ─────────────────────────────────────────────────────────
+  /** What a plan of *paths* depends on, so a stale plan is never shown as current. */
+  keyFor(paths) {
+    return JSON.stringify([
+      paths ?? [], this.target, this.outputDir, this.overridesFor(paths), this.prefsVersion,
+    ]);
+  }
+
+  /** True when the plan on hand is for *paths* as they are set now. */
+  hasPlanFor(paths) {
+    return !!this.plan && this.planKey === this.keyFor(paths);
   }
 
   /**
-   * Ask the backend where each Image would go. Sets and returns `autoPlan`.
-   * With a `signal` that aborts, the request is aborted and its answer, if it
-   * still lands, is dropped without a toast.
+   * Plan *paths* after `delay` ms, aborting any plan still pending or in
+   * flight. Resolves with the plan, or null when it was superseded, cancelled
+   * or failed (`planError` then says why).
    */
-  async fetchAutoPlan(filePaths, { signal, outputDir = this.outputDir || null } = {}) {
-    if (!filePaths?.length) return null;
-    try {
-      const plan = await api.getAutoPlan(filePaths, outputDir, { signal });
-      if (signal?.aborted) return null;
-      this.autoPlan = plan;
-      return this.autoPlan;
-    } catch (e) {
-      if (signal?.aborted) return null;
-      toast.error(e?.message ?? 'Failed to plan Auto conversion');
-      this.autoPlan = null;
-      throw e;
+  requestPlan(paths, { delay = PLAN_DEBOUNCE_MS } = {}) {
+    this.cancelPlan();
+    if (!paths?.length) {
+      this.plan = null;
+      this.planKey = null;
+      this.planError = null;
+      return Promise.resolve(null);
     }
-  }
-
-  clearAutoPlan() {
-    this.autoPlan = null;
-  }
-
-  // True from Start until the Auto flow ends: a second Start while the plan is
-  // loading or the modal is open is refused instead of racing the first.
-  #autoInFlight = $state(false);
-
-  get autoInFlight() {
-    return this.#autoInFlight;
-  }
-
-  /**
-   * The whole Auto flow: plan, confirm, queue.
-   *
-   * The selection, the RomM context and the output folder are captured before
-   * the first await, so what is queued is exactly what the confirmed plan
-   * showed (the preview, the RomM snapshot and the queue all use that one
-   * folder), whatever the user changes while the plan loads or the modal is
-   * open. Auto's targets come from the plan itself. `confirm()` resolves true to
-   * queue. `onRepinPending(count)` runs after queueing for a RomM listing,
-   * on failure too (a failed batch can still have kept jobs whose metadata
-   * was reconciled). Returns `submitAuto`'s result, or null when nothing was
-   * queued (refused, cancelled, aborted, or failed).
-   *
-   * `signal` is the caller's AbortSignal (the panel aborts it when it
-   * unmounts). An aborted run stops waiting at once, even on a request that
-   * ignores the signal: it never calls `confirm()` after the abort, a pending
-   * `confirm()` counts as cancelled, nothing is queued, and `autoInFlight`
-   * clears, so Start works again.
-   */
-  async runAuto({ paths, rommPlatformId = null, confirm, onRepinPending, signal } = {}) {
-    if (this.#autoInFlight || !paths?.length || signal?.aborted) return null;
-    this.#autoInFlight = true;
+    const seq = ++this.#planSeq;
     const snapshot = [...paths];
-    const platformId = rommPlatformId;
-    const fromRomm = platformId !== null && platformId !== undefined;
-    const outputDir = this.outputDir || null;
-    // A target picked by hand turns Auto off (`chooseTarget`); a run that saw
-    // Auto on when it started then ends without a modal or a queue.
-    const autoAtStart = this.auto;
+    const key = this.keyFor(snapshot);
+    this.planning = true;
+    this.planError = null;
+    return new Promise((resolve) => {
+      this.#planResolve = resolve;
+      const ask = { seq, snapshot, key, resolve };
+      if (delay > 0 && isBrowser) {
+        this.#planTimer = setTimeout(this.#runPlan.bind(this), delay, ask);
+      } else {
+        this.#runPlan(ask);
+      }
+    });
+  }
+
+  /** One plan request, answered only while it is still the newest. */
+  async #runPlan({ seq, snapshot, key, resolve }) {
+    this.#planTimer = null;
+    const controller = new AbortController();
+    this.#planAbort = controller;
     try {
-      try {
-        await untilAborted(this.fetchAutoPlan(snapshot, { signal, outputDir }), signal);
-      } catch (_e) {
-        return null; // toast already raised
-      }
-      if (signal?.aborted || (autoAtStart && !this.auto)) {
-        this.clearAutoPlan();
-        return null; // the panel is gone, or Auto is off: never open the modal
-      }
-      // Confirm, then queue the confirmed plan. An Image whose plan changed
-      // since is left out and named in the result toast (#520).
-      const answer = await untilAborted(confirm(), signal);
-      // An abort resolves the confirmation as cancelled.
-      const proceed = !signal?.aborted && !answer?.aborted && Boolean(answer)
-        && !(autoAtStart && !this.auto);
-      const plan = this.autoPlan ?? [];
-      this.clearAutoPlan();
-      if (!proceed) return null;
-      try {
-        return await this.submitAuto(snapshot, {
-          plan, rommRepin: fromRomm, rommPlatformId: platformId, outputDir, signal,
-        });
-      } catch (_e) {
-        return null; // toast already raised in submitAuto
-      } finally {
-        if (fromRomm) onRepinPending?.(this.lastRepinPending);
-      }
-    } finally {
-      this.#autoInFlight = false;
-    }
-  }
-
-  /**
-   * The user picked a target by hand (the mode dropdown, RomM's "Convert to").
-   * That choice wins over Auto, so Auto turns off and says so; every selector
-   * goes through here. `setMode` stays the programmatic path (platform
-   * adoption, tool switches), which leaves Auto alone.
-   */
-  chooseTarget(mode) {
-    if (!registry.specFor(mode)) return;
-    this.setMode(mode);
-    if (this.auto) {
-      this.auto = false;
-      toast.info(
-        `Auto is off: converting with ${registry.specFor(mode)?.label ?? mode}`,
-      );
-    }
-  }
-
-  setMode(mode) {
-    if (!registry.specFor(mode)) return;
-    this.mode = mode;
-    // If the new mode doesn't support delete-on-verify (e.g. switching
-    // from a chdman create mode to an extract mode), clear the flag.
-    // The backend rejects the combination outright, so a sticky flag
-    // would fail the next submission instead of silently degrading.
-    if (!this.supportsDeleteOnVerify) this.deleteOnVerify = false;
-    if (!this.offersContainerOnly) this.containerOnly = false;
-    // Likewise clear the split flag when leaving a mode that offers it.
-    if (!this.supportsSplit) this.split = false;
-    this.#reconcileLevel();
-  }
-
-  /**
-   * The one reconcile step for a codec+level mode, run after every mode,
-   * codec or saved-preference change, in order: the mode is set; the codec
-   * is `singleCodec`, which falls back to the mode's default when the mode
-   * refuses the selected one (zstd on WIA); the level is kept when that codec
-   * takes it, else it becomes the codec's default (`fitLevel`). The slider
-   * and the number box both read `compressionLevel`, so they always agree and
-   * the form never holds a level the backend refuses.
-   */
-  #reconcileLevel() {
-    const range = this.levelRange;
-    if (range) this.compressionLevel = String(fitLevel(range, this.compressionLevel));
-  }
-
-  setCompression(list) {
-    this.compressionSelection = Array.isArray(list) ? list.slice() : [];
-    this.#persistCompression();
-  }
-
-  setCompressionLevel(level) {
-    // A typed level is pulled into the codec's range (19 on lzma2 is 9); a
-    // blank box mid-edit is kept as typed and sent as the default.
-    const range = this.levelRange;
-    const clamped = range ? clampLevel(range, level) : null;
-    this.compressionLevel = String(clamped ?? level);
-    this.#persistCompression();
-  }
-
-  /**
-   * Toggle a chdman-style codec on/off. Selecting "none" clears the
-   * rest; selecting any other codec removes "none" if present.
-   *
-   * chdman accepts up to 4 codecs in `-c` (per its CLI help and the
-   * legacy UI). Refuse to add a 5th, the conversion would queue and
-   * then fail at runtime. Removing a codec from an existing 4-long
-   * selection still works.
-   */
-  get CHDMAN_MAX_CODECS() {
-    // The registry owns the cap (chdman declares `maxCodecs`), so the manual
-    // picker and the RomM automation editor enforce the same number.
-    return registry.maxCodecsFor(this.mode);
-  }
-
-  toggleCodec(codec) {
-    if (codec === 'none') {
-      this.compressionSelection = ['none'];
-      this.#persistCompression();
-      return;
-    }
-    // A codec this mode doesn't offer (a CD codec kept from Create CD, #471)
-    // is dropped here, so it never counts against the cap unseen.
-    const current = registry.offeredCodecs(this.mode, this.compressionSelection)
-      .filter((c) => c !== 'none');
-    if (current.includes(codec)) {
-      this.compressionSelection = current.filter((c) => c !== codec);
-      this.#persistCompression();
-      return;
-    }
-    if (current.length >= this.CHDMAN_MAX_CODECS) {
-      // Silently ignore, the picker chip is rendered with
-      // pointer-events still active for visual feedback; the cap
-      // message lives in the picker UI (CompressionPicker reads
-      // CHDMAN_MAX_CODECS for the disabled/limit hint).
-      return;
-    }
-    this.compressionSelection = [...current, codec];
-    this.#persistCompression();
-  }
-
-  /** Replace selection with a single codec (dolphin RVZ/WIA, nsz solid/block). */
-  setSingleCodec(codec) {
-    this.compressionSelection = codec ? [codec] : [];
-    // A level the new codec does not take (zstd 19, then lzma2 at 1-9) is
-    // reset to that codec's own default level.
-    this.#reconcileLevel();
-    this.#persistCompression();
-  }
-
-  /**
-   * Reset the current tool's compression settings to its registry defaults.
-   * Works for every compression-capable tool (chdman codec list, Dolphin/Switch
-   * codec+level, CSO effort preset) with no tool-specific branching, and
-   * persists the reset like any other change so it sticks across sessions.
-   */
-  resetCompression() {
-    const toolId = this.primaryTool;
-    const tool = registry.forTool(toolId);
-    this.compressionSelection = defaultCompressionFor(toolId);
-    if ((tool?.compressionStyle ?? 'none') === 'single-with-level') {
-      this.compressionLevel = defaultLevelFor(toolId);
-    }
-    this.#persistCompression();
-  }
-
-  /**
-   * True when the current tool's compression selection (and level, for modes
-   * that expose one) already equals its defaults. Drives the disabled state of
-   * the Reset-to-default button so it only lights up when there's something to
-   * undo.
-   */
-  get isCompressionDefault() {
-    const toolId = this.primaryTool;
-    const def = defaultCompressionFor(toolId);
-    const sel = this.compressionSelection;
-    if (sel.length !== def.length || !sel.every((v, i) => v === def[i])) return false;
-    if (this.currentSpec?.supportsCompressionLevel) {
-      return String(this.compressionLevel) === defaultLevelFor(toolId);
-    }
-    return true;
-  }
-
-  /**
-   * The current compression as the controlled CompressionPicker takes it
-   * (`{ codecs, level }`, $lib/tools/compression.js). Thin wrappers over the
-   * state above; `compressionValue` stays the wire string a job is sent.
-   */
-  get compressionChoice() {
-    const level = Number.parseInt(this.compressionLevel, 10);
-    return { codecs: this.compressionSelection, level: Number.isFinite(level) ? level : null };
-  }
-
-  setCompressionChoice(value) {
-    this.compressionSelection = [...(value?.codecs ?? [])];
-    this.compressionLevel = value?.level == null ? '' : String(value.level);
-    this.#persistCompression();
-  }
-
-  // ─── Preflight ────────────────────────────────────────────────────────
-  async checkDuplicates(filePaths) {
-    if (!filePaths?.length) return null;
-    try {
-      this.duplicateCheck = await api.checkDuplicates(
-        filePaths,
-        this.outputDir || null,
-        this.mode,
-      );
-      return this.duplicateCheck;
+      // The route plans with the saved compression: a change still inside
+      // its debounce is sent first (Codex 4654246814).
+      await this.flushCompressionPrefs();
+      if (seq !== this.#planSeq) return;
+      const plan = await api.getAutoPlan(snapshot, this.outputDir || null, {
+        signal: controller.signal,
+        target: this.target || null,
+        platformOverrides: this.overridesFor(snapshot),
+      });
+      if (seq !== this.#planSeq) return;
+      this.plan = Array.isArray(plan) ? plan : [];
+      this.planKey = key;
+      resolve(this.plan);
     } catch (e) {
-      toast.error(e?.message ?? 'Failed to check duplicates');
-      this.duplicateCheck = null;
-      throw e;
+      if (seq !== this.#planSeq) return;
+      this.plan = null;
+      this.planKey = null;
+      this.planError = e?.message ?? "Couldn't plan this";
+      resolve(null);
+    } finally {
+      if (seq === this.#planSeq) {
+        this.planning = false;
+        this.#planAbort = null;
+        this.#planResolve = null;
+      }
     }
   }
 
-  clearDuplicateCheck() {
-    this.duplicateCheck = null;
+  /** Stop a pending or running plan request; its promise resolves null. */
+  cancelPlan() {
+    this.#planSeq += 1;
+    if (this.#planTimer) clearTimeout(this.#planTimer);
+    this.#planTimer = null;
+    this.#planAbort?.abort();
+    this.#planAbort = null;
+    this.#planResolve?.(null);
+    this.#planResolve = null;
+    this.planning = false;
   }
 
-  // Only the newest delete-plan ask may answer; an older one, landing late or
-  // failing late, is dropped (null) instead of replacing or clearing it.
-  #deletePlanRequest = 0;
+  clearPlan() {
+    this.cancelPlan();
+    this.plan = null;
+    this.planKey = null;
+    this.planError = null;
+  }
 
-  async fetchDeletePlan(filePaths, duplicateAction = 'skip') {
-    if (!filePaths?.length) return null;
+  // ─── The delete preview ───────────────────────────────────────────────
+  /**
+   * The files each group's delete would remove, as one plan: `groups` maps a
+   * mode to its sources (only modes that delete). Sets and returns `deletePlan`.
+   * Only the newest ask answers: an older one, landing or failing late,
+   * resolves null and changes nothing.
+   */
+  async fetchDeletePlan(groups, outputDir = this.outputDir || null) {
+    const entries = Object.entries(groups ?? {}).filter(([, paths]) => paths?.length);
+    if (entries.length === 0) return null;
     const request = ++this.#deletePlanRequest;
     try {
-      const plan = await api.getDeletePlan(
-        filePaths, this.mode, this.outputDir || null, duplicateAction,
+      const parts = await Promise.all(
+        entries.map(([mode, paths]) => api.getDeletePlan(paths, mode, outputDir, 'skip')),
       );
       if (request !== this.#deletePlanRequest) return null;
-      this.deletePlan = plan;
+      this.#deleteModes = entries.map(([mode]) => mode);
+      this.deletePlan = {
+        items: parts.flatMap((p) => p?.items ?? []),
+        total_delete_count: parts.reduce((n, p) => n + (p?.total_delete_count ?? 0), 0),
+        blocked: parts.some((p) => p?.blocked),
+        disallowed_archives: parts.flatMap((p) => p?.disallowed_archives ?? []),
+      };
       return this.deletePlan;
     } catch (e) {
       if (request !== this.#deletePlanRequest) return null;
-      toast.error(e?.message ?? 'Failed to build delete plan');
+      toast.error(e?.message ?? "Couldn't work out what would be deleted");
       this.deletePlan = null;
       throw e;
     }
@@ -854,82 +503,59 @@ class ConversionStore {
     this.deletePlan = null;
   }
 
-  // ─── Submission ───────────────────────────────────────────────────────
-  /**
-   * Queue every path for the selected mode. `rommRepin` / `rommPlatformId`:
-   * see `#queueWithRepin`.
-   *
-   * @param {string[]} filePaths
-   * @param {{ duplicateAction?: string, rommRepin?: boolean, rommPlatformId?: any }} [opts]
-   */
-  async submit(
-    filePaths,
-    { duplicateAction = 'skip', rommRepin = false, rommPlatformId = null } = {},
-  ) {
-    if (!filePaths?.length) return null;
-    // The target and everything that depends on it, read once before the
-    // first await: the user can change them while the RomM snapshot is being
-    // taken, and what is queued must be what was planned.
-    const mode = this.mode;
-    const outputDir = this.outputDir || null;
-    const batchOpts = {
-      outputDir,
-      duplicateAction,
-      compression: this.compressionValue,
-      // Mask the flag at submit time too, defense in depth against
-      // any code path that might set deleteOnVerify true without
-      // going through setMode (the backend rejects the combination
-      // for extract/raw modes).
-      deleteOnVerify: this.supportsDeleteOnVerify && this.deleteOnVerify,
-      containerOnly: this.offersContainerOnly && this.containerOnly,
-      // Same masking for the makeps3iso 4 GB FAT32 split toggle.
-      split: this.supportsSplit && this.split,
-    };
-    return this.#queueWithRepin(
-      filePaths,
-      { [mode]: filePaths },
-      { duplicateAction, rommRepin, rommPlatformId, outputDir },
-      async () => {
-        // `{ jobs, skipped }` (#504): each file the backend left out, and why.
-        const result = await jobs.createBatch(filePaths, mode, batchOpts);
-        const createdJobs = Array.isArray(result) ? result : (result?.jobs ?? []);
-        return { result, createdJobs, skipped: result?.skipped ?? [] };
-      },
-    );
+  /** The weakest check any of the delete plan's modes will pass first. */
+  get deleteCheck() {
+    const quick = !!this.safety?.quickCheck;
+    const checks = this.#deleteModes.map((mode) => {
+      const spec = registry.specFor(mode) ?? {};
+      return deleteCheckFor({
+        supportsRoundTrip: !!spec.supportsRoundTrip,
+        containerOnly: quick,
+        deleteProof: spec.deleteProof ?? 'round_trip',
+        roundTripRequired: !!spec.roundTripRequired,
+      });
+    });
+    return CHECK_STRENGTH.find((c) => checks.includes(c)) ?? 'round_tripped';
   }
 
+  // ─── Submission ───────────────────────────────────────────────────────
   /**
-   * Queue each Image for its Platform's default target (the Auto choice).
+   * Queue the confirmed plan through `/api/jobs/auto`.
    *
-   * `plan` is the backend's Auto plan the user confirmed: each row's `mode` is
-   * the target its Image will be queued for. The RomM metadata snapshot and
-   * its reconciliation run exactly as for `submit()`, once per target mode.
-   * `outputDir` is the folder the plan was made for (`runAuto` captures it
-   * before planning); by default the current one, read before any await.
-   * `signal` (from `runAuto`) is checked again after the RomM snapshot,
-   * right before queueing: an abort there queues nothing and retires the
-   * metadata the snapshot recorded.
+   * `plan` is the plan the user saw: each row's `mode` is the target its game
+   * is queued for, and a row it skipped is never sent. The RomM metadata
+   * snapshot and its reconciliation run once per target mode. `outputDir` is
+   * the folder the plan was made for; `options` the safety choices
+   * (`{ verifyAfter, deleteOnVerify, containerOnly, split }`), sent with the
+   * plan's own `target` and console overrides so the server replans the
+   * same. `signal` is checked again after the RomM snapshot, right before
+   * queueing: an abort there queues nothing and retires the metadata the
+   * snapshot recorded.
    */
   async submitAuto(
     filePaths,
     {
       plan = [], rommRepin = false, rommPlatformId = null,
-      outputDir = this.outputDir || null, signal = null,
+      outputDir = this.outputDir || null, signal = null, options = {},
     } = {},
   ) {
     if (!filePaths?.length || signal?.aborted) return null;
     const wanted = new Set(filePaths);
     // Only the confirmed plan's actionable rows go to the server, each with the
-    // target the user saw: an Image the preview skipped is never sent. The
-    // server replans them and leaves out (and reports) any whose target
-    // changed, so nothing is queued that the user did not confirm (#520).
+    // target the user saw. The server replans them and leaves out (and
+    // reports) any whose target changed, so nothing is queued unconfirmed.
     const items = (plan ?? [])
       .filter((row) => row?.mode && wanted.has(row.file_path))
       .map((row) => ({ file_path: row.file_path, mode: row.mode }));
     if (!items.length) {
-      toast.warning('Nothing to convert: Auto skips every selected Image');
+      toast.warning('Nothing to convert: every selected game is skipped');
       return null;
     }
+    const sent = {
+      target: this.target || null,
+      platformOverrides: this.overridesFor(items.map((item) => item.file_path)),
+      ...options,
+    };
     const modeOf = Object.fromEntries(items.map((item) => [item.file_path, item.mode]));
     return this.#queueWithRepin(
       items.map((item) => item.file_path),
@@ -944,10 +570,37 @@ class ConversionStore {
           stopped.aborted = true;
           throw stopped;
         }
-        const result = await api.createAutoJobs(items, outputDir, 'skip');
+        // The route queues with the saved compression: send a change still
+        // inside its debounce first, and stop if it didn't save (the choice
+        // stays, with Try again in Settings).
+        await this.flushCompressionPrefs();
+        // Aborted while the save went out (the panel closed): stop here too.
+        if (signal?.aborted) {
+          const stopped = new Error('Auto run aborted');
+          stopped.aborted = true;
+          throw stopped;
+        }
+        if (this.compressionSaveError) {
+          throw new Error(`Couldn't save the compression: ${this.compressionSaveError}`);
+        }
+        let result;
+        try {
+          result = await api.createAutoJobs(
+            items, outputDir, 'skip', signal ? { ...sent, signal } : sent,
+          );
+        } catch (e) {
+          if (!signal?.aborted) throw e;
+          // Aborted with the request already out: the server may have made
+          // the jobs, so their RomM rows are kept (one with no job behind it
+          // ages out on its own) rather than retired under a running job.
+          const stopped = new Error('Auto run aborted');
+          stopped.aborted = true;
+          stopped.keepRecorded = true;
+          throw stopped;
+        }
         const createdJobs = Array.isArray(result?.jobs) ? result.jobs : [];
         jobs.adopt(createdJobs);
-        // Each Image left out and why (a plan that changed, an output another
+        // Each game left out and why (a plan that changed, an output another
         // job holds), for the shared result toast (#520).
         return { result, createdJobs, skipped: result?.skipped ?? [] };
       },
@@ -998,7 +651,7 @@ class ConversionStore {
   }
 
   /**
-   * The submission path both `submit()` and `submitAuto()` share.
+   * The submission path `submitAuto()` runs: the RomM snapshot, the queue, the reconciliation.
    *
    * @param {string[]} filePaths every path the user asked for
    * @param {Record<string, string[]>} groups target mode -> its sources
@@ -1088,6 +741,10 @@ class ConversionStore {
       try {
         queued = await queue();
       } catch (e) {
+        if (e?.keepRecorded) {
+          recorded = {};
+          recordedIds = {};
+        }
         if (!Array.isArray(e?.createdJobs)) throw e;
         queued = { result: null, createdJobs: e.createdJobs, error: e };
       }
@@ -1101,21 +758,7 @@ class ConversionStore {
       const created = createdJobs.length;
       const requested = filePaths.length;
       // On a partial failure the error toast below says what happened.
-      if (!error) {
-        // Why each file was left out, when the backend said (#504).
-        const why = skipReasons(skipped);
-        const opts = why ? { description: why, duration: 10000 } : undefined;
-        if (created === 0) {
-          toast.warning(`No jobs queued (all ${requested} skipped)`, opts);
-        } else if (created < requested) {
-          toast.success(
-            `Queued ${created} of ${requested} job(s); ${requested - created} skipped`,
-            opts,
-          );
-        } else {
-          toast.success(`Queued ${created} job(s)`);
-        }
-      }
+      if (!error) convertedToast(created, requested, skipped);
       // Reconcile the planned rows against what the queue actually did.
       //
       // Planning resolves a destination by predicting the duplicate policy's

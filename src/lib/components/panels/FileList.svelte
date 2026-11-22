@@ -3,7 +3,6 @@
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
-  import { conversion } from '$lib/stores/conversion.svelte.js';
   import { chdMetadata } from '$lib/stores/chdMetadata.svelte.js';
   import { datMatching } from '$lib/stores/datMatching.svelte.js';
   import { registry } from '$lib/tools/registry.js';
@@ -25,7 +24,6 @@
   import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
   import Filter from '@lucide/svelte/icons/funnel';
   import Loader from '@lucide/svelte/icons/loader-circle';
-  import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import ShieldCheck from '@lucide/svelte/icons/shield-check';
   import Trash2 from '@lucide/svelte/icons/trash-2';
@@ -44,15 +42,16 @@
   const pageSize = $derived(fileBrowser.pageSize);
   const pageSizeOptions = $derived(fileBrowser.pageSizeOptions);
 
-  // Resizable table columns, stored per tool. `cols` carries the
-  // effective widths (defaults filled in); `nameSet` is the explicit
-  // Name width if the user has dragged it, when unset, Name has no fixed
-  // width so it absorbs the table's slack. The table min-width forces the
-  // horizontal scrollbar once the fixed columns outgrow the container.
-  const colTool = $derived(conversion.primaryTool);
+  // Resizable table columns. `cols` carries the effective widths (defaults
+  // filled in); `nameSet` is the explicit Name width if the user has dragged
+  // it, when unset, Name has no fixed width so it absorbs the table's slack,
+  // never below 240px so a game's name is not cut. The table min-width
+  // forces the horizontal scrollbar once the fixed columns outgrow the
+  // container.
+  const colTool = 'files';
   const cols = $derived(layout.columnsFor(colTool));
   const nameSet = $derived(layout.columns[colTool]?.name ?? null);
-  const tableMinWidth = $derived(32 + 84 + cols.size + cols.ext + cols.status + (nameSet ?? 160));
+  const tableMinWidth = $derived(32 + 84 + cols.size + cols.ext + cols.status + (nameSet ?? 240));
 
   // Snapshot of a column's width at drag start; the move handler applies
   // the cumulative delta on top of it.
@@ -170,7 +169,20 @@
     return playlistPaths(paths);
   });
 
-  let searchInput = $state('');
+  // Starts from what the store applies, so coming back to Files never hides
+  // rows behind a filter the box doesn't show. A new folder starts with no
+  // name filter (the store drops it on navigate); a scope change keeps what
+  // was typed.
+  let searchInput = $state(fileBrowser.activeQuery);
+  let typedIn = `${fileBrowser.currentPath}::${fileBrowser.currentArchivePath}`;
+  $effect(() => {
+    // A folder or an archive opened: its own listing, with no filter.
+    const path = `${fileBrowser.currentPath}::${fileBrowser.currentArchivePath}`;
+    if (path !== typedIn) {
+      typedIn = path;
+      searchInput = '';
+    }
+  });
 
   // Count of terminated dat_match background jobs. Tracked as a
   // dep of the hydration effect so we re-pull the match cache when
@@ -200,7 +212,9 @@
   $effect(() => {
     // Track explicitly so the effect re-runs on dat_match completion.
     datMatchTerminalCount;
-    const allPaths = entries.map((e) => e?.path).filter(Boolean);
+    // Every file on the page, the discs and tracks folded under a game too.
+    const files = fileBrowser.visibleFiles;
+    const allPaths = files.map((e) => e?.path).filter(Boolean);
     if (allPaths.length === 0) {
       // Nothing visible, and this component does NOT unmount when a filter or
       // search empties the list -- so the onDestroy teardown below never runs
@@ -212,7 +226,7 @@
     }
     // Hydrate archive-summary badges (member counts, verifiable_by) for the
     // archives on this visible page. Re-runs with this effect on page / sort /
-    // filter changes because it reads the same visible `entries`.
+    // filter changes because it reads the same visible files.
     fileBrowser.hydrateVisibleArchiveSummaries();
     // chdMetadata.hydrate is cheap for any path (no jobs spawned), so
     // the full list is fine. DAT match jobs need filtering on two
@@ -246,7 +260,7 @@
       // The rows the matcher can identify, by the rule "Recognize these"
       // shares (folders, archives and folded split sets are left out).
       const matchableExts = registry.allFilterableExts();
-      const filePaths = entries
+      const filePaths = files
         .filter((e) => isDatMatchable(e, matchableExts))
         .map((e) => e.path);
       if (filePaths.length > 0) {
@@ -285,9 +299,10 @@
     // members for the same treat_archives=false reason. Folded makeps3iso
     // split sets are also excluded: their row path is only the .0 part, so a
     // single-path delete-batch would orphan .1+ (matching the disabled
-    // single-row Delete action).
-    ui.bulkDeleteEntries = Array.from(fileBrowser.selectedFiles.values())
-      .filter((e) => e?.path && !e.path.includes('::') && e.split_parts == null);
+    // single-row Delete action). A game is one row, so deleting it deletes
+    // every file it is made of (a sheet's tracks), and a ticked playlist goes
+    // with its discs.
+    ui.bulkDeleteEntries = fileBrowser.filesToDelete();
   }
 
   function openDatRename() {
@@ -312,13 +327,26 @@
     return sortOrder === 'asc' ? 'ascending' : 'descending';
   }
 
+  const scope = $derived(fileBrowser.searchScope);
+
   function submitSearch(e) {
     e?.preventDefault?.();
     fileBrowser.search(searchInput.trim());
   }
 
+  // This folder filters as you type; Everywhere lists the whole tree on Enter.
+  function typed() {
+    if (scope === 'folder') fileBrowser.search(searchInput.trim());
+  }
+
+  function setScope(next) {
+    if (next === scope) return;
+    fileBrowser.setSearchScope(next, searchInput.trim());
+  }
+
   function clearSearch() {
     searchInput = '';
+    fileBrowser.search('');
     // Drop any selection picked up from the (now-invisible) search
     // result set. The recursive results may live in any subdirectory,
     // so leaving them in selectedFiles would let the selection bar /
@@ -340,33 +368,38 @@
     </div>
 
     <form class="search" onsubmit={submitSearch} role="search">
-      <Search size={14} class="search-icon" />
+      {#if searching}<Loader class="spin search-icon" size={14} />{:else}<Search size={14} class="search-icon" />{/if}
       <input
         type="search"
-        placeholder="Search this folder…"
+        placeholder={scope === 'folder' ? 'Search this folder' : 'Search everywhere under it'}
         bind:value={searchInput}
-        aria-label="Search files"
+        oninput={typed}
+        aria-label="Search games"
       />
-      {#if searchMode}
+      {#if searchMode || searchInput}
         <IconButton label="Clear search" size="sm" onclick={clearSearch}>
           <XIcon size={12} />
         </IconButton>
       {/if}
     </form>
 
+    <div class="scope" role="group" aria-label="Where to search">
+        <button
+          type="button"
+          class="scope-chip"
+          aria-pressed={scope === 'folder'}
+          onclick={() => setScope('folder')}
+        >This folder</button>
+        <button
+          type="button"
+          class="scope-chip"
+          aria-pressed={scope === 'everywhere'}
+          title="Every game under this folder, inside archives too"
+          onclick={() => setScope('everywhere')}
+        ><FolderSearch size={12} aria-hidden="true" /> Everywhere</button>
+    </div>
+
     <div class="actions">
-      <Button
-        variant="secondary"
-        size="sm"
-        loading={searching}
-        title="Recursively list every convertible file under this folder, including inside archives"
-        onclick={() => fileBrowser.searchAll()}
-      >
-        {#snippet icon()}
-          {#if searching}<Loader class="spin" size={14} />{:else}<FolderSearch size={14} />{/if}
-        {/snippet}
-        {searching ? 'Searching…' : 'Search all'}
-      </Button>
       <label class="filter">
         <Filter size={12} />
         <select
@@ -437,24 +470,29 @@
   {/if}
 
   {#if error}
-    <div class="error-state"><TriangleAlert size={14} /> {error}</div>
-  {/if}
-
-  {#if entries.length === 0 && !loading}
-    {#if searchMode}
-      <EmptyState
-        title="No matches"
-        description={fileBrowser.searchQuery
-          ? `Nothing here matched "${fileBrowser.searchQuery}". Try a different query, or clear search to browse normally.`
-          : 'No convertible files were found anywhere under this folder (including inside archives). Clear search to browse normally.'}
-        glyph="∅"
-      />
+    <EmptyState title="Couldn't open this folder" description={error} glyph="!">
+      {#snippet actions()}
+        <Button variant="secondary" size="sm" onclick={() => fileBrowser.refresh({ force: true })}>
+          Try again
+        </Button>
+      {/snippet}
+    </EmptyState>
+  {:else if entries.length === 0 && !loading}
+    {@const query = searchMode ? fileBrowser.searchQuery : fileBrowser.folderQuery}
+    {#if query}
+      <EmptyState title={`Nothing here matches “${query}”.`} glyph="∅">
+        {#snippet actions()}
+          {#if scope === 'folder'}
+            <Button variant="secondary" size="sm" onclick={() => setScope('everywhere')}>
+              Search everywhere
+            </Button>
+          {/if}
+        {/snippet}
+      </EmptyState>
+    {:else if searchMode}
+      <EmptyState title="No games anywhere under this folder." glyph="∅" />
     {:else}
-      <EmptyState
-        title="Empty folder"
-        description="No convertible files here. Use the breadcrumb to navigate up, or pick a different volume."
-        glyph="∅"
-      />
+      <EmptyState title="This folder is empty." glyph="∅" />
     {/if}
   {:else}
     <div class="table-wrap">
@@ -566,24 +604,22 @@
 <style>
   .filelist { display: flex; flex-direction: column; min-width: 0; gap: var(--space-3); }
 
-  /* The breadcrumb gets a row of its own: squeezed into a column beside the
-     search box, a deep path drew over it. */
+  /* The breadcrumb gets a row of its own; the search box, its scope and the
+     filter wrap below it as the panel narrows. */
   .toolbar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    display: flex;
+    flex-wrap: wrap;
     gap: var(--space-2) var(--space-3);
     align-items: center;
   }
-  @media (max-width: 700px) {
-    .toolbar { grid-template-columns: minmax(0, 1fr); }
-  }
   .crumbs {
-    grid-column: 1 / -1;
     display: flex;
+    flex: 1 0 100%;
     align-items: center;
     gap: var(--space-1);
     min-width: 0;
   }
+  .toolbar .search { flex: 1 1 180px; min-width: 0; }
 
   .search {
     position: relative;
@@ -594,7 +630,6 @@
     background: var(--surface-2);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
-    min-width: 220px;
   }
   .search :global(.search-icon) { color: var(--text-3); flex-shrink: 0; }
   .search input {
@@ -607,6 +642,25 @@
     outline: none;
   }
   .search input::placeholder { color: var(--text-3); }
+  .scope { display: inline-flex; gap: 2px; flex-shrink: 0; }
+  .scope-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px var(--space-2);
+    border: 1px solid transparent;
+    border-radius: var(--radius-full);
+    background: none;
+    color: var(--text-2);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .scope-chip[aria-pressed='true'] {
+    background: var(--accent-muted);
+    color: var(--accent);
+  }
+  .scope-chip:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   .search:focus-within {
     border-color: var(--accent);
     box-shadow: var(--focus-ring);
@@ -701,17 +755,6 @@
   }
   .link-strong:hover { text-decoration: none; }
   .muted-inline { color: var(--text-3); font-size: var(--text-xs); }
-
-  .error-state {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-3);
-    background: var(--error-muted);
-    border-radius: var(--radius-md);
-    color: var(--error);
-    font-size: var(--text-sm);
-  }
 
   .table-wrap {
     overflow-x: auto;
