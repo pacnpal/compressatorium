@@ -101,13 +101,18 @@ def _block_size(mode: str) -> tuple[int | None, tuple[int, int | None] | None]:
 
 # mode -> (label, output_ext, kind, supports_compression, supports_level).
 # A mode with a codec picker is RVZ or WIA, which dolphin-tool refuses without
-# `-c`: those two require a codec (`ModeSpec.requires_codec`), and take their
-# container's codecs and default from the tables above.
+# `-c`: those two require a codec (`ModeSpec.requires_codec`), take one at a
+# time (`single_codec`), and take their container's codecs and default from
+# the tables above. The other two take none, and say why.
 _MODES = {
     "dolphin_rvz": ("Dolphin RVZ", ".rvz", ModeKind.COMPRESS, True, True),
     "dolphin_wia": ("Dolphin WIA", ".wia", ModeKind.COMPRESS, True, True),
     "dolphin_gcz": ("Dolphin GCZ", ".gcz", ModeKind.COMPRESS, False, False),
     "dolphin_iso": ("Dolphin ISO", ".iso", ModeKind.EXTRACT, False, False),
+}
+_NO_COMPRESSION_REASONS = {
+    "dolphin_gcz": "GCZ uses fixed internal compression",
+    "dolphin_iso": "Compression not applicable for ISO extraction",
 }
 
 # Ordered, de-duplicated output extensions; iteration order decides which
@@ -130,6 +135,8 @@ def _build_modes() -> list[ModeSpec]:
             supports_compression=supports_compression,
             supports_compression_level=supports_level,
             requires_codec=supports_compression,
+            single_codec=supports_compression,
+            no_compression_reason=_NO_COMPRESSION_REASONS.get(mode, ""),
             codecs=(
                 CONTAINER_CODECS[container_of(mode)] if supports_compression
                 else frozenset()
@@ -159,7 +166,6 @@ class DolphinTool(BaseTool):
     platform_slugs = frozenset({"ngc", "gamecube", "wii"})
     # dolphin-tool's own RVZ/WIA default, and what the manual picker seeds.
     default_compression = "zstd"
-    policy_owner = "dolphin_tool"
     display_name = "Dolphin"
     modes = _build_modes()
     output_extensions = frozenset({".rvz", ".wia", ".gcz", ".iso"})

@@ -299,15 +299,15 @@ async def test_verify_applies_priority_wrappers(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_module, "_resolve_wrappers", resolved)
     reniced = []
 
-    def prioritize(owner, pid):
-        reniced.append((owner, pid))
+    def prioritize(pid):
+        reniced.append(pid)
 
     monkeypatch.setattr(runner_module, "_prioritize_child", prioritize)
 
     await service.verify(str(cso_path))
 
     assert captured["argv"] == [service.maxcso_path, "--crc", str(cso_path)]
-    assert reniced == [(maxcso_module._OWNER, 13)]
+    assert reniced == [13]
 
 
 @pytest.mark.asyncio

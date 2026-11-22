@@ -23,6 +23,7 @@ from services.lock_manager import lock_manager
 from services.nkit2iso import (
     NKIT2ISO_CONVERTIBLE_EXTENSIONS,
     NKIT2ISO_OUTPUT_EXTENSION,
+    NkitHeaderError,
     nkit2iso_service,
 )
 
@@ -35,7 +36,6 @@ class Nkit2IsoTool(BaseTool):
     id = "nkit"
     # NKit is a GameCube/Wii shrink format.
     platform_slugs = frozenset({"ngc", "gamecube", "wii"})
-    policy_owner = "nkit2iso"
     display_name = "NKit"
     # File info reads the NKit header in Python; nkit2iso has no info command.
     info_needs_tool = False
@@ -64,6 +64,8 @@ class Nkit2IsoTool(BaseTool):
     # union across tools.
     output_extensions = frozenset({NKIT2ISO_OUTPUT_EXTENSION})
     verify_extensions = frozenset()
+    # A .nkit.iso whose bytes are not an NKit image is a 422, not a 500.
+    info_file_errors = (NkitHeaderError,)
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)

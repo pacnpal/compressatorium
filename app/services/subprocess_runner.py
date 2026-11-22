@@ -563,40 +563,27 @@ _KILL_GRACE = 10.0
 #
 # These knobs (nice level, I/O priority, info/verify timeouts) govern *every*
 # conversion tool's subprocess, not just chdman. They live here -- read once in
-# one place -- rather than being re-read with a chdman-flavoured name in each
-# service. The shared default comes from the tool-neutral ``tool_*`` settings;
-# an optional per-tool override (``<owner>_*``, e.g. ``dolphin_tool_nice``)
-# takes precedence when set. ``owner`` matches the ``SubprocessRunner`` owner
-# string each service constructs (``chdman``, ``dolphin_tool``, ``nsz``,
-# ``z3ds``, ``maxcso``).
+# one place -- from the tool-neutral ``tool_*`` settings. There are no per-tool
+# overrides (#542): the old ``COMPRESSATORIUM_<TOOL>_*`` names feed these.
 
 
-def _resolve_policy(key: str, owner: str | None):
-    """Return the per-owner override for ``key`` if set, else the shared default.
-
-    ``key`` is the bare setting suffix (``nice``, ``ioprio_class``,
-    ``ioprio_level``, ``info_timeout``, ``verify_timeout``); the shared value is
-    ``settings.tool_<key>`` and the optional override ``settings.<owner>_<key>``.
-    """
-    if owner is not None:
-        override = getattr(settings, f"{owner}_{key}", None)
-        if override is not None:
-            return override
+def _resolve_policy(key: str):
+    """The shared ``settings.tool_<key>`` value (``nice``, ``ioprio_class``, ...)."""
     return getattr(settings, f"tool_{key}")
 
 
-def nice_value(owner: str | None = None) -> int | None:
-    """Effective ``nice`` increment for ``owner`` (None disables renicing)."""
-    return _resolve_policy("nice", owner)
+def nice_value() -> int | None:
+    """Effective ``nice`` increment (None disables renicing)."""
+    return _resolve_policy("nice")
 
 
-def ioprio_prefix(owner: str | None = None) -> list[str]:
+def ioprio_prefix() -> list[str]:
     """Return the ``ionice`` command prefix per the shared priority policy.
 
-    Empty when I/O priority is unset for ``owner`` or ``ionice`` is unavailable.
+    Empty when I/O priority is unset or ``ionice`` is unavailable.
     """
-    ioprio_class = _resolve_policy("ioprio_class", owner)
-    ioprio_level = _resolve_policy("ioprio_level", owner)
+    ioprio_class = _resolve_policy("ioprio_class")
+    ioprio_level = _resolve_policy("ioprio_level")
     if ioprio_class is None or ioprio_level is None:
         return []
     ionice = _WRAPPERS.get("ionice")  # cache only: see _resolve_wrappers
@@ -608,16 +595,16 @@ def ioprio_prefix(owner: str | None = None) -> list[str]:
     return [ionice, "-t", "-c", str(ioprio_class), "-n", str(ioprio_level)]
 
 
-def nice_prefix(owner: str | None = None) -> list[str]:
-    """Return the ``nice`` command prefix for ``owner``.
+def nice_prefix() -> list[str]:
+    """Return the ``nice`` command prefix.
 
-    Empty when renicing is off for ``owner`` or ``nice`` is unavailable, and
+    Empty when renicing is off or ``nice`` is unavailable, and
     for a level this process can't apply (:func:`_can_renice`): ``nice`` would
     only warn and run the tool anyway, and its warning would land in output a
     caller parses (rom-converto's ``--version`` readiness probe). The old
     ``preexec_fn`` renice dropped that failure silently too.
     """
-    value = nice_value(owner)
+    value = nice_value()
     if value is None or not _can_renice(value):
         return []
     nice = _WRAPPERS.get("nice")  # cache only: see _resolve_wrappers
@@ -684,9 +671,9 @@ async def _resolve_wrappers(owner: str | None) -> bool:
     answer: that spawn runs with no wrapper, at normal priority, and nothing
     is cached, so a later spawn tries again."""
     wanted = []
-    if nice_value(owner) is not None:
+    if nice_value() is not None:
         wanted.append("nice")
-    if None not in (_resolve_policy("ioprio_class", owner), _resolve_policy("ioprio_level", owner)):
+    if None not in (_resolve_policy("ioprio_class"), _resolve_policy("ioprio_level")):
         wanted.append("ionice")
     for name in wanted:
         if name in _WRAPPERS:
@@ -731,12 +718,12 @@ async def _wrapped_command(
     new list all the same: a verdict never comes from a process started
     through them, see :func:`_prioritize_child`."""
     resolved = await _resolve_wrappers(owner)
-    prefix = priority_prefix(owner) if wrap and resolved else []
+    prefix = priority_prefix() if wrap and resolved else []
     return prefix + cmd, bool(prefix)
 
 
-def _prioritize_child(owner: str | None, pid: int) -> None:
-    """Apply *owner*'s priority to a child spawned bare, best effort.
+def _prioritize_child(pid: int) -> None:
+    """Apply the priority policy to a child spawned bare, best effort.
 
     The verify paths (``capture_verify``, ``run_verify``, ``hash_stdout``)
     spawn the tool directly: ``nice``/``ionice`` exec through ``execvp``,
@@ -747,7 +734,7 @@ def _prioritize_child(owner: str | None, pid: int) -> None:
     ``nice -n`` gives; a level :func:`_can_renice` refuses is left off), and
     the I/O class by ``ionice -p <pid>`` through the bounded probe. A failure
     of either leaves the child at normal priority."""
-    value = nice_value(owner)
+    value = nice_value()
     if value is not None and _can_renice(value):
         try:
             own = os.getpriority(os.PRIO_PROCESS, 0)
@@ -761,7 +748,7 @@ def _prioritize_child(owner: str | None, pid: int) -> None:
     # here). Kept out of the shared probe pool: an
     # asyncio child of its own, bounded and killed on a stall, and at most
     # _MAX_IONICE_TASKS at once; past that the child gets no I/O priority.
-    prefix = ioprio_prefix(owner)
+    prefix = ioprio_prefix()
     if prefix and not _IONICE_STUCK and len(_IONICE_TASKS) < _MAX_IONICE_TASKS:
         task = asyncio.ensure_future(_ionice_child([*prefix, "-p", str(pid)]))
         _IONICE_TASKS.add(task)
@@ -833,8 +820,8 @@ def _note_exit(returncode: int | None, wrapped: bool) -> None:
         _forget_wrappers()
 
 
-def priority_prefix(owner: str | None = None) -> list[str]:
-    """``nice`` + ``ionice`` command wrappers for ``owner`` (issue #444).
+def priority_prefix() -> list[str]:
+    """``nice`` + ``ionice`` command wrappers (issue #444).
 
     The only way the runner applies the priority policy to a child, never a
     ``preexec_fn``: this process is multithreaded (threadpools, the SSE routes),
@@ -844,44 +831,41 @@ def priority_prefix(owner: str | None = None) -> list[str]:
     installed, so nothing could rescue it. ``nice``/``ionice`` only exec; either
     absent, its prefix is empty and the child runs at normal priority.
     """
-    return nice_prefix(owner) + ioprio_prefix(owner)
+    return nice_prefix() + ioprio_prefix()
 
 
-def info_timeout(owner: str | None = None) -> int:
+def info_timeout() -> int:
     """Effective ``info`` subprocess timeout in seconds (0 disables)."""
-    return max(0, int(_resolve_policy("info_timeout", owner) or 0))
+    return max(0, int(_resolve_policy("info_timeout") or 0))
 
 
-def verify_timeout(owner: str | None = None) -> int:
+def verify_timeout() -> int:
     """Baseline ``verify`` timeout in seconds (0 disables).
 
     The *baseline* only. Callers that know which file is being verified should
     use :func:`resolve_verify_timeout`, which adds the per-GiB allowance that
     makes one bound workable across a 400 MB CIA and a 90 GB PS3 ISO.
     """
-    return max(0, int(_resolve_policy("verify_timeout", owner) or 0))
+    return max(0, int(_resolve_policy("verify_timeout") or 0))
 
 
-def verify_stall_timeout(owner: str | None = None) -> int:
+def verify_stall_timeout() -> int:
     """Effective no-output stall bound for a streaming verify (0 disables)."""
-    return max(0, int(_resolve_policy("verify_progress_timeout", owner) or 0))
+    return max(0, int(_resolve_policy("verify_progress_timeout") or 0))
 
 
-def _verify_timeout_sync(
-    path: str, owner: str | None = None, size: int | None = None,
-) -> int:
+def _verify_timeout_sync(path: str, size: int | None = None) -> int:
     return compute_size_scaled_timeout(
         path=path,
-        base_timeout=verify_timeout(owner),
-        timeout_per_gib=_resolve_policy("verify_timeout_per_gib", owner),
-        timeout_cap=_resolve_policy("verify_timeout_cap", owner),
+        base_timeout=verify_timeout(),
+        timeout_per_gib=_resolve_policy("verify_timeout_per_gib"),
+        timeout_cap=_resolve_policy("verify_timeout_cap"),
         size=size,
     )
 
 
 async def resolve_verify_timeout(
     path: str,
-    owner: str | None = None,
     *,
     cancel_event: asyncio.Event | None = None,
     size: int | None = None,
@@ -914,13 +898,13 @@ async def resolve_verify_timeout(
     try:
         return await asyncio.wait_for(
             run_detached(
-                _verify_timeout_sync, path, owner,
+                _verify_timeout_sync, path,
                 *(() if size is None else (size,)), cancel_event=cancel_event,
             ),
             timeout=_STAT_TIMEOUT,
         )
     except (asyncio.TimeoutError, ReadCancelled):
-        return verify_timeout(owner)
+        return verify_timeout()
 
 
 class ReadCancelled(Exception):
@@ -1700,6 +1684,48 @@ async def run_detached_within_stall_bound(
                 await task
 
 
+def run_blocking_within_stall_bound(
+    func: Callable, *args: object, what: str, stall: float, **kwargs: object,
+) -> object:
+    """:func:`run_detached_within_stall_bound` (``report_progress=True``) for
+    blocking code already off the event loop (a job's worker thread).
+
+    *func* runs on a throwaway daemon thread with a ``progress=<Progress>``
+    keyword it reports every step to; the clock restarts on each report. After
+    *stall* seconds with no report the thread is abandoned (told to stop at its
+    next report) and :class:`Stalled` is raised. A call that finished just as
+    the bound ran out is answered. Its own exceptions propagate as themselves.
+    """
+    progress = Progress()
+    box: dict = {}
+    done = threading.Event()
+
+    def _worker() -> None:
+        try:
+            box["value"] = func(*args, progress=progress, **kwargs)
+        except Exception as exc:
+            # Relayed to the caller, who raises it as itself.
+            _probe_logger.debug("Stall-bounded call failed", exc_info=True)
+            box["error"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(target=_worker, daemon=True, name="fs-walk").start()
+    try:
+        while not done.is_set():
+            at, where = progress.snapshot()
+            remaining = at + stall - time.monotonic()
+            if remaining > 0:
+                done.wait(remaining)
+            elif not done.is_set():
+                raise Stalled(what, where, stall)
+    finally:
+        progress.abandon()
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
 def _open_for_verify(path: str) -> int:
     """Size *path*, then open it for reading as its verifier will. Blocking:
     run detached (:func:`_probe_for_verify`). ``O_NONBLOCK`` changes nothing
@@ -2361,7 +2387,7 @@ class SubprocessRunner:
         )
         try:
             if verdict:  # inside the try: a cancel here still reaps the child
-                _prioritize_child(self._owner, process.pid)
+                _prioritize_child(process.pid)
             waiters = [comm] + ([cancel_wait] if cancel_wait is not None else [])
             done, _pending = await asyncio.wait(
                 waiters,
@@ -2477,7 +2503,7 @@ class SubprocessRunner:
             else None
         )
         try:
-            _prioritize_child(self._owner, process.pid)
+            _prioritize_child(process.pid)
             done, _pending = await asyncio.wait(
                 [work] + ([cancel_wait] if cancel_wait is not None else []),
                 timeout=timeout or None,
@@ -2595,7 +2621,7 @@ class SubprocessRunner:
         # (an archive's declared contents, #431).
         sized = {"size": size} if size is not None else {}
         timeout = await resolve_verify_timeout(
-            path, self._owner, cancel_event=cancel_event, **sized,
+            path, cancel_event=cancel_event, **sized,
         )
         if cancel_event is not None and cancel_event.is_set():
             # Same re-check as run_verify: resolving the bound above can take
@@ -2700,9 +2726,9 @@ class SubprocessRunner:
         # disconnects) unwinds this coroutine with the child already running and
         # tracked, but with nothing to reap or untrack it.
         overall_timeout = await resolve_verify_timeout(
-            path, self._owner, cancel_event=cancel_event,
+            path, cancel_event=cancel_event,
         )
-        stall_timeout = verify_stall_timeout(self._owner)
+        stall_timeout = verify_stall_timeout()
         if cancel_event is not None and cancel_event.is_set():
             # Re-checked after the bound is resolved, because resolving it can
             # take the full probe bound on storage that has stopped answering
@@ -2779,7 +2805,7 @@ class SubprocessRunner:
             return True
 
         try:
-            _prioritize_child(self._owner, process.pid)
+            _prioritize_child(process.pid)
             while True:
                 try:
                     chunk = await asyncio.wait_for(process.stdout.read(100), timeout=2)

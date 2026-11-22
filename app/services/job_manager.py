@@ -93,6 +93,13 @@ SOURCE_KEPT_FOR_READERS = "Source kept: it was being read by another job"
 CANCEL_REQUESTED = "requested"
 CANCEL_SHUTDOWN = "shutdown"
 
+# A processing job silent this long is logged as possibly stalled, and again
+# each time this long passes; it is never stopped for it (#542: was
+# CHD_DEBUG_PROGRESS_TIMEOUT).
+STALL_WARNING_SECONDS = 300
+# At DEBUG, a job's progress is logged at most this often.
+PROGRESS_LOG_SECONDS = 30
+
 # The glossary names (CONTEXT.md) for each stored check, used in job messages so
 # "verified" never stands in for which check an output passed.
 _CHECK_LABELS = {
@@ -1458,16 +1465,9 @@ class JobManager:
             else self._derive_output(file_path, mode, output_dir)
         )
         # The HTTP routes validate inputs before passing an explicit
-        # output_path; direct service callers reach this fallback. Most
-        # tools' output_path() raises for an unsupported extension, but
-        # z3ds's does not, so keep its input-extension gate -- now read from
-        # the mode's declared input_extensions instead of the per-direction
-        # Z3DS_*_FORMATS constants.
+        # output_path; direct service callers reach this fallback, where each
+        # tool's output_path() raises for an extension its mode does not take.
         spec = registry.spec(mode.value)
-        if spec.tool_id == "z3ds":
-            ext = Path(file_path).suffix.lower()
-            if ext not in spec.input_extensions:
-                raise ValueError(f"Unsupported file extension: {ext}")
         # Generic same-path guard: a non-copy mode must never write over its
         # own source (chdman copy is an intentional in-place .chd recompress;
         # every other mode changes the extension so output != input).
@@ -3232,8 +3232,6 @@ class JobManager:
         already carries bytes written and rate for tools using the size-growth
         fallback.
         """
-        if settings.debug_progress_timeout <= 0:
-            return
         now = time.monotonic()
         for job in list(self.jobs.values()):
             if job.status != JobStatus.PROCESSING:
@@ -3246,13 +3244,13 @@ class JobManager:
                 verifying_since if verifying_since is not None
                 else self._last_progress_at.get(job.id, now)
             )
-            if idle_for < settings.debug_progress_timeout:
+            if idle_for < STALL_WARNING_SECONDS:
                 continue
             # None, not 0, for "never logged": monotonic() counts from boot, so
             # a 0 sentinel reads as "logged at boot" and suppressed the first
-            # warning for the first debug_progress_timeout seconds of uptime.
+            # warning for the first STALL_WARNING_SECONDS of uptime.
             last_stall = self._last_stall_log_at.get(job.id)
-            if last_stall is not None and now - last_stall < settings.debug_progress_timeout:
+            if last_stall is not None and now - last_stall < STALL_WARNING_SECONDS:
                 continue
             self._last_stall_log_at[job.id] = now
             if verifying_since is not None:
@@ -5912,7 +5910,7 @@ class JobManager:
             job.started_at = datetime.now(timezone.utc)
             # Restart the progress clock at the moment work actually begins. It was
             # last set when the job was created, so a job that waited in the queue
-            # longer than debug_progress_timeout -- routine on a deep queue -- would
+            # longer than STALL_WARNING_SECONDS -- routine on a deep queue -- would
             # otherwise be reported stalled the instant it started running.
             self._last_progress_at[job_id] = time.monotonic()
             # The jobs holding a conversion slot, by the dispatcher's own rule:
@@ -6072,7 +6070,7 @@ class JobManager:
                     job.warning = job.message
                 if logger.isEnabledFor(logging.DEBUG):
                     last_log = self._last_progress_log_at.get(job_id, 0)
-                    if now - last_log >= settings.debug_progress_interval:
+                    if now - last_log >= PROGRESS_LOG_SECONDS:
                         self._last_progress_log_at[job_id] = now
                         logger.debug(
                             "Job %s progress=%s message=%s",

@@ -65,16 +65,16 @@ async def test_a_library_rule_save_refuses_a_codec_its_mode_cannot_use(tree: Pat
 
 @pytest.mark.asyncio
 async def test_a_romm_rule_save_refuses_a_codec_its_mode_cannot_use(db: Path) -> None:
-    from routes import romm as romm_routes
+    from routes import libraries as lib_routes
 
     with pytest.raises(HTTPException) as refused:
-        await romm_routes.put_romm_rules({"rules": {
+        await lib_routes.put_library_rules("romm", {"rules": {
             "9": {"enabled": True, "mode": "createdvd", "compression": "zlib,cdzl"},
         }})
 
     assert refused.value.status_code == 400
     assert refused.value.detail == _REFUSED
-    assert (await romm_routes.get_romm_rules())["rules"] == {}
+    assert (await lib_routes.get_library_rules("romm"))["rules"] == {}
 
 
 @pytest.mark.asyncio

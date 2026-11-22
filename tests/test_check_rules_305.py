@@ -674,6 +674,7 @@ async def test_removing_the_library_drops_its_check_times(tree: Path, ready, ver
 @pytest.mark.asyncio
 async def test_check_rules_work_on_a_romm_library(db: Path, ready, verifier, sent) -> None:
     from routes import romm as romm_routes
+    from routes import libraries as lib_routes
     from services import image_checks
     from services.romm import settings as romm_settings
     from services.rules import check
@@ -690,12 +691,12 @@ async def test_check_rules_work_on_a_romm_library(db: Path, ready, verifier, sen
     ]
     verdicts, calls = verifier
     verdicts["Bolt.chd"] = {"valid": False, "message": "bad hunk"}
-    await romm_routes.put_romm_rules({
+    await lib_routes.put_library_rules("romm", {
         "rules": {}, "check_rules": {"7": {"enabled": True, "check_budget_gb": 6}},
     })
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms):
-        result = await romm_routes.run_auto_convert(romm_routes.SweepRequest(platform_ids=[7]))
+        result = await lib_routes.run_library("romm", lib_routes.SweepRequest(platform_ids=["7"]))
         await check.drain()
 
     assert result["checks"] == 2
@@ -712,6 +713,7 @@ async def test_check_rules_work_on_a_romm_library(db: Path, ready, verifier, sen
 async def test_a_rom_with_no_size_still_costs_its_file_size(db: Path, ready) -> None:
     """RomM may leave out fs_size_bytes; the budget then reads the file."""
     from routes import romm as romm_routes
+    from routes import libraries as lib_routes
     from services.romm import settings as romm_settings
 
     for name in ("Aria", "Bolt"):
@@ -724,13 +726,13 @@ async def test_a_rom_with_no_size_still_costs_its_file_size(db: Path, ready) -> 
         }
         for rom_id, name in ((1, "Aria"), (2, "Bolt"))
     ]
-    await romm_routes.put_romm_rules({
+    await lib_routes.put_library_rules("romm", {
         "rules": {}, "check_rules": {"7": {"enabled": True, "check_budget_gb": 3}},
     })
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms):
-        result = await romm_routes.preview_auto_convert(
-            romm_routes.SweepRequest(platform_ids=[7]),
+        result = await lib_routes.preview_library("romm", 
+            lib_routes.SweepRequest(platform_ids=["7"]),
         )
 
     (summary,) = result["platforms"]
@@ -1104,6 +1106,7 @@ async def test_a_new_romm_instance_drops_romms_check_times_and_findings(
     db: Path, ready, verifier, sent,
 ) -> None:
     from routes import romm as romm_routes
+    from routes import libraries as lib_routes
     from services import image_checks
     from services.romm import settings as romm_settings
     from services.rules import check
@@ -1120,11 +1123,11 @@ async def test_a_new_romm_instance_drops_romms_check_times_and_findings(
     ]
     verdicts, _calls = verifier
     verdicts["Bolt.chd"] = {"valid": False, "message": "bad hunk"}
-    await romm_routes.put_romm_rules({
+    await lib_routes.put_library_rules("romm", {
         "rules": {}, "check_rules": {"7": {"enabled": True, "check_budget_gb": 6}},
     })
     with patch.object(romm_routes.romm_client, "roms", return_value=roms):
-        await romm_routes.run_auto_convert(romm_routes.SweepRequest(platform_ids=[7]))
+        await lib_routes.run_library("romm", lib_routes.SweepRequest(platform_ids=["7"]))
         await check.drain()
     assert image_checks.last_checked("romm")
     assert _not_intact()
@@ -1391,6 +1394,7 @@ async def test_a_run_stopped_by_a_romm_change_reports_nothing_it_did_not_write(
 ) -> None:
     """M5: the identity change lands mid-check; the run ends cancelled, counting nothing."""
     from routes import romm as romm_routes
+    from routes import libraries as lib_routes
     from services import image_checks
     from services.job_manager import job_manager
     from services.romm import settings as romm_settings
@@ -1421,12 +1425,12 @@ async def test_a_run_stopped_by_a_romm_change_reports_nothing_it_did_not_write(
 
     monkeypatch.setitem(vars(tool), "verify", verify)
     monkeypatch.setitem(vars(tool), "verify_timeout", bound)
-    await romm_routes.put_romm_rules({
+    await lib_routes.put_library_rules("romm", {
         "rules": {}, "check_rules": {"7": {"enabled": True, "check_budget_gb": 6}},
     })
     before = {j.id for j in job_manager.get_all_jobs()}
     with patch.object(romm_routes.romm_client, "roms", return_value=roms):
-        await romm_routes.run_auto_convert(romm_routes.SweepRequest(platform_ids=[7]))
+        await lib_routes.run_library("romm", lib_routes.SweepRequest(platform_ids=["7"]))
         await check.drain()
 
     assert calls == ["Aria.chd"]

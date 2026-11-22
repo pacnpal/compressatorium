@@ -14,6 +14,7 @@ from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
+from logging_setup import get_logger
 from models import OutputStatus, RomzInfo
 from services.archive_members import read_member_crcs
 from services.lock_manager import lock_manager
@@ -29,6 +30,8 @@ from services.subprocess_runner import ReadCancelled, run_detached
 from .base import BaseTool, ContentDigest, ContentDigestUnavailable
 from .binaries import RequiredBinary
 from .spec import ModeKind, ModeSpec
+
+logger = get_logger("tools.romz")
 
 # The member set of an archive (name, size, CRC32 of each), hashed into one
 # value. A loose ROM is the one-member set it would be archived as.
@@ -71,7 +74,6 @@ class RomzTool(BaseTool):
         "lynx", "c64", "atari2600", "atari7800",
     })
     default_compression = "max"
-    policy_owner = "romz"
     display_name = "Handheld ROM"
     # File info lists the archive in Python (zipfile / py7zr); 7z isn't run.
     info_needs_tool = False
@@ -142,6 +144,23 @@ class RomzTool(BaseTool):
         # The program every conversion runs, read where the service spawns it
         # (#494): missing or not executable, and the tool isn't ready.
         return (RequiredBinary("7z", self._service.sevenzip_path, "SEVENZIP_PATH"),)
+
+    def plan_problem(self, path: str, mode: str) -> str | None:
+        # Extract names its output after the archive's one ROM, and falls back
+        # to the suffix-stripped stem for anything else -- so an ordinary,
+        # corrupt or multi-ROM archive beside a same-stem file could drive an
+        # overwrite of that unrelated file. Refuse it before the plan.
+        if self.spec(mode).kind != ModeKind.EXTRACT:
+            return None
+        try:
+            self._service._single_rom_member(path)
+        except Exception as exc:
+            # Broad by design: corrupt/multi-ROM archives surface as
+            # ValueError, zipfile.BadZipFile, py7zr errors, OSError, ... and
+            # all map to the same skip. Logged for troubleshooting.
+            logger.debug("romz extract validation failed for %s: %s", path, exc)
+            return "romz_invalid_archive"
+        return None
 
     def detect_output(
         self, input_path: str, *, from_archive: bool = False,

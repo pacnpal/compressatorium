@@ -1,8 +1,8 @@
 """What a Rules editor reads and does, for any Library.
 
-RomM's routes (``/api/romm/rules``, ``/api/romm/auto-convert/*``) and the
-Library routes (``/api/libraries/{id}/...``) are both thin wrappers over these,
-so the payload, the policy check and the sweep calls exist once.
+The Library routes (``/api/libraries/{id}/...``, RomM's id is ``romm``) are
+thin wrappers over these, so the payload, the policy check and the sweep calls
+exist once.
 """
 
 from __future__ import annotations

@@ -12,7 +12,7 @@ from logging_setup import get_logger
 import os
 import threading
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -29,7 +29,6 @@ from services.dat_ranking import (
     FAMILIES, RankedMatch, apply_ranking, dat_family, image_kind,
     is_unrankable_local_hit, ranked_match,
 )
-from utils.path_utils import path_presence
 
 logger = get_logger("dat_store")
 
@@ -97,9 +96,19 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _dat_info(header: dict, entries: list[dict]) -> dict:
-    """The ``dats`` row for a freshly parsed DAT (a new id, its family)."""
+# How a DAT arrived (``dats.transport``). Only PLAIN_HTTP is set aside, by
+# the Recognized delete proof (services.recognized).
+MANUAL, HTTPS, PLAIN_HTTP = "manual", "https", "http"
+TRANSPORTS = (MANUAL, HTTPS, PLAIN_HTTP)
+
+
+def _dat_info(header: dict, entries: list[dict], transport: str) -> dict:
+    """The ``dats`` row for a freshly parsed DAT (a new id, its family, and
+    how it arrived)."""
+    if transport not in TRANSPORTS:
+        raise ValueError(f"unknown DAT transport {transport!r}")
     return {
+        "transport": transport,
         "id": str(uuid.uuid4())[:8],
         "name": header.get("name", "Unknown DAT"),
         "description": header.get("description", ""),
@@ -278,7 +287,9 @@ class DATStore:
     # Import
     # ------------------------------------------------------------------
 
-    def _import_dat_sync(self, source: str, replace: bool = False) -> tuple[dict, list[str]]:
+    def _import_dat_sync(
+        self, source: str, replace: bool = False, transport: str = MANUAL,
+    ) -> tuple[dict, list[str]]:
         """Parse *source* and insert all entries into the DB in one transaction.
 
         With *replace*, an earlier import of the same DAT (same name and
@@ -288,7 +299,7 @@ class DATStore:
         Returns the import result and the paths the invalidation dropped.
         """
         header, entries = parse_dat(source)
-        dat_info = _dat_info(header, entries)
+        dat_info = _dat_info(header, entries, transport)
         hash_rows = _hash_rows(entries, dat_info["id"])
         replaced: list[str] = []
         with self._changing_local_index(), self._session() as session:
@@ -335,6 +346,7 @@ class DATStore:
             file_count=dat_info["file_count"],
             family=dat_info["family"],
             rank=rank,
+            transport=dat_info["transport"],
         ))
         # The multi-row insert bypasses the unit-of-work, so flush the DAT row
         # first or the FK from dat_hashes will fail.
@@ -370,8 +382,12 @@ class DATStore:
 
     async def import_dat(
         self, source: str, *, invalidated: set[str] | None = None, replace: bool = False,
+        transport: str = MANUAL,
     ) -> dict:
         """Parse and import a DAT file (path or XML string).
+
+        *transport* records how it arrived (:data:`TRANSPORTS`): a hand import
+        is ``manual``; a download says ``https`` or ``http``.
 
         *invalidated*, when given, receives the paths whose cached verdicts the
         import's invalidation removed, read inside the import's own
@@ -380,16 +396,18 @@ class DATStore:
         snapshot taken before the import misses a row written between the
         snapshot and the commit.
         """
-        result, dropped = await run_in_threadpool(self._import_dat_sync, source, replace)
+        result, dropped = await run_in_threadpool(
+            self._import_dat_sync, source, replace, transport,
+        )
         if invalidated is not None:
             invalidated.update(dropped)
         return result
 
-    async def import_dat_no_persist(self, source: str) -> dict:
+    async def import_dat_no_persist(self, source: str, *, transport: str = MANUAL) -> dict:
         """Stage a DAT in memory; call :meth:`persist` to atomically commit all staged DATs."""
         def _stage() -> tuple[dict, dict]:
             header, entries = parse_dat(source)
-            dat_info = _dat_info(header, entries)
+            dat_info = _dat_info(header, entries, transport)
             hash_rows = _hash_rows(entries, dat_info["id"])
             with self._pending_lock:
                 self._pending_imports.append((dat_info, hash_rows))
@@ -465,6 +483,24 @@ class DATStore:
             session.commit()
         return True, dropped
 
+    def _upgrade_to_https_sync(self, dat_ids: list[str]) -> int:
+        with self._session() as session:
+            result = session.execute(
+                _db.DAT.__table__.update()
+                .where(_db.DAT.id.in_(dat_ids), _db.DAT.transport == PLAIN_HTTP)
+                .values(transport=HTTPS)
+            )
+            session.commit()
+            return result.rowcount or 0
+
+    async def upgrade_to_https(self, dat_ids: list[str]) -> int:
+        """Mark the plain-HTTP DATs among *dat_ids* as fetched over HTTPS, once
+        the same bytes came again over HTTPS. Never touches
+        an ``https``, ``manual`` or unrecorded row. Returns how many changed."""
+        if not dat_ids:
+            return 0
+        return await run_in_threadpool(self._upgrade_to_https_sync, list(dat_ids))
+
     async def delete_dat(self, dat_id: str, *, invalidated: set[str] | None = None) -> bool:
         """Delete one DAT. *invalidated* works as in :meth:`import_dat`: it
         receives the paths whose cached matches cited the DAT."""
@@ -523,6 +559,7 @@ class DATStore:
             "file_count": r.file_count,
             "family": r.family,
             "rank": r.rank,
+            "transport": r.transport,
         }
 
     def list_dats(self) -> list[dict]:
@@ -540,12 +577,13 @@ class DATStore:
 
         The top-level fields are the oldest import's (a stable order, not a
         ranking: :meth:`with_current_ranking` decides which DAT names a file);
-        ``matches`` lists every DAT's record, each with its DAT's name and
-        family.
+        ``matches`` lists every DAT's record, each with its DAT's name, family
+        and ``transport`` (read in the same query, so the Recognized proof sees
+        how each matching DAT arrived).
         """
         with self._session() as session:
             rows = session.execute(
-                select(_db.DATHash, _db.DAT.name, _db.DAT.family)
+                select(_db.DATHash, _db.DAT.name, _db.DAT.family, _db.DAT.transport)
                 .join(_db.DAT, _db.DAT.id == _db.DATHash.dat_id)
                 .where(
                     _db.DATHash.hash == hex_hash.lower(),
@@ -563,8 +601,9 @@ class DATStore:
                     "game_name": row.game_name,
                     "rom_name": row.rom_name,
                     "size": row.size,
+                    "transport": transport,
                 }
-                for row, dat_name, family in rows
+                for row, dat_name, family, transport in rows
             ]
             return {**matches[0], "matches": matches}
 
@@ -1172,38 +1211,6 @@ class DATStore:
         """
         with self._session() as session:
             return list(session.scalars(select(_db.DATMatch.path)).all())
-
-    def _prune_missing_sync(self, progress: Callable[..., None] | None = None) -> int:
-        """Drop the match entries whose file is confirmed gone; how many.
-
-        Only a confirmed absence (``path_presence(...) is False``): a file on
-        a Volume that stalls or errors keeps its entry (#373). ``progress`` is
-        told each entry, for a stall-bounded caller; no session is held open
-        while a Volume is asked. Blocking.
-        """
-        tick = progress or (lambda *_args: None)
-        with self._session() as session:
-            paths = list(session.scalars(select(_db.DATMatch.path)).all())
-        missing = []
-        for path in paths:
-            tick(path)
-            if path_presence(path) is False:
-                missing.append(path)
-        tick()  # a caller that gave up stops here, before deleting anything
-        if not missing:
-            return 0
-        with self._session() as session:
-            # Chunk to stay under SQLite's bind-parameter limit (default 999).
-            chunk_size = 900
-            for i in range(0, len(missing), chunk_size):
-                chunk = missing[i:i + chunk_size]
-                session.execute(delete(_db.DATMatch).where(_db.DATMatch.path.in_(chunk)))
-            session.commit()
-        return len(missing)
-
-    def prune_missing_blocking(self, progress: Callable[..., None] | None = None) -> int:
-        """:meth:`_prune_missing_sync`, for a stall-bounded caller (#373)."""
-        return self._prune_missing_sync(progress)
 
 
 dat_store = DATStore()

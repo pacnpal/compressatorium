@@ -100,6 +100,11 @@ class DAT(Base):
     # The user's place for this DAT in the one ranked list (0 is first); NULL
     # until they rank it, when its family's default order applies (#424).
     rank = Column(Integer, nullable=True)
+    # How it arrived: "https", "http" (the Redump sync's plain-HTTP fallback,
+    # #557) or "manual" (imported by hand). NULL for a DAT imported before
+    # this was recorded, read as before (migration 0028). A DAT that came over
+    # plain HTTP never vouches for a delete (services.recognized).
+    transport = Column(String, nullable=True)
 
 
 class DATHash(Base):
@@ -350,8 +355,7 @@ class Verification(Base):
 class LedgerEntry(Base):
     """One row per job that reached a terminal status (#292).
 
-    Permanent by default; ``services.ledger`` prunes by age only when a
-    retention is set. Timestamps are ISO-8601 UTC strings like the rest of
+    Permanent. Timestamps are ISO-8601 UTC strings like the rest of
     the schema, so they sort lexically.
     """
 
@@ -588,8 +592,7 @@ class ImageCheckRecord(Base):
 class LedgerTotal(Base):
     """Running per-status totals behind the Prometheus counters (#297).
 
-    Incremented when a Ledger row is written and never decremented, so a
-    retention prune of ``ledger`` rows cannot make a counter go down.
+    Incremented when a Ledger row is written and never decremented.
     Byte sums only accumulate for completed jobs.
     """
 

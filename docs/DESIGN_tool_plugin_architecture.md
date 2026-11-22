@@ -248,8 +248,7 @@ class ToolPlugin(Protocol):
                       cancel_event: asyncio.Event | None = None
                       ) -> AsyncGenerator[dict, None]: ...
     # Wall-clock bound for verifying this path (0 = unbounded). Default:
-    # BaseTool resolves the shared size-scaled policy for `policy_owner`, so a
-    # per-tool COMPRESSATORIUM_<OWNER>_VERIFY_TIMEOUT applies. Exposed so
+    # BaseTool resolves the shared size-scaled policy. Exposed so
     # job_manager can bound the whole verify() call — including a tool whose
     # verify spawns nothing (jwud's container walk, makeps3iso's PARAM.SFO
     # readback) — without re-deriving which knob that tool reads.
@@ -354,12 +353,9 @@ class BaseTool:
 
     def __init__(self, binary_path: str):
         self.binary_path = binary_path
-        # `policy_owner or id`, never bare `id`: the owner keys the shared
-        # nice/ioprio/timeout policy's per-tool overrides, and it differs from
-        # the plugin id wherever the service kept its historical name
-        # (dolphin/dolphin_tool, cso/maxcso). In the tree today each *service*
-        # constructs its own runner with that owner as a literal.
-        self._runner = SubprocessRunner(owner=self.policy_owner or self.id)
+        # The owner names the runner's logger. In the tree today each
+        # *service* constructs its own runner with its owner as a literal.
+        self._runner = SubprocessRunner(owner=self.id)
 
     # derived sets (no per-tool duplication)
     @property
@@ -372,19 +368,11 @@ class BaseTool:
                 return m
         raise KeyError(mode)
 
-    # The SubprocessRunner "owner" this tool's service runs under, which keys
-    # the shared nice/ioprio/timeout policy's per-tool overrides. NOT always
-    # `id`: the plugin id is the routing/UI name ("dolphin", "cso") while the
-    # owner is the historical service name ("dolphin_tool", "maxcso").
-    policy_owner: str | None = None
-
-    # Default: the shared size-scaled verify bound for this tool's owner.
+    # Default: the shared size-scaled verify bound.
     async def verify_timeout(
         self, path: str, *, cancel_event: asyncio.Event | None = None,
     ) -> int:
-        return await resolve_verify_timeout(
-            path, self.policy_owner, cancel_event=cancel_event,
-        )
+        return await resolve_verify_timeout(path, cancel_event=cancel_event)
 
     # verify() is the same drain-verify_stream()-and-keep-the-terminal-event
     # wrapper in every service, so it lives once in subprocess_runner as the
@@ -625,10 +613,9 @@ kernel refuses (empty, a bare `#!`) to `/bin/sh`, and its exit 0 would read
 as a pass (CodeRabbit 4616898119, 4617217666).
 
 - **Wrapped** (`run`, and `run_capture` for info and header reads): the argv
-  is `priority_prefix(owner) + cmd`, built in one place (`_wrapped_command`):
+  is `priority_prefix() + cmd`, built in one place (`_wrapped_command`):
   `nice -n <level>` then `ionice -t -c <class> -n <level>`, resolved from the
-  `COMPRESSATORIUM_TOOL_*` settings and any `COMPRESSATORIUM_<OWNER>_*`
-  override. Their exit codes are no verdict on their own (a conversion's
+  `COMPRESSATORIUM_TOOL_*` settings, one value for every tool (#542). Their exit codes are no verdict on their own (a conversion's
   output is checked after it).
 - **Bare, then reniced** (`capture_verify` through `run_capture(verdict=True)`,
   `run_verify`, and `hash_stdout`, whose digest is the Round-trip's): the tool
@@ -892,7 +879,7 @@ member cache. Progress callers:
   through `off_loop_until_stalled`, one report per record, and answer 503 on
   a stalled Volume like the routes above: `GET /api/verified` (prune, then
   each record's containment), `POST /api/verified/lookup`, the CHD badge
-  lookup `POST /api/chd-metadata`, and `POST /api/dat/prune`. The stores give
+  lookup `POST /api/chd-metadata`. The stores give
   them blocking, progress-aware forms (`prune_missing_blocking(progress)`,
   `all_records_blocking()`, `cached_media_type_blocking(path)`) and read the
   paths and delete the rows in separate sessions, so no session is held open
@@ -1535,6 +1522,26 @@ of a set, answers 409 and stays as it is (renaming a sheet is allowed: its
 tracks keep their names). A game row's Delete goes through the batch, whole.
 The next companion type only has to answer through the registry hook to be
 covered by all of them.
+
+**Through links (#555).** A sheet or playlist names files in its folder and
+below, and a link inside the Volume reaches another folder from there. So
+`owners_naming` reads every folder that reaches the file, not just the file's
+own folder and its parents. `image_sets.volume_links(volume)` lists each link
+with its real target, and `_reaching_folders` takes the folder of every link
+whose target is the file or holds it (or holds a folder already found). Each
+of those folders and its parents is read for sheets and playlists, and each
+one's own files for sets. Matching stays by file identity (`_is_track`), so any
+spelling through any link counts. The walk fails closed: a folder it can't
+list, or a link to a folder outside the Volume (which may lead back in, and is
+never walked), makes ownership unknown and the file is kept. The routes walk
+each Volume once per request, stall-bounded (`files.volume_links_of`), and
+`build_delete_plan` once per plan, stall-bounded too from its worker thread
+(`subprocess_runner.run_blocking_within_stall_bound`). The walk reports every
+entry as it is read, so a big folder that keeps answering is never cut off. A
+walk that stalls leaves the owners unknown and the file kept: in a batch, only
+that Volume's files are kept, and the other Volumes' files still go. Link
+targets are compared with case folded (`_under`, as `_is_track` folds), which
+can only add a folder to read.
 
 **Every RAR header read is bounded and detached.** `archive_members` reads a
 RAR header in one way only, `_bounded_header_read`: the listing
@@ -2471,7 +2478,7 @@ retains; `_prune_jobs` deletes the oldest past the cap. The job list is a
 bounded window, not a record of the run, so no all-time count comes from it.
 The Ledger is the record: every finished job lands in it (`ledger.record`, a
 terminal listener) and its `ledger_totals` counters only ever grow, whatever
-the cap, a Clear or a retention prune removes. `GET /api/ledger/totals`
+the cap or a Clear removes. `GET /api/ledger/totals`
 answers `{"jobs": {"completed": N, "failed": N, "cancelled": N}}` from them,
 and the dashboard's Done / Failed tiles read it (`ledger.totals`). The Jobs
 panel's tab badges count the rows the list holds, and its Completed and
@@ -2859,7 +2866,7 @@ a sweep running concurrently finishes by writing its own ids and schedule stamp
 under the same key. `routes/romm.py` also clears it when `url` or `library_root`
 changes, because a different RomM database reuses the same integer ids for
 different games. `forget_converted()` (exposed as
-`POST /api/romm/rules/forget-converted`, with a per-platform button in the
+`POST /api/libraries/romm/rules/forget-converted`, with a per-platform button in the
 automation editor) is the operator's escape hatch after restoring a backup.
 `_record_run` merges into the entry rather than replacing it, or every run would
 forget the history it shares a key with.
@@ -2978,8 +2985,8 @@ because that is where the source is unlinked and a job can arrive there without
 having passed either plan-time check.
 
 **A mode that keeps its Source on principle says why.** `ModeSpec.source_kept_reason`
-(mirrored on `ChainSpec`, and as `sourceKeptReason` on the frontend mode entry,
-which `tests/test_frontend_parity_186.py` compares) is the user-facing reason for
+(mirrored on `ChainSpec`, and served to the frontend as `sourceKeptReason` on
+the mode entry, §3.7) is the user-facing reason for
 a mode whose `supports_delete_on_verify` is False not for want of a check but
 because deleting would lose something nothing can rebuild. rom-converto's
 `zar_compress` (#422) is the first: a ZAR holds the disc's files, not the disc,
@@ -3036,21 +3043,21 @@ negative (an RVZ replaced by its larger ISO). A job announced terminal twice
 (a queued cancel) writes one row: `(job_id, finished_at)` is unique and the
 insert is `ON CONFLICT DO NOTHING`. The dashboard reads the Ledger through
 `stores/ledger.svelte.js`, refreshed on each terminal job and once more after
-a short settle delay, since the row is written after the completion event. A `retention_days`
-in the `ledger` preference prunes older rows on each write; unset keeps them
-forever. Recording never raises: a failure is logged and the job is unaffected.
+a short settle delay, since the row is written after the completion event. Rows
+are kept forever (#542 removed the `retention_days` setting, which nothing in the UI
+set; a value stored by an older release is ignored). Recording never raises: a failure is logged and the job is unaffected.
 
 Reads all go through `services/ledger.py` so the routes stay thin. A
 `LedgerFilter` (path substring on Source or output, status, tool, Platform)
 builds one set of SQL clauses used by `list_page` (newest first, with a total),
 by `export_csv` (the same filter, keyset-paged on `(finished_at, id)` inside one
 explicit read transaction held for the stream, so every page reads the same SQLite
-snapshot and a job finishing or a prune mid-export neither repeats, skips nor drops
+snapshot and a job finishing mid-export neither repeats, skips nor drops
 a row) and by `facets` (distinct values for the filter
 menus). The Prometheus counters are not computed from the `ledger` table: the
 `ledger_totals` table (migration `0011`, seeded from the Ledger) holds per-status
 job counts and completed-job byte sums, bumped in the same transaction as each
-new row and never decremented, so retention cannot lower a counter. `q` is escaped, so
+new row and never decremented. `q` is escaped, so
 `%` and `_` match literally. CSV cells starting with `=`, `+`, `-`, `@`, tab or
 CR get a leading `'` so a spreadsheet doesn't run them. `metrics_text` renders the
 Prometheus exposition (jobs by status, bytes of completed jobs, plus the live
@@ -3341,11 +3348,10 @@ called on the event loop and must not touch the disk.
 
 **Editor helpers** (`rules/editor.py`): `editor_payload(library)` (Rules,
 state, defaults, options), `save_rules` (strict), `forget_converted`,
-`sweep_now`. RomM's `/api/romm/rules` and `/api/romm/auto-convert/*` and the
-Library routes are thin wrappers over them; `routes/rules.py` holds the shared
-route pieces (422 mapping, the `platform_ids` reading where an empty list means
-none). RomM's forget route still calls `romm_auto.forget_converted`, which is
-the same engine call.
+`sweep_now`. The Library routes (RomM is `/api/libraries/romm/...`; its old
+`/api/romm/rules` and `/api/romm/auto-convert/*` copies are gone, #542) are thin
+wrappers over them; `routes/rules.py` holds the shared route pieces (422
+mapping, the `platform_ids` reading where an empty list means none).
 
 **What `recognized` and `identified` mean.** `recognized` says whether the
 Image is Recognized, and `only_matched` reads it; `identified` is the
@@ -3607,8 +3613,8 @@ job-owner index, then deletes the row. No file is touched.
 `GET /api/libraries/{id}/platforms` (folder only; also `tool_ids`, `mode_ids`
 and `automatable_modes`, as RomM's platform list carries),
 `GET/PUT /api/libraries/{id}/rules`, `POST .../rules/forget-converted`,
-`POST .../preview` and `POST .../run`. RomM's own `/api/romm/rules` and
-`/api/romm/auto-convert/*` are unchanged.
+`POST .../preview` and `POST .../run`, RomM's (`romm`) included. An
+unconfigured RomM answers a sweep with `stopped_reason: "not_configured"`.
 `GET /api/libraries/{id}/placements` (any Library, #430) lists, for each of
 the Library's `platforms()` (one listing, passed to every row as `known`),
 the Platform's own `id` (the row's key: two RomM platforms can share a slug),
@@ -4142,6 +4148,28 @@ declares a different delete proof on the mode contract:
   put first is the one named), then with `hasheous.lookup` when Hasheous is on,
   and passes only on a hit. A miss, an unreachable Hasheous, a hash that did
   not finish or DATs that could not be read all keep the Source.
+- **A DAT that came over plain HTTP never vouches for a delete** (Codex
+  4659176015 on #557). Each DAT records how it arrived in `dats.transport`
+  (`dat_store.TRANSPORTS`: `https`, `http` from the Redump sync's plain-HTTP
+  fallback, or `manual` for a hand import; migration 0028), and
+  `_lookup_hash` returns it on every match in the same query. `recognize`
+  sets the `http` matches aside before ranking: a trusted DAT that also knows
+  the hash still proves it (and is the one named), and an output only
+  plain-HTTP DATs know is treated as if no DAT knew it, so Hasheous is asked
+  when it is on, and otherwise it is a miss whose `keep_reason` names those
+  DATs and says they came over plain HTTP. Only the delete proof sets them
+  aside: matching, the Library's badges and the Inbox's naming use them as
+  any other DAT. Existing rows fail closed (Codex 4659261220): no existing
+  row can prove it came over HTTPS, and the `redump_sync` cache is no complete
+  history (a partly failed sync imports DATs it never records). 0028 marks
+  `http` every existing DAT whose family is Redump (whoever imported it), every
+  one imported on or after `FALLBACK_POSSIBLE_FROM` (a day before the fallback
+  was written; an unreadable import time counts too), whatever its header,
+  since a swapped DAT could claim any name, and every one the cache names.
+  Only an older non-Redump DAT stays NULL and vouches as before.
+  `recognized._may_vouch` also refuses a NULL Redump match, whatever wrote it.
+  A Redump DAT imported by hand before the upgrade vouches again once it is
+  imported again.
 - `JobManager._delete_check` returns a `_DeleteCheck`: the check passed, plus a
   `fail_reason` (a failed Round-trip: the job fails, as before) or a
   `keep_reason` (not Recognized: the output is Intact and placed, its record
@@ -4155,8 +4183,8 @@ declares a different delete proof on the mode contract:
   delete (#329) whose Rule's level is `recognized` needs a `recognized` record
   and re-runs the proof on the output before removing anything
   (`_recheck_output`).
-- The frontend mirrors it as `deleteProof` on the mode entry (compared by
-  `tests/test_frontend_parity_186.py`); `deleteCheckFor` and
+- The frontend reads it as `deleteProof` on the mode entry (from
+  `/api/tools`, §3.7); `deleteCheckFor` and
   `DELETE_CHECK_HINTS` in `src/lib/util/deleteCheck.js` are what the convert
   panel, the delete confirmation and the Rule editor say.
 
@@ -4924,8 +4952,8 @@ Referrer reads and rewrites with. **Create an `.m3u` from selected discs** (#299
 or more files directly in one folder inside a Volume whose extension is in
 `registry.disc_extensions()`, the union of each tool's `disc_extensions` (chdman
 `.cue .gdi .iso .chd`, Dolphin `.iso .gcz .wia .rvz .wbfs`, maxcso `.cso .zso`; a
-tool with no standalone disc files declares nothing). `registry.js` mirrors it as
-`discExts` (checked by `tests/test_frontend_parity_186.py`), and the file list
+tool with no standalone disc files declares nothing). `registry.js` reads it as
+`discExts` (from `/api/tools`, §3.7), and the file list
 shows **Create .m3u** only for two or more such files in one folder. Order is by
 `(Disc N)` / `Disc N` / `CD N`, then name. A ticked `.bin` that a ticked `.cue` /
 `.gdi` names is dropped from the selection with a warning; two files for one disc
@@ -9507,9 +9535,8 @@ string true. And keep the two lists collision-free against other tools:
 `.bin` stays chdman's, because a Genesis dump sharing an extension with a CD
 track is not a collision worth creating.
 
-The frontend mirrors these lists in `src/lib/tools/registry.js`, and
-`tests/test_frontend_parity_186.py` fails when the two drift — so widening a
-tool's inputs is a two-file change by construction.
+The frontend reads these lists from `/api/tools` (§3.7), so widening a tool's
+inputs is a one-file change.
 
 #### What counts as a source (`registry.mode_input_kind`)
 
@@ -9617,7 +9644,7 @@ some other way is refused there (`base.compression_problem`). The frontend mirro
 `levelRange` (`registry.levelRangeFor(mode, codec)`), so the pickers never
 offer or send a codec or level the mode refuses: the level control follows the
 selected codec, and switching codec resets a level the new codec does not take
-to its default. `test_frontend_parity_186` fails on drift.
+to its default. Both come from `/api/tools` (§3.7), so they cannot drift.
 
 chdman's create modes declare `codecs` the same way (#471), from chdman's own
 rules (MAME `src/tools/chdman.cpp` `parse_compression`, `src/lib/util/chdcodec.cpp`):
@@ -9634,7 +9661,7 @@ an Auto target whose saved preference the mode refuses runs on the tool default
 (`checked_compression`).
 
 Rules go through the same check (#474). A Rule submission (`PUT
-/api/libraries/{id}/rules`, `PUT /api/romm/rules`, both `editor.save_rules`
+/api/libraries/{id}/rules`, through `editor.save_rules`
 with `set_rules(strict=True)`; an Inbox runs its Library's Rules) is refused
 400 with `compression_problem`'s message when the Rule's mode refuses its
 compression (`rules.refuse_unusable_compression`, raising
@@ -9724,9 +9751,9 @@ implements `convert` and receives the resolved value; nothing calls a tool's
 as it is; a Rule's delete decision (`_delete_decision_identity`) reads the
 Rule's own fields, so it is unaffected.
 
-The value mirrors `defaultCompression` in `src/lib/tools/registry.js`, which
-seeds the same choice in the manual picker — `tests/test_frontend_parity_186.py`
-fails on drift, and on a codec+level mode that declares no default at all.
+The frontend's `defaultCompression` is this value (from `/api/tools`, §3.7),
+so the manual picker seeds the same choice. A codec+level mode must declare a
+default (`tests/test_tools_payload_27.py`).
 
 #### Extension matching is a suffix match (`utils.path_utils.match_extension`)
 
@@ -10155,48 +10182,106 @@ understands the container first. This mirrors the backend's longest-match
 
 ### 3.7 Frontend descriptor (`src/lib/tools/registry.js`)
 
-> **Status: implemented and extended.** The original §3.7 sketched a minimal
-> descriptor on `static/js/tools.js`. The legacy Preact frontend was retired
-> in favor of a Svelte 5 + Vite SPA (see README §"Frontend Development"), and
-> the registry now owns every tool fact: verify URLs derive from
-> `verifyPrefix`, per-tool `groups` map carries group labels (no hardcoded
-> switch), `defaultMode` replaces the old chdman special-case, and optional
-> `glyph` / `accent` give the sidebar / dashboard a visual escape hatch.
-> See `src/lib/tools/registry.js` for the source of truth.
+> **Status: built from the backend (#539).** The frontend registry no longer
+> keeps a copy of the backend's tools. `GET /api/tools` serves them, and
+> `registry.load(payload)` builds the descriptors once at start (App.svelte),
+> before any view renders. What stays in `registry.js` is UI only.
 
-```js
-// src/lib/tools/registry.js (abridged, see file for full schema)
-export const TOOLS = [
-  { id: 'chdman', label: 'CHDMAN', hint: '…',
-    verifyPrefix: '',                                    // URL segment, '' → /api/verify
-    sourceExts: ['.gdi','.iso','.cue','.bin'], verifyExts: ['.chd'],
-    modeGroups: ['create','extract','copy'],
-    groups: { create: 'Create', extract: 'Extract', copy: 'Copy' },
-    defaultMode: 'createcd',
-    glyph: 'CD', accent: 'var(--badge-cd)',
-    modes: [/* ModeSpec rows mirroring app/services/tools/spec.py */],
-    getInfo: api.getCHDInfo, verify: api.verifyCHD, verifyBatch: api.verifyBatchCHDs,
-    productPath: (p) => p.replace(/\.[^.]+$/, '.chd') },
-  { id: 'dolphin', verifyPrefix: 'dolphin', /* … */ },
-  { id: 'z3ds',    verifyPrefix: 'z3ds',    /* … */ },
-];
+**The payload.** `GET /api/tools` keeps `available` / `unavailable` and adds
+`tools`, built by `routes.info.tool_catalog()`:
+
+```jsonc
+"tools": [{
+  "id": "chdman", "label": "CHDMAN",            // label = display_name
+  "input_extensions": [...], "output_extensions": [...],
+  "verify_extensions": [...], "disc_extensions": [...],
+  "default_compression": "zlib" | null,
+  "modes": [{ /* ModeSpec.as_json(): every field, frozensets as sorted lists,
+                 enums as their value, codec_levels as [{codec,min,max,default}],
+                 a chain's steps as dicts, and reads_extensions resolved by
+                 registry.mode_reads_extensions(mode) */ }]
+}]
 ```
 
-`getPrimaryToolLabel`/`getPrimaryToolHint`/`getFilterOptions`/`MODE_GROUPS`/
-`CHDInfoModal` routing/verify-batch routing (all in `app.js`) become lookups
-into `TOOLS` instead of `if (tool === 'dolphin') …` chains.
+`ModeSpec.as_json()` (and `ChainSpec.as_json()`) is `spec.spec_json`, generic
+over `dataclasses.fields`, so no field list is kept by hand: a new `ModeSpec`
+field reaches the UI the moment it is declared. `ChainSpec` declares every
+`ModeSpec` field for that reason (structural parity).
 
-**Parity guard (`tests/test_frontend_parity_186.py`).** `registry.js` is a
-hand-maintained mirror of the backend `ModeSpec`s, and there is no shared build
-step, so a drift in `allows_archive_input` / `supports_delete_on_verify` /
-`input_extensions` / `output_ext` / `kind` would silently make the UI offer a
-job `plan_job` rejects ("0 queued") or fail on submit. The test evaluates
-`registry.js` with Node and asserts its mode rows match `registry.mode_specs()`
-field-by-field (skipped when Node is unavailable). `tool_id` is excluded: the
-synthetic `cso_to_chd` chain mode is owned by the `chain` tool on the backend
-but grouped under `cso` in the UI. The deliberate `.iso`-not-in-Dolphin-verify
-divergence lives on `verifyExts` (a verify-routing fact), not on a `ModeSpec`
-field, so it is outside the guard's scope.
+**What `registry.load` builds.** One descriptor per payload tool, in the
+backend's order:
+
+- each mode is its `ModeSpec` fields camelCased (`outputExt`,
+  `inputExtensions`, `supportsDeleteOnVerify`, `deleteProof`, ...), with
+  `defaultCompression` as a one-item array and `compressionCodecs` as the
+  mode's `codecs` worded from its tool's catalog (and each one's
+  `levelRange` from `codec_levels`);
+- a chain mode (it has `steps`) is listed under the tool its first step runs
+  (`cso_to_chd` under CSO, `nkit_to_rvz` under NKit), and the chain shell itself
+  is not listed;
+- `sourceExts` / `verifyExts` / `discExts` / `defaultCompression` are the
+  tool's `input_extensions` / `verify_extensions` / `disc_extensions` /
+  `default_compression`;
+- `getInfo` is `api.getToolInfo(id, path)` (`GET /api/info/{tool_id}`, §3.7.1)
+  for every tool except one marked `noInfo`.
+
+**What stays in `registry.js`: `TOOL_UI`, keyed by tool id.** The hint text,
+`verifyPrefix` (the legacy verify URL), `glyph`, `accent`, the `groups` labels,
+`defaultMode`, `compressionStyle`, `maxCodecs`, `compressionLevelRange`, the
+codec catalog's `label` / `hint` words, `contentRefined`, the `verify` /
+`verifyBatch` bindings and `productPath`. Two UI decisions also live there:
+`verifyExts` where the Verify row action is deliberately narrower than the
+tool's `verify_extensions` (Dolphin leaves out `.iso`, so a CD ISO is not sent
+to `/api/dolphin-verify`; rom-converto keeps only `.zar`), and
+`defaultCompression` for a tool whose picker seeds a value the backend does not
+name (nsz's `solid` layout). A tool with no `TOOL_UI` entry still appears, with
+plain defaults (`verifyPrefix` = its id, no glyph, `compressionStyle: 'none'`).
+
+**The registry is empty until loaded.** Every method answers from what `load`
+built, so nothing may read the registry at module import. `fileIcon.js` builds
+its buckets on first use; the conversion store reads it only in getters and
+methods, and App calls its `loadServerPrefs()` right after `load`. App shows a
+spinner in place of every view until the payload arrives, and retries a failed
+fetch: one request at a time, nothing after unmount, and a reply that names no
+tools (`load` answers false) never empties a loaded registry.
+
+**Guards.** `tests/test_tools_payload_27.py` calls the route in-test: every
+`ModeSpec` field is in every mode, and `registry.load(payload)` under Node
+answers `specFor`, `codecsForMode`, `levelRangeFor`, `toolsForSourcePath` and
+`displayExtension` from the backend for every mode. The Node harnesses
+(`tests/test_frontend_registry_derives_186.py`'s `loaded_registry_src()`,
+`tests/frontend_tools_harness.py`) load the same payload first. The old
+hand-mirror test (`test_frontend_parity_186.py`) is gone: there is nothing left
+to drift.
+
+#### 3.7.1 File info and verify routes, from the registry (#539)
+
+One `GET /api/info/{tool_id}?path=` answers for every tool (`routes.info._describe`):
+
+1. 403 outside the Volumes, 404 for a missing file;
+2. 400 for a file outside the plugin's `info_extensions` (default
+   `input_extensions | verify_extensions`; chdman narrows it to `.chd`,
+   rom-converto to `.zar`, the chain shell to nothing);
+3. 503 when the read needs a program that isn't there (`info_needs_tool`,
+   `_require_info_ready`);
+4. `await tool.describe(path)`, by default `info_model(await info(path), path)`.
+   chdman overrides it with the metadata-store cache and the disc ID. An
+   exception in the plugin's `info_file_errors` (NKit's header error, an `.iso`
+   that is not an Xbox image, a file rom-converto refuses) is a 422, a fact
+   about the file that lets the Info modal try the next tool; a
+   `StorageAbandoned` is a 503; anything else a 500.
+
+The old per-tool URLs (`/api/info`, `/api/dolphin-info`, ..., `/api/nsz-info`)
+are aliases of it, registered from `_LEGACY_INFO_ROUTES` with their handler
+names (OpenAPI operation ids) and typed response models (the plugin's
+`info_model` return annotation), so older web UIs and API clients keep
+working. A new tool needs no entry: `/api/info/<id>` answers for it.
+
+The verify trio is registered in one loop over `registry.all()`: every tool
+with `verify_extensions` gets `/api/<prefix>verify`, `/events` and
+`-batch/events`. `_VERIFY_CONFIG` keeps the legacy URL prefix, handler names
+and error words of the ten tools that had them; a tool without an entry gets
+`_default_verify_config(tool)` (`/api/<id>-verify`, read through the plugin).
 
 **Registry-derived frontend fact lists (issue #186, site 3).** Two presentation
 surfaces used to re-type extension/mode facts the registry already owns, so a
@@ -10273,11 +10358,13 @@ Before: ~20 files (see `ADDING_PLATFORMS_AND_TOOLS.md` §3). After:
    `_build_command`, `_parse_progress`, `verify_stream`, `info`, `info_model`.
 2. `app/services/tools/__init__.py`, one `registry.register(NszipTool(...))`.
 3. `app/config.py`, one `nszip_path` Field.
-4. `src/lib/tools/registry.js`, one entry in `TOOLS`.
+4. `src/lib/tools/registry.js`, optionally one `TOOL_UI` entry (glyph, words,
+   product path). Without it the tool still appears, from `/api/tools`.
 5. `Dockerfile`, install the binary (irreducible).
 6. tests + docs.
 
-Dispatch in `job_manager`, `convert`, `files`, `info`, **no edits**, because
+Dispatch in `job_manager`, `convert`, `files`, `info` (File info and verify
+routes included, §3.7.1), **no edits**, because
 they iterate the registry. That is the whole point.
 
 ---
@@ -10504,11 +10591,28 @@ Redump sync (`POST /dat/redump/sync`) and the CLI (`dat import`, `dat sync`):
   and `dat sync` reads RomM's saved settings (`romm_settings.load`) before it
   asks which consoles are present (PR #527).
 - `sync_redump` maps Platform slugs (`REDUMP_SYSTEMS`) to Redump's systems,
-  asks `https://redump.org/datfile/<system>/` through `http.client` on the
-  fixed host (`HTTPSConnection` with `ssl.create_default_context()`, so the
-  certificate and host name are checked; never plain HTTP, whose answer could
-  be swapped on the way into the DAT index, Codex on PR #527; no redirect
-  followed, generic `USER_AGENT`), one system at a time with
+  asks `redump.org/datfile/<system>/` through `http.client` on the fixed host
+  (`_connect_redump`). Verified HTTPS comes first (`HTTPSConnection` with
+  `ssl.create_default_context()`, so the certificate and host name are
+  checked). redump.org serves no HTTPS, so when that connection can't be made
+  at all (refused, unreachable, timed out) the same path is asked over plain
+  `HTTPConnection`: the owner's choice (#556), superseding the HTTPS-only rule
+  from Codex on PR #527. A certificate or host-name failure (`ssl.SSLError`,
+  `ssl.CertificateError`) never falls back; nor does a connection that drops
+  after it was made. Both transports send the same headers, follow no
+  redirect, use the generic `USER_AGENT`, and are held to the same
+  `save_capped`/`MAX_ZIP_SIZE` cap; the zip then goes through every archive
+  and DAT check below unchanged. `redump_url(system, scheme)` names the URL
+  actually used, and a failure says which transports were tried. Plain HTTP
+  is allowed for redump.org only, and each DAT it imports records the
+  transport used (`_fetch`'s `transport`, `dats.transport`; a fetch that
+  doesn't say counts as `http`), so a DAT fetched over plain HTTP never
+  vouches for a delete (the Recognized proof, §3.3.12). A system whose DAT
+  isn't recorded as `https` is asked unconditionally (a 304 can't show its
+  bytes were genuine); when the answer comes over HTTPS byte-identical to the
+  stored download, `dat_store.upgrade_to_https` marks that system's `http`
+  rows `https` without re-importing (Codex 4659261223). It never touches an
+  `https`, `manual` or NULL row, so nothing is ever downgraded. One system at a time with
   `REQUEST_GAP_SECONDS` between requests, at most one sync at once. The cache
   (preference `redump_sync`) skips a system synced within `FRESH_FOR` whose
   DATs are still installed, sends `If-None-Match`/`If-Modified-Since` when it

@@ -55,6 +55,8 @@ def mock_z3ds_service(monkeypatch):
     mock_service.verify_stream = fake_verify_stream
 
     monkeypatch.setattr(info_routes, "z3ds_compress_service", mock_service)
+    # File info reads through the plugin.
+    monkeypatch.setattr(info_routes.registry.get("z3ds"), "_service", mock_service)
     return mock_service
 
 

@@ -308,10 +308,13 @@ def _archive_verdict(source_path: str) -> tuple[str, List[str]] | None:
     return ("extra", extras) if extras else None
 
 
-def _other_owner(part: str, source: Path) -> str | None:
+def _other_owner(
+    part: str, source: Path, links_of: dict[str, list | str] | None = None,
+) -> str | None:
     """Why *part* of *source* stays: another file names it too (a sheet, a
     playlist, a set; ``image_sets.owners_naming``), or that could not be told
-    (fail closed). None when only *source* does."""
+    (fail closed). None when only *source* does. *links_of* keeps each
+    Volume's links (``image_sets.volume_links``, #555) across one plan."""
     from services import image_sets
 
     if not os.path.exists(part):
@@ -324,8 +327,26 @@ def _other_owner(part: str, source: Path) -> str | None:
         return None
     stop = str(boundary)
     name = os.path.basename(part)
+    cache = links_of if links_of is not None else {}
     try:
-        owners = image_sets.owners_naming(part, stop_at=stop)
+        if stop not in cache:
+            # The walk covers the whole Volume, so it is stall-bounded like the
+            # routes' (#555): a mount that stops answering leaves the owners
+            # unknown and the file kept, rather than holding the job.
+            from routes import volume_guard
+            from services.subprocess_runner import Stalled, run_blocking_within_stall_bound
+
+            try:
+                cache[stop] = run_blocking_within_stall_bound(
+                    image_sets.volume_links, stop, what="Finding the links in a Volume",
+                    stall=volume_guard.WALK_STALL_SECONDS,
+                )
+            except (image_sets.SheetOwnerUnknown, Stalled) as exc:
+                cache[stop] = str(exc)
+        links = cache[stop]
+        if isinstance(links, str):
+            raise image_sets.SheetOwnerUnknown(links)
+        owners = image_sets.owners_naming(part, stop_at=stop, links=links)
     except (image_sets.SheetOwnerUnknown, OSError, ValueError) as exc:
         return f"{exc}, so whether another game needs {name} is unknown; it is kept"
     own = os.path.normcase(os.path.realpath(source))
@@ -355,6 +376,7 @@ def build_delete_plan(
     missing_paths: List[str] = []
     unsafe_paths: List[str] = []
     errors: List[str] = []
+    links_of: dict[str, list | str] = {}
     warnings: List[str] = []
 
     def _add_path(path: Path) -> None:
@@ -434,7 +456,7 @@ def build_delete_plan(
             _add_path(track_path)
             # A track another game's sheet names too is never deleted with
             # this one (#549 review): the plan is blocked instead.
-            shared = _other_owner(str(track_path), source)
+            shared = _other_owner(str(track_path), source, links_of)
             if shared:
                 errors.append(shared)
         unsafe_paths[:] = list(dict.fromkeys(unsafe_paths))
@@ -458,7 +480,7 @@ def build_delete_plan(
         ]
         for companion in dict.fromkeys(companions):
             _add_path(Path(companion))
-            shared = _other_owner(companion, source)
+            shared = _other_owner(companion, source, links_of)
             if shared:
                 errors.append(shared)
     except Exception as exc:

@@ -54,9 +54,22 @@
 - **Sync Redump in one click** (#524). Downloads Redump's DAT for each disc
   Platform in your Libraries, one request at a time, and leaves a system
   synced in the last day alone. Only DATs: never keys, BIOS sets or games.
-  It asks over HTTPS only, with the certificate checked, so a DAT can't be
-  swapped on the way in; while redump.org answers only plain HTTP, each
-  system reports that it couldn't connect. A Redump DAT you replace by hand
+  It tries HTTPS first, with the certificate checked. redump.org serves no
+  HTTPS, so when that connection can't be made it asks over plain HTTP
+  instead (#556); a certificate that doesn't check out stops the sync rather
+  than falling back. Either way the download is held to the same size caps
+  and archive checks, and a failure says which of HTTPS and HTTP it tried.
+  A DAT that came over plain HTTP still names and matches your files, but
+  never vouches for deleting a Source: if only such a DAT knows a converted
+  output, the Source stays and the job says why (Codex 4659176015). DATs you
+  import by hand, and ones fetched over HTTPS, prove outputs as before, and a
+  DAT fetched over HTTP is trusted again once the same file comes back over
+  HTTPS. Because an existing DAT can't show how it arrived, after upgrading
+  every Redump DAT you already have (including one you imported by hand, and
+  the MAME Redump DATs), and any DAT imported from 21 November 2026 on, no
+  longer vouches for deletes. Import it again by hand to restore that (MAME
+  Redump DATs also come back with MAME Redump's next release).
+  A Redump DAT you replace by hand
   is fetched again on the next sync. No-Intro stays upload-only, because its
   site is gated.
 - **Online identification is a single yes/no** (#524). Until you answer, the
@@ -89,6 +102,15 @@
   process priority, bound and cancel handling. Dead code is gone, the tool
   services share their common methods, and the two longest functions (the job
   runner and the Rule sweep) are split into named steps. Nothing else changes.
+- **The web UI reads its formats from the server** (#539). `GET /api/tools`
+  now also lists every tool's extensions and every mode's settings, and the
+  UI builds its list of converters from it at start, so it can never offer a
+  format or option the server would refuse. The views show a short "Loading
+  the tools" spinner until it arrives.
+- **One File info route for every tool** (#539): `GET /api/info/{tool}?path=`.
+  The old addresses (`/api/info`, `/api/dolphin-info`, `/api/nsz-info`, …)
+  still work. A file a tool doesn't describe is answered "Not a file … describes
+  (…)", naming the extensions it takes.
 - **One page per Library** (#541). **Libraries** lists every Library as a
   card with its consoles, games, whether it converts on its own, its watch
   folders and how many problems need you. A Library's page has **Browse** (its
@@ -199,9 +221,8 @@
     nothing.
   - **Defaults** (new): what new conversions start with (check each new file,
     delete the original once it checks out, quick check), the compression for
-    each format (the same one the Convert panel remembers), and **Keep history
-    for** forever, 30 days, 90 days or a year. Nothing in the UI set History's
-    retention before.
+    each format (the same one the Convert panel remembers). History keeps every
+    row (#542).
   - **Converters** keeps the CHD badge scan.
 - **`compressatorium convert` uses the running server** (#533). When the
   server is running on the same `/config`, the command finds it there and
@@ -299,9 +320,40 @@
     template is found for it or the folder holds a DOS program (`.exe`, `.com`
     or `.bat`). Other zips are skipped with the reason, as before.
   - Verify accepts a `.dosz` with no `dosbox.conf` when it holds a DOS program.
+- **Fewer settings** (#542). Process priority and timeouts are one value for
+  every tool now (`COMPRESSATORIUM_TOOL_*`). The 45 per-tool overrides
+  (`COMPRESSATORIUM_<TOOL>_NICE`, `_IOPRIO_CLASS`, `_IOPRIO_LEVEL`,
+  `_INFO_TIMEOUT`, `_VERIFY_TIMEOUT`) are retired. A deployment that still sets
+  one keeps working: the value sets the shared setting for every tool (when the
+  shared one isn't set; two that disagree give the largest), and startup logs
+  one warning naming it.
+  - The stall warning (300 s) and the DEBUG progress line (every 30 s) are fixed
+    timings. `CHD_DEBUG_PROGRESS_TIMEOUT`, `CHD_DEBUG_PROGRESS_INTERVAL` and (since #536) `CHD_DEBUG_HEARTBEAT` are
+    no longer read.
+  - "Back to the folder after queueing" from search results is a checkbox in
+    the Convert panel, remembered by the browser. It was the
+    `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` environment variable,
+    which is no longer read; it still starts on.
+  - Ledger rows are kept forever. The retention setting (only reachable through
+    `PUT /api/ledger/settings`) is gone, and a retention stored by an older
+    release prunes nothing.
+- **No duplicate routes** (#542). RomM's Rules use the Library routes like any
+  other Library: `/api/libraries/romm/rules`, `.../rules/forget-converted`,
+  `.../preview` and `.../run`. Removed: `/api/romm/rules`,
+  `/api/romm/rules/forget-converted`, `/api/romm/auto-convert/preview`,
+  `/api/romm/auto-convert/run`, and the uncalled `GET /api/jobs/{id}/events`
+  (use `/api/jobs/events`), `POST /api/dat/prune` and `GET/PUT
+  /api/ledger/settings`. `POST /api/dat/match` stays: ROMarr calls it.
 
 ### Fixed
 
+- **Delete keeps a file a sheet, playlist or set reaches through a link**
+  (#555). A `.cue` in one folder can name a track in another through a folder
+  link inside the Volume (`other/A.cue` naming `link/Shared.bin`). Deleting or
+  renaming that track, alone or as part of a delete-on-verify, now keeps it
+  and names the sheet, as it already did for a sheet beside the track. A link
+  to a folder outside the Volume leaves ownership unknown, so the file is
+  kept.
 - **Settings → Game identification** says when it couldn't check which
   consoles Redump covers, with **Try again**, instead of claiming none of
   your Libraries has one (#545 follow-up).

@@ -71,9 +71,15 @@ async def test_a_patch_is_held_to_the_librarys_policies(tree: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_romm_takes_a_patch_too() -> None:
-    from routes import romm as routes
+    """RomM's Rules are the Library routes' too (#542): PATCH .../romm/rules."""
+    from routes import libraries as routes
+    from services.romm.library import romm_library
 
-    assert callable(routes.patch_romm_rules)
+    assert romm_library.id == "romm"
+    assert any(
+        r.path == "/libraries/{library_id}/rules" and "PATCH" in r.methods
+        for r in routes.router.routes
+    )
 
 
 @pytest.mark.asyncio

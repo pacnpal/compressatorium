@@ -55,6 +55,8 @@ def mock_maxcso_service(monkeypatch):
     mock_service.verify_stream = fake_verify_stream
 
     monkeypatch.setattr(info_routes, "maxcso_service", mock_service)
+    # File info reads through the plugin.
+    monkeypatch.setattr(info_routes.registry.get("cso"), "_service", mock_service)
     return mock_service
 
 

@@ -123,7 +123,7 @@ class ChdmanService(RunnerService):
         so a scan walking a library can stop rather than strand one per file
         (issue #268).
         """
-        timeout = info_timeout(self._runner.owner)
+        timeout = info_timeout()
         with abandonment_checkpoint() as abandoned:
             returncode, stdout, stderr = await self._runner.run_capture(
                 [self.chdman_path, "info", "-i", chd_path],
