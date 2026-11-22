@@ -18,7 +18,8 @@ const SAVE_DEBOUNCE_MS = 500;
 
 // Defaults mirror the static CSS the resizable layout replaces.
 const DEFAULT_PANELS = Object.freeze({ left: 220, right: 360 });
-const DEFAULT_COLUMNS = Object.freeze({ name: 360, size: 80, ext: 60, status: 160 });
+// Size holds the longest size the table shows ("1023.99 MB") on one line.
+const DEFAULT_COLUMNS = Object.freeze({ name: 360, size: 100, ext: 60, status: 160 });
 
 // Clamp ranges keep a drag from collapsing a panel/column to nothing or
 // stretching it past anything useful.
