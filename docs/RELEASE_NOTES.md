@@ -306,6 +306,13 @@
 
 ### Fixed
 
+- **Delete keeps a file a sheet, playlist or set reaches through a link**
+  (#555). A `.cue` in one folder can name a track in another through a folder
+  link inside the Volume (`other/A.cue` naming `link/Shared.bin`). Deleting or
+  renaming that track, alone or as part of a delete-on-verify, now keeps it
+  and names the sheet, as it already did for a sheet beside the track. A link
+  to a folder outside the Volume leaves ownership unknown, so the file is
+  kept.
 - **Settings → Game identification** says when it couldn't check which
   consoles Redump covers, with **Try again**, instead of claiming none of
   your Libraries has one (#545 follow-up).

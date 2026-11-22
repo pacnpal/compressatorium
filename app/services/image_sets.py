@@ -151,6 +151,7 @@ PLAYLIST_READ_BYTES = 64 * 1024
 def owners_naming(
     path: str, *, stop_at: str, progress: Callable[..., None] | None = None,
     companions_of: dict[str, list[str]] | None = None,
+    links: list[tuple[str, str]] | None = None,
 ) -> list[str]:
     """Every file that names *path* as part of itself. Blocking.
 
@@ -166,16 +167,115 @@ def owners_naming(
     can't be read, or a set whose members can't be told raises
     :class:`SheetOwnerUnknown`, never "no owner". *companions_of* caches each
     sibling's companions across the calls of one batch.
+
+    A sheet or playlist names files in its folder and below, and through a
+    link anywhere in the Volume (#555): ``other/A.cue`` naming
+    ``link/Shared.bin`` with ``link`` pointing at ``tracks``. So the folders
+    read are the file's own and every folder a link reaches it from
+    (:func:`_reaching_folders` over *links*, :func:`volume_links` of *stop_at*
+    when not given), each with its ancestors up to *stop_at*. A set is read
+    beside the file and beside every link that reaches it.
     """
-    owners = list(_sheets_naming(path, stop_at, progress))
-    owners += _playlists_naming(path, stop_at, progress)
-    owners += _companion_owners(path, stop_at, progress, companions_of)
+    if links is None:
+        links = volume_links(stop_at, progress=progress)
+    real, _own = _own_stat(path)
+    reaching = _reaching_folders(real, links)
+    folders = list(dict.fromkeys(
+        folder for start in reaching for folder in _folders_up(start, stop_at, path)
+    ))
+    owners = list(_sheets_naming(path, stop_at, progress, folders=folders))
+    owners += _playlists_naming(path, stop_at, progress, folders=folders)
+    owners += _companion_owners(path, stop_at, progress, companions_of, folders=reaching)
     return list(dict.fromkeys(owners))
 
 
-def _folders_up(real: str, stop_at: str, path: str):
+def volume_links(
+    root: str, *, progress: Callable[..., None] | None = None,
+) -> list[tuple[str, str]]:
+    """Every link under *root* (a Volume) with its real target. Blocking.
+
+    ``(link, target)`` for a link whose target is in the Volume. Fails closed
+    (:class:`SheetOwnerUnknown`): a folder that can't be listed, or a link to
+    a folder outside the Volume, which may lead back in and is never walked
+    (a link to a file outside reaches nothing a sheet may use). Junk names are
+    read too: a sheet may use them (``resolve_track``).
+    ponytail: one walk per request; a per-Volume index kept until the listing
+    changes if a Volume is too large to walk per delete.
+    """
+    tick = progress or (lambda *_args: None)
+    boundary = os.path.normpath(os.path.realpath(root))
+    links: list[tuple[str, str]] = []
+    stack = [boundary]
+    while stack:
+        folder = stack.pop()
+        tick(folder)
+        # Every entry read is reported as it arrives, so a big or slow folder
+        # that keeps answering is never taken for a stalled one.
+        entries = []
+        try:
+            with os.scandir(folder) as it:
+                for entry in it:
+                    tick()
+                    entries.append(entry)
+        except OSError as exc:
+            raise SheetOwnerUnknown(
+                f"{folder} could not be listed ({exc.strerror or exc})",
+            ) from exc
+        for entry in entries:
+            tick()
+            try:
+                if entry.is_symlink():
+                    target = os.path.normpath(os.path.realpath(entry.path))
+                    if _inside(target, boundary):
+                        links.append((entry.path, target))
+                    elif os.path.isdir(target):
+                        raise SheetOwnerUnknown(
+                            f"{entry.path} links to a folder outside the Volume, so what "
+                            "reaches a file through it can't be told",
+                        )
+                elif entry.is_dir():
+                    stack.append(entry.path)
+            except OSError as exc:
+                raise SheetOwnerUnknown(
+                    f"{entry.path} could not be read ({exc.strerror or exc})",
+                ) from exc
+    return links
+
+
+def _under(path: str, top: str) -> bool:
+    """Whether *path* is *top* or below it, case folded on both sides as
+    :func:`_is_track` folds: on a case-insensitive share a link's target and a
+    file's real path may differ in case. Folding only widens the match, so it
+    can add a folder to read, never drop one: it fails closed."""
+    path, top = path.casefold(), top.casefold()
+    return path == top or path.startswith(top.rstrip(os.sep) + os.sep)
+
+
+def _reaching_folders(real: str, links: list[tuple[str, str]]) -> list[str]:
+    """The real folders whose sheets, playlists and sets may reach *real*.
+
+    Its own folder, and the folder of every link whose target is *real* or
+    holds it, or holds a folder already found (a link to a link's folder),
+    to a fixed point: finite, since each folder is taken once."""
+    found = [os.path.dirname(real)]
+    reached = [real, found[0]]
+    index = 0
+    while index < len(reached):
+        here = reached[index]
+        index += 1
+        for link, target in links:
+            if _under(here, target):
+                folder = os.path.dirname(link)
+                if folder not in found:
+                    found.append(folder)
+                    reached.append(folder)
+    return found
+
+
+def _folders_up(start: str, stop_at: str, path: str):
+    """*start* (a real folder) and its ancestors up to *stop_at*."""
     boundary = os.path.normpath(os.path.realpath(stop_at))
-    folder = os.path.normpath(os.path.dirname(real))
+    folder = os.path.normpath(start)
     if folder != boundary and not folder.startswith(boundary.rstrip(os.sep) + os.sep):
         raise SheetOwnerUnknown(f"{path} is not under {stop_at}")
     while True:
@@ -203,14 +303,19 @@ def _own_stat(path: str) -> tuple[str, os.stat_result]:
         raise SheetOwnerUnknown(f"{path} could not be read ({exc.strerror or exc})") from exc
 
 
-def _playlists_naming(path: str, stop_at: str, progress: Callable[..., None] | None):
-    """Every playlist from *path*'s folder up to *stop_at* that lists it."""
+def _playlists_naming(
+    path: str, stop_at: str, progress: Callable[..., None] | None,
+    *, folders: list[str] | None = None,
+):
+    """Every playlist in *folders* (*path*'s folder up to *stop_at*) that lists it."""
     from services.referrers import m3u
     from utils.path_utils import read_beneath
 
     tick = progress or (lambda *_args: None)
     real, own = _own_stat(path)
-    for folder in _folders_up(real, stop_at, path):
+    if folders is None:
+        folders = list(_folders_up(os.path.dirname(real), stop_at, path))
+    for folder in folders:
         tick(folder)
         for name in _listdir(folder):
             playlist = os.path.join(folder, name)
@@ -236,19 +341,24 @@ def _inside(path: str, boundary: str) -> bool:
 def _companion_owners(
     path: str, stop_at: str, progress: Callable[..., None] | None,
     companions_of: dict[str, list[str]] | None,
+    *, folders: list[str] | None = None,
 ) -> list[str]:
-    """The files beside *path* whose tools read it as part of their set."""
+    """The files in *folders* (beside *path*) whose tools read it as part of their set."""
     from services.tools.base import CompanionsUnknown
 
     tick = progress or (lambda *_args: None)
     real, own = _own_stat(path)
-    folder = os.path.dirname(real)
     boundary = os.path.normpath(os.path.realpath(stop_at))
     cache = companions_of if companions_of is not None else {}
     owners = []
-    for name in _listdir(folder):
-        sibling = os.path.join(folder, name)
-        if sibling == real or os.path.isdir(sibling):
+    siblings = [
+        os.path.join(folder, name)
+        for folder in (folders or [os.path.dirname(real)]) for name in _listdir(folder)
+    ]
+    for sibling in siblings:
+        name = os.path.basename(sibling)
+        # The file itself, by any name a link gives it, is not its own owner.
+        if sibling == real or os.path.isdir(sibling) or _same_file(sibling, real):
             continue
         tick(sibling)
         # A link out of the Volume is never opened (its tools would read
@@ -270,7 +380,10 @@ def _companion_owners(
     return owners
 
 
-def _sheets_naming(path: str, stop_at: str, progress: Callable[..., None] | None):
+def _sheets_naming(
+    path: str, stop_at: str, progress: Callable[..., None] | None,
+    *, folders: list[str] | None = None,
+):
     from utils.sheet_text import sheet_is_readable, sheet_track_list
 
     tick = progress or (lambda *_args: None)
@@ -280,10 +393,9 @@ def _sheets_naming(path: str, stop_at: str, progress: Callable[..., None] | None
     except OSError as exc:
         raise SheetOwnerUnknown(f"{path} could not be read ({exc.strerror or exc})") from exc
     boundary = os.path.normpath(os.path.realpath(stop_at))
-    folder = os.path.normpath(os.path.dirname(real))
-    if folder != boundary and not folder.startswith(boundary.rstrip(os.sep) + os.sep):
-        raise SheetOwnerUnknown(f"{path} is not under {stop_at}")
-    while True:
+    if folders is None:
+        folders = list(_folders_up(os.path.dirname(real), stop_at, path))
+    for folder in folders:
         tick(folder)
         try:
             names = sorted(os.listdir(folder))
@@ -310,12 +422,6 @@ def _sheets_naming(path: str, stop_at: str, progress: Callable[..., None] | None
                 )
             if any(_is_track(own, real, str(track)) for track in tracks):
                 yield sheet
-        if folder == boundary:
-            return
-        parent = os.path.dirname(folder)
-        if parent == folder:
-            return
-        folder = parent
 
 
 def sheet_track_identities(sheet: str) -> set[tuple[int, int]]:
