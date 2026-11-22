@@ -465,13 +465,13 @@
   folder outside every Volume, and a folder detection would read as another
   Platform are still refused. Synology's `@eaDir` folder, which RomM scans as
   a platform, is no longer listed, placed or swept.
-
 - **Files opens on your first Volume, wherever you started** (#571). Opened
   after Libraries, a Library, Needs attention or a watch folder, Files showed
   *This folder is empty.* with no Volume picked, because those pages load the
   Volume list for their own use and Files only picked one when it loaded the
   list itself. A `#/files/<folder>` link, or a folder already open, still
   wins.
+
 ## 4.6.0 (2026-11-20)
 
 ### Added
