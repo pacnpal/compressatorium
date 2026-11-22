@@ -67,3 +67,13 @@ def test_romm_browse_puts_convert_beside_the_list_only_when_the_table_fits():
     assert not re.search(r"@media \(min-width: 1280px\)", browse)
     needed = _frozen("DEFAULT_PANELS")["right"] + _table_min_width() + 36 + 9 + 16
     assert _container_breakpoint("components/library/RommBrowse.svelte") >= needed
+
+
+def test_the_main_column_never_sizes_to_its_content():
+    """Under 900px the sidebar is hidden and the main column fell into the
+    shell's first, auto-sized track. A size container contributes no width,
+    so Files collapsed to 159px on a phone."""
+    app = (_SRC.parent / "App.svelte").read_text(encoding="utf-8")
+    css = app.split("<style>", 1)[1]
+    main_col = css[css.index(".main-col {"):]
+    assert "grid-column: 2;" in main_col[:main_col.index("}")]
