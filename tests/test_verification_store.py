@@ -159,7 +159,7 @@ async def test_concurrent_writers_under_wal(
 
 @pytest.mark.asyncio
 async def test_refreshing_a_check_keeps_its_provenance(db_path, reset_db_engine):
-    """codex 4576728584, review r8 C1: a plain re-check (CLI verify, the web's
+    """A plain re-check (CLI verify, the web's
     Verify) never erases the mode that made the file or its Source."""
     from services import db as _db
     from services.verification_store import verification_store

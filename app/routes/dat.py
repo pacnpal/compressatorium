@@ -1166,7 +1166,7 @@ async def _hash_one_for_job(
     try:
         if stall_bounded:
             # The bounded caller's first look is detached, bounded and stops
-            # at its Cancel too (CodeRabbit 4608968234).
+            # at its Cancel too.
             st = await run_detached_within_stall_bound(
                 _stat_source, normalized_path,
                 what=f"Reading {os.path.basename(normalized_path)}",
@@ -1221,7 +1221,7 @@ async def match_one(
     Image from the match of the very bytes it takes, never from a row cached
     for an earlier file of that name.
 
-    Its whole-file read is stall-bounded and cancellable (Codex 4608007769):
+    Its whole-file read is stall-bounded and cancellable:
     it runs through ``run_detached_within_stall_bound``, the seam a bound
     Source's copy uses, with *cancel_event*, reporting each chunk; a read with
     no progress for *stall* seconds (None: the conversion's own limit) fails
@@ -2066,7 +2066,7 @@ async def _decide_match(
             # browsed.
             try:
                 # The bounded caller's wait for the lane stops at its Cancel
-                # too (Codex 4608417866); every other caller waits as before.
+                # too; every other caller waits as before.
                 lane_cancel = {"cancel_event": cancel_event} if stall_bounded else {}
                 async with await workload_limiter.acquire("match", **lane_cancel):
                     if stall_bounded:

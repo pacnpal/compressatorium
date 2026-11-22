@@ -55,10 +55,10 @@ from services import rom_converto_formats as formats
 from services.extract_xiso import XISO_VERIFY_EXTENSIONS, probe_console
 from services.output_placement import OutputPlacement
 from services.subprocess_runner import (
+    VerifyingRunnerService,
     ConversionCancelled,
     ReadCancelled,
     SubprocessRunner,
-    collect_verify,
     files_in_folder,
     info_timeout,
     remove_partial_tree,
@@ -222,7 +222,7 @@ def _call(mode: str) -> _ModeCall:
         raise ValueError(f"Unsupported rom-converto mode: {mode}") from None
 
 
-class RomConvertoService:
+class RomConvertoService(VerifyingRunnerService):
     """Wrapper for the ``rom-converto`` binary."""
 
     def __init__(self) -> None:
@@ -231,13 +231,6 @@ class RomConvertoService:
         # (binary path, size, mtime) -> (ready, reason): the readiness probe
         # runs the binary once per file, not on every GET /api/tools.
         self._readiness: tuple[tuple, bool, str] | None = None
-
-    def active_pids(self) -> list[int]:
-        return self._runner.active_pids()
-
-    def abandoned_pids(self) -> list[int]:
-        """Children that outlived SIGKILL; see ``SubprocessRunner``."""
-        return self._runner.abandoned_pids()
 
     def _command(self, *args: str) -> list[str]:
         """``rom-converto --no-update-check --no-cache <args>``."""
@@ -527,14 +520,6 @@ class RomConvertoService:
         yield {"progress": 100, "message": call.done}
 
     # --- verify -------------------------------------------------------------
-
-    async def verify(
-        self, file_path: str, *, cancel_event: asyncio.Event | None = None,
-    ) -> dict:
-        return await collect_verify(
-            self.verify_stream(file_path, cancel_event=cancel_event),
-            fallback_message="Verification failed",
-        )
 
     async def verify_stream(
         self, file_path: str, *, cancel_event: asyncio.Event | None = None,

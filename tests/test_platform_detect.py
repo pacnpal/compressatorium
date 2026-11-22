@@ -551,8 +551,8 @@ def test_a_gdi_lists_its_tracks_as_header_reads(tmp_path):
     assert reads == [str(folder / "track01.bin"), str(folder / "track02.raw")]
 
 
-# --- Cache validity: refused tracks, folder resolution (CodeRabbit 4577311048,
-# 4577311046) --------------------------------------------------------------- #
+# --- Cache validity: refused tracks, folder resolution
+# --------------------------------------------------------------- #
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
 def test_a_cue_whose_track_was_refused_is_detected_afresh_once_it_is_fixed(tmp_path):

@@ -58,7 +58,7 @@ async def test_an_unreadable_stored_row_answers_the_safe_defaults(store) -> None
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stored", [["verify_after"], "true", 3])
 async def test_a_stored_value_that_is_not_an_object_answers_the_safe_defaults(store, stored):
-    """CodeRabbit 4651507790: a list or string stored under the key must not
+    """a list or string stored under the key must not
     raise before the fallback."""
     await store.put("defaults", stored)
     assert await preferences_routes.get_defaults_preferences() == {

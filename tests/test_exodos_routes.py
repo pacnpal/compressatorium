@@ -78,7 +78,7 @@ async def test_web_verify_fails_a_corrupt_product_and_records_nothing(volume):
 
 
 
-# --- a check that could not read the file is no verdict (#354, codex 4582164683)
+# --- a check that could not read the file is no verdict (#354)
 
 
 @pytest.mark.asyncio

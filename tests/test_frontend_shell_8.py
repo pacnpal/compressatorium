@@ -138,7 +138,7 @@ process.stdout.write(JSON.stringify([at('/v/roms/psx'), at('/v/other'), at('/w')
 
 
 def test_findings_refresh_without_the_needs_attention_tab():
-    """Codex 4651470866: the badge and Activity's default tab read the findings
+    """the badge and Activity's default tab read the findings
     count, so it is refreshed when a run finishes and on entering Activity, not
     only while Needs attention is mounted."""
     app = (_SRC / "App.svelte").read_text(encoding="utf-8")
@@ -153,7 +153,7 @@ def test_findings_refresh_without_the_needs_attention_tab():
 
 
 def test_one_url_shows_one_tab():
-    """Codex 4651470868: Back to a bare `#/libraries/romm` shows Browse again.
+    """Back to a bare `#/libraries/romm` shows Browse again.
     The tab is derived from the route, never kept from an earlier one."""
     page = _read("views/LibraryView.svelte")
     assert "const tab = $derived(\n    tabs.some(([t]) => t === ui.libraryTab)" in page
@@ -163,7 +163,7 @@ def test_one_url_shows_one_tab():
 
 
 def test_the_chd_badge_scan_has_a_home_in_settings():
-    """Codex 4651580103: the Dashboard's CHD metadata card was the only caller
+    """the Dashboard's CHD metadata card was the only caller
     of the scan. The file list only reads the cache, so a CHD added outside the
     UI got no CD/DVD badge until a scan; Settings → Converters runs it now."""
     scan = _read("settings/ChdMetadataScan.svelte")

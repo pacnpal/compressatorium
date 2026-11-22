@@ -1,4 +1,4 @@
-"""Archived track sheets (PR #320, Codex 4576751005).
+"""Archived track sheets (PR #320).
 
 A ``.cue`` / ``.gdi`` inside an archive is extracted with its tracks into the
 job's own temp folder, which is not a Volume. The track check (#303) must take

@@ -345,7 +345,7 @@ def _fetch(system: str, cached: dict, dest: str) -> tuple[str | None, dict]:
             "etag": resp.headers.get("ETag"),
             "last_modified": resp.headers.get("Last-Modified"),
             # Recorded with each DAT: one over plain HTTP never vouches for a
-            # delete (services.recognized, Codex 4659176015).
+            # delete (services.recognized).
             "transport": scheme,
         }
     finally:
@@ -429,7 +429,7 @@ async def _sync_redump(platforms, *, force: bool, rematch: bool) -> dict:
                 if digest is None or (present and digest == entry.get("sha256")):
                     if digest is not None and meta.get("transport") == "https" and not trusted:
                         # The same bytes over HTTPS prove the earlier plain-HTTP
-                        # download genuine (Codex 4659261223); never the reverse.
+                        # download genuine; never the reverse.
                         await _store().upgrade_to_https(entry["dat_ids"])
                         entry.update({k: v for k, v in meta.items() if v is not None})
                     entry["synced_at"] = _now().isoformat()

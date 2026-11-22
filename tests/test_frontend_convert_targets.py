@@ -86,7 +86,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_entries_a_mode_cannot_read_are_not_offered(tmp_path):
-    """CodeRabbit 4651507824 and 4651507825: a CHD inside a zip is not offered
+    """A CHD inside a zip is not offered
     to Copy (no archive input), and a content-refined tool (Xbox) is offered
     only where the backend's probe claimed the file."""
     got = _targets(tmp_path, """
@@ -163,7 +163,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_the_mode_list_keeps_to_a_romm_platforms_formats():
-    """Codex 4651687770: on a RomM platform the shared Convert-to list offered
+    """on a RomM platform the shared Convert-to list offered
     every ready tool (CHDMAN Create DVD on GameCube). While the panel shows a
     RomM catalog it is narrowed to that platform's tool_ids and mode_ids."""
     src = (_SRC / "components" / "panels" / "ConvertPanel.svelte").read_text(encoding="utf-8")
@@ -190,7 +190,7 @@ def test_the_convert_panel_lists_every_ready_tools_formats():
 
 
 def test_a_numbered_split_iso_reads_as_iso(tmp_path):
-    """CodeRabbit 4654265235: a split PS3 build's `Game.iso.0` is an ISO."""
+    """a split PS3 build's `Game.iso.0` is an ISO."""
     got = _targets(tmp_path, """
 const names = ['/v/Game.iso.0', '/v/Game.iso', '/v/Halo.xiso.iso', '/v/a.chd', '/v/noext'];
 process.stdout.write(JSON.stringify(names.map(formatOfPath)));

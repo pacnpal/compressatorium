@@ -44,7 +44,7 @@
   // Bumped when a choice doesn't stick, so the select shows the saved one again.
   let reset = $state(0);
   // Bumped by every choice: a folder save still out when another app is
-  // picked never turns the updates back on (CodeRabbit 4652729306).
+  // picked never turns the updates back on.
   let choice = 0;
   // False once the tab is gone: a search answering later writes nothing.
   let alive = true;

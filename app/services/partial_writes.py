@@ -549,7 +549,7 @@ def _sweep_slot(stage_fd: int, name: str, min_age: float, *, where: str) -> bool
             stage_fd, lock_name, os.fstat(lock_fd)
         ):
             return None  # a name now points at something else
-        # Once more under the lock (CodeRabbit 4594218526): a writer may have
+        # Once more under the lock: a writer may have
         # marked the slot kept and let go of its lock since the first look.
         # The same check, so one that can't be made keeps it.
         if _marked_kept(stage_fd, name):

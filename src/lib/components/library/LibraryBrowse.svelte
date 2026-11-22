@@ -55,7 +55,7 @@
     <Button size="sm" variant="secondary" onclick={() => source.loadPlatforms()}>Try again</Button>
   </div>
 {:else if source.platforms.length === 0}
-  <!-- Games with no console are still the person's to fix (CodeRabbit 4652729331). -->
+  <!-- Games with no console are still the person's to fix. -->
   {@render unsortedNotice()}
   <EmptyState
     title="No games found here yet"
@@ -84,7 +84,7 @@
           <td>{platform.name}</td>
           <td class="num">{platform.images ?? 0}</td>
           {#if platform.folder_note}
-            <!-- Two folders claim its games: no guess, no link (Codex 4653298954). -->
+            <!-- Two folders claim its games: no guess, no link. -->
             <td class="muted">Can't tell: {platform.folder_note}</td>
             <td></td>
           {:else}

@@ -104,10 +104,6 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def running_job(library_id: str) -> str | None:
-    return _running.get(library_id)
-
-
 def start(library: Library) -> Any:
     """Start *library*'s find-duplicates run as an external job. Returns the job.
 
@@ -264,7 +260,7 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         )
         # A child a tool could not kill (it outlived SIGKILL) means the storage
         # is not answering: going on would strand one more per file. The run
-        # stops there, as the metadata scan does (#268, Codex 4590926165).
+        # stops there, as the metadata scan does (#268).
         # Any other failure costs this file only.
         key = after = unavailable = None
         with collect_abandonment() as abandoned:
@@ -281,7 +277,7 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
                 unavailable = exc
         # Checked once, right after the read and before anything branches on
         # what it returned (a key, an unavailable key, an exception): a tool
-        # that left a child behind may still have answered (Codex 4591089580).
+        # that left a child behind may still have answered.
         if abandoned:
             raise _Abandoned(
                 f"Reading {os.path.basename(candidate.path)} left a process stuck on "

@@ -41,6 +41,7 @@ from config import settings
 from logging_setup import get_logger
 from services import ps3
 from services.subprocess_runner import (
+    RunnerService,
     ConversionCancelled,
     ReadCancelled,
     SubprocessRunner,
@@ -63,8 +64,12 @@ _PROGRESS_RE = re.compile(r"(\d{1,3})\s*%")
 logger = get_logger("makeps3iso")
 
 
-class MakePs3IsoService:
-    """Wrapper for the makeps3iso binary."""
+class MakePs3IsoService(RunnerService):
+    """Wrapper for the makeps3iso binary.
+
+    A plain ``RunnerService``: its ``verify`` is its own PARAM.SFO readback,
+    not a drained ``verify_stream`` (#543).
+    """
 
     def __init__(self) -> None:
         self.makeps3iso_path = settings.makeps3iso_path
@@ -187,13 +192,6 @@ class MakePs3IsoService:
             return None
         value = int(matches[-1])
         return value if 0 <= value <= 100 else None
-
-    def active_pids(self) -> list[int]:
-        return self._runner.active_pids()
-
-    def abandoned_pids(self) -> list[int]:
-        """Children that outlived SIGKILL; see ``SubprocessRunner``."""
-        return self._runner.abandoned_pids()
 
     # ----- output paths -----------------------------------------------------
 
@@ -430,7 +428,7 @@ class MakePs3IsoService:
             # Finding the set stats the disk too, so it runs on the same
             # detached thread as the check, never on the event loop: a hung
             # mount then meets the verify's bound and cancel like the
-            # readback above (codex 4577688831).
+            # readback above.
             try:
                 damage = await run_detached(
                     self._split_set_damage, iso_path, cancel_event=cancel_event,

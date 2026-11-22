@@ -35,7 +35,7 @@ class LockFailed(RuntimeError):
     """A lock could not be taken for a reason other than someone holding it:
     the lock file can't be made or locked (ENAMETOOLONG, EACCES, EROFS,
     ENOSPC, ENOLCK ...). Not contention, so the caller fails the job with the
-    reason instead of waiting for a turn that never comes (codex 4577893015).
+    reason instead of waiting for a turn that never comes.
     """
 
     def __init__(self, path: str, exc: BaseException):
@@ -107,8 +107,8 @@ def open_lock_handle(path: str):
 
 # The path a lock file records (``_record_path``), one encoding for every lock
 # kind: ``hex:`` and the hex of the path's filesystem bytes, then a newline.
-# Lossless for any pathname, a newline or a non-UTF-8 byte included (codex
-# 4578027196). A first line without the prefix is the older plain record
+# Lossless for any pathname, a newline or a non-UTF-8 byte included. A first
+# line without the prefix is the older plain record
 # (``os.fsencode(path)``, newline-terminated), still read during an upgrade.
 _RECORD_PREFIX = b"hex:"
 # PATH_MAX (4096) bytes as hex, the prefix and the newline, with room to spare.
@@ -539,8 +539,7 @@ class LockManager:
         takes (``_output_keys``), locked here or in any process; or None.
 
         The dispatch probe: the same identities, so a symlinked output whose
-        own folder is being packed is seen even when its target is elsewhere
-        (codex 4577847011).
+        own folder is being packed is seen even when its target is elsewhere.
         """
         return self._folder_locked_above_keys(self._output_keys(output_path))
 
@@ -576,7 +575,7 @@ class LockManager:
         component, so once an overwrite sweep has unlinked that symlink the new
         file's path is still the one locked; and, when the output is a symlink
         today, its current real target, so nobody rewrites the old target
-        mid-job (codex 4577612344). One key when the output is no symlink.
+        mid-job. One key when the output is no symlink.
         """
         absolute = os.path.abspath(output_path)
         destination = os.path.join(
@@ -609,7 +608,7 @@ class LockManager:
             return False
         self._ensure_ready()
 
-        # No filesystem I/O under `_lock_mutex` (codex 4579852997): the mutex
+        # No filesystem I/O under `_lock_mutex`: the mutex
         # only claims the identity in memory, so a probe that stalls on a dead
         # mount can never hold it against a caller on the event loop.
         with self._lock_mutex:
@@ -728,7 +727,7 @@ class LockManager:
         False), having let go of the ones taken before it. A
         :class:`LockFailed` (or anything else) on a later path lets go of
         them too before it propagates, so no exit leaves a lock held
-        (Codex 4602538955)."""
+        ."""
         held: list[str] = []
         try:
             for path, allow_existing in wanted:
@@ -763,7 +762,7 @@ class LockManager:
         The handle is taken out under the mutex, the lock file is unlinked and
         unlocked outside it (no I/O under the mutex), and only then is the
         identity dropped from ``_locks``: another job here sees the path as
-        free only once the flock is actually gone (codex 4579986280).
+        free only once the flock is actually gone.
         """
         with self._lock_mutex:
             if normalized_path not in self._locks:
@@ -971,7 +970,7 @@ class LockManager:
         except Exception:
             logger.error("Error releasing lock for %s", label, exc_info=True)
 
-    # Referrer locks (codex 4577804154). A Referrer rewriting a file other
+    # Referrer locks. A Referrer rewriting a file other
     # processes may rewrite too (one ``.m3u`` naming discs that a CLI run and
     # the server convert at once) holds this exclusive lock on the file's real
     # path for its whole read, rewrite and replace. Its own kind of lock file

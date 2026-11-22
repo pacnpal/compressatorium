@@ -196,7 +196,7 @@ class Settings(BaseSettings):
         default=0,
         alias="CHD_ARCHIVE_MAX_TOTAL_SIZE",
     )
-    # An archive an Inbox takes in (#431, Codex 4607318277): anyone who can
+    # An archive an Inbox takes in (#431): anyone who can
     # write the Inbox can drop one, so it is never checked past these. The
     # declared uncompressed size, per member and in all, where
     # CHD_ARCHIVE_MAX_MEMBER_SIZE / CHD_ARCHIVE_MAX_TOTAL_SIZE are unlimited
@@ -211,7 +211,7 @@ class Settings(BaseSettings):
         alias="CHD_ARCHIVE_INBOX_MAX_RATIO",
     )
     # What every archive an Inbox has unpacked at once may hold in all, in
-    # the work area (#432, Codex 4608429476): one more waits until there is
+    # the work area (#432): one more waits until there is
     # room. Unset, it is CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE; 0 turns it off.
     archive_inbox_max_unpacked_size: int | None = Field(
         default=None,

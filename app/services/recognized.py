@@ -9,7 +9,7 @@ looks the hash up in the local DATs, then in Hasheous when that is switched
 on, and passes only on a hit.
 
 A DAT that came over plain HTTP (the Redump sync's fallback, #557) never
-vouches: it could have been swapped on the way (Codex 4659176015). It still
+vouches: it could have been swapped on the way. It still
 names and matches files everywhere else; here its entries are set aside, so
 an output only it knows is a miss that says so, and the Source stays. A DAT
 imported by hand, fetched over HTTPS, or recorded before the transport was
@@ -64,7 +64,7 @@ def _kept(why: str = "", *, timed_out: bool = False) -> RecognizedOutcome:
 def _may_vouch(match: dict) -> bool:
     """Whether a DAT match may prove a delete: never one that came over plain
     HTTP, nor a Redump DAT whose transport was never recorded, which may have
-    come over the fallback (Codex 4659261220; migration 0028 marks those
+    come over the fallback (migration 0028 marks those
     ``http`` already, this holds whatever wrote the row)."""
     transport = match.get("transport")
     if transport == PLAIN_HTTP:

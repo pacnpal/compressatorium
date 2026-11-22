@@ -229,7 +229,7 @@
         {/if}
       </span>
       <span role="cell" class="more">
-        <!-- Every console, Rule or not: its own re-check is set up here (Codex 4653752396). -->
+        <!-- Every console, Rule or not: its own re-check is set up here. -->
         <IconButton
           label={`More settings for ${platform.name}`}
           active={open.has(platform.id)}

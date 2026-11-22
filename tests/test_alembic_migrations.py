@@ -280,7 +280,7 @@ def test_0017_adds_the_content_keys(fresh_db_path: str):
     assert {"path", "size", "mtime_ns", "key", "container"} <= set(columns)
     assert columns["key"]["nullable"] is True
     # The CHD metadata cache records the file's identity, size and
-    # st_mtime_ns (Codex 4589796866, CodeRabbit 4589859837); rows written
+    # st_mtime_ns; rows written
     # before it read None and are stale.
     chd = {c["name"]: c for c in inspect(engine).get_columns("chd_metadata")}
     assert chd["size"]["nullable"] is True
@@ -601,10 +601,10 @@ def test_0029_gives_ledger_rows_a_warning(fresh_db_path: str):
 
 
 def test_0028_records_how_each_dat_arrived(fresh_db_path: str):
-    """0028, on #431's 0027 (Codex 4659176015 on #557): each DAT records how
+    """0028, on #431's 0027 (#557): each DAT records how
     it arrived. An existing DAT that could have come over #557's plain-HTTP
-    fallback is marked ``http`` and can't vouch for a delete (Codex 4659261220:
-    the sync cache is not a complete history, since a partly failed sync never
+    fallback is marked ``http`` and can't vouch for a delete
+    (the sync cache is not a complete history, since a partly failed sync never
     records its DATs). That is any DAT imported once #557's code could exist
     (or whose import time can't be read), any Redump DAT, and any DAT the
     cache names. Only an older, non-Redump DAT is left unset, read as before.

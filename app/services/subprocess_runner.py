@@ -274,8 +274,7 @@ def _probe_in_daemon_thread(func: Callable[[], object]) -> asyncio.Future:
         threading.Thread(target=_worker, daemon=True, name="fs-probe").start()
     except RuntimeError as exc:
         # The OS thread limit: nothing started, so the slot is given back and
-        # the caller hears what it hears when no slot is free (CodeRabbit
-        # 4594855525).
+        # the caller hears what it hears when no slot is free.
         _probe_slots.release()
         raise ProbeCapacityExceeded(f"no filesystem probe thread could start: {exc}") from exc
     return future
@@ -590,7 +589,7 @@ def ioprio_prefix() -> list[str]:
     ionice = _WRAPPERS.get("ionice")  # cache only: see _resolve_wrappers
     if not ionice:
         return []
-    # -t: best effort, like nice's renice (CodeRabbit 4615955439). A class the
+    # -t: best effort, like nice's renice. A class the
     # kernel denies (realtime without CAP_SYS_ADMIN) no longer stops ionice
     # before it runs the tool with ionice's own exit 1, read as the tool's.
     return [ionice, "-t", "-c", str(ioprio_class), "-n", str(ioprio_level)]
@@ -616,7 +615,7 @@ def nice_prefix() -> list[str]:
 
 def _has_cap_sys_nice() -> bool:
     """Whether this process holds CAP_SYS_NICE (bit 23 of CapEff), read once.
-    Being root is not the test (codex 4615398086): a container's root often
+    Being root is not the test: a container's root often
     lacks it. Where /proc can't say, root is assumed to hold it."""
     try:
         with open("/proc/self/status", encoding="ascii") as status:
@@ -658,7 +657,7 @@ def _wrapper_path(name: str) -> str | None:
     finds it when PATH held a relative entry. Blocking: only
     :func:`_resolve_wrappers` calls it, off the event loop. ``nice_prefix`` and
     ``ioprio_prefix`` read the cache alone, a wrapper not yet looked up being
-    no wrapper (CodeRabbit 4616275683), so building a prefix never scans."""
+    no wrapper, so building a prefix never scans."""
     if name not in _WRAPPERS:
         found = shutil.which(name)
         _WRAPPERS[name] = os.path.abspath(found) if found else None
@@ -667,8 +666,8 @@ def _wrapper_path(name: str) -> str | None:
 
 async def _resolve_wrappers(owner: str | None) -> bool:
     """Look up, off the event loop and bounded (``_bounded_probe``), each
-    wrapper *owner*'s settings ask for that isn't cached yet (CodeRabbit
-    4616166783). False when a lookup stalled on a PATH entry that doesn't
+    wrapper *owner*'s settings ask for that isn't cached yet. False when a
+    lookup stalled on a PATH entry that doesn't
     answer: that spawn runs with no wrapper, at normal priority, and nothing
     is cached, so a later spawn tries again."""
     wanted = []
@@ -681,7 +680,7 @@ async def _resolve_wrappers(owner: str | None) -> bool:
             continue
         if name in _LOOKING_UP:
             # One lookup per wrapper at a time, even after its caller gave up
-            # on it (CodeRabbit 4616898109): a PATH entry that never answers
+            # on it: a PATH entry that never answers
             # costs one probe thread, not one per spawn until the probe slots
             # run out. This spawn runs at normal priority meanwhile.
             return False
@@ -729,7 +728,7 @@ def _prioritize_child(pid: int) -> None:
     The verify paths (``capture_verify``, ``run_verify``, ``hash_stdout``)
     spawn the tool directly: ``nice``/``ionice`` exec through ``execvp``,
     which hands a file the kernel refuses (empty, a bare ``#!``) to
-    ``/bin/sh``, and its exit 0 would read as a pass (CodeRabbit 4616898119).
+    ``/bin/sh``, and its exit 0 would read as a pass.
     A direct exec raises ENOEXEC instead. The nice level is then set on the
     child by ``setpriority`` (the same increment over this process that
     ``nice -n`` gives; a level :func:`_can_renice` refuses is left off), and
@@ -742,11 +741,11 @@ def _prioritize_child(pid: int) -> None:
             os.setpriority(os.PRIO_PROCESS, pid, max(-20, min(19, own + value)))
         except OSError:
             pass
-    # Never awaited by the spawn (CodeRabbit 4617379646): the nice level is a
+    # Never awaited by the spawn: the nice level is a
     # syscall, and `ionice -p` runs as a task of its own, so a stalled one
     # can't hold back the verify's deadline or cancel, which start at once.
     # Its cache was filled by the argv build before the spawn (no lookup
-    # here). Kept out of the shared probe pool (CodeRabbit 4617447724): an
+    # here). Kept out of the shared probe pool: an
     # asyncio child of its own, bounded and killed on a stall, and at most
     # _MAX_IONICE_TASKS at once; past that the child gets no I/O priority.
     prefix = ioprio_prefix()
@@ -762,8 +761,7 @@ _MAX_IONICE_TASKS = 4
 _IONICE_SECONDS = 5.0
 _IONICE_TASKS: set[asyncio.Future] = set()
 # Set for good once an `ionice` child outlives SIGKILL: its slot can't be
-# counted back, and I/O priority isn't worth pursuing on that storage
-# (CodeRabbit 4617587026).
+# counted back, and I/O priority isn't worth pursuing on that storage.
 _IONICE_STUCK = False
 
 
@@ -808,15 +806,15 @@ def _ionice_done(task: asyncio.Future) -> None:
 
 def _forget_wrappers() -> None:
     """A wrapped spawn failed to start: the cached ``nice``/``ionice`` may be
-    gone (CodeRabbit, review 5960207187), so the next spawn looks them up
+    gone, so the next spawn looks them up
     again rather than failing until the process restarts."""
     _WRAPPERS.clear()
 
 
 def _note_exit(returncode: int | None, wrapped: bool) -> None:
     """A wrapped run that exited 126/127 may mean a cached wrapper is gone:
-    the outer ``nice`` starts and its inner ``ionice`` doesn't (codex
-    4617171876). Forget the cache, so the next spawn looks them up again; a
+    the outer ``nice`` starts and its inner ``ionice`` doesn't. Forget the
+    cache, so the next spawn looks them up again; a
     tool's own 126/127 costs one extra lookup."""
     if wrapped and returncode in (126, 127):
         _forget_wrappers()
@@ -943,7 +941,7 @@ async def until_cancelled(
     Every way out that does not hand the result to the caller gives it to
     *discard* (a lane token to give back): the event's Cancel, and the
     caller's own task being cancelled, even in the window where the call had
-    already finished but the caller had not yet resumed (Codex 4590926157). A
+    already finished but the caller had not yet resumed. A
     call still running then is cancelled, and its result, should it arrive
     after all, is discarded as it lands.
     """
@@ -1097,8 +1095,8 @@ def start_detached_eventually(
     """:func:`start_detached_or_own_thread`, or, when no thread can start at
     all (the OS thread limit), the same again on the loop every
     :data:`NO_THREAD_RETRY_SECONDS` until one does. For cleanup that must
-    happen and that the caller no longer owns, such as letting go of locks
-    (CodeRabbit 4594855525). Returns the started call's future, or None when
+    happen and that the caller no longer owns, such as letting go of locks.
+    Returns the started call's future, or None when
     it was left to the retries. Never raises :class:`NoThreadAvailable`.
     Must be called on the event loop."""
     try:
@@ -1293,7 +1291,7 @@ async def run_detached_mutation(
     way, but then the locks stay the caller's). A cancel propagates as usual,
     after the hand-off. An exception from *func* within the wait propagates.
 
-    Only a worker that has started can own the locks (codex 4579801887): when
+    Only a worker that has started can own the locks: when
     none could be launched (:class:`ProbeCapacityExceeded`), or the caller
     gave up before it began, nothing is handed off, *func* never runs, the
     caller keeps its locks, and :class:`MutationNotStarted` says so.
@@ -1341,7 +1339,7 @@ async def run_detached_mutation(
         if settled:
             # The mutation finished; the locks are still the caller's. Its own
             # failure (an ETIMEDOUT from a network filesystem included) is
-            # that failure, not the wait running out (codex 4579904147).
+            # that failure, not the wait running out.
             if error is exc or not isinstance(exc, asyncio.TimeoutError):
                 raise  # its own failure as raised, or the caller's cancel
             if error is not None:
@@ -1454,7 +1452,7 @@ class DeadlineExpired(asyncio.TimeoutError):
     Never raised for the call's own ``TimeoutError`` (a network filesystem's
     ``ETIMEDOUT``): ``asyncio.TimeoutError`` is the built-in ``TimeoutError``,
     so the bounded helpers tell the two apart by who finished (``_Finished``),
-    not by type, and re-raise the call's own error as itself (codex 4579904147).
+    not by type, and re-raise the call's own error as itself.
     """
 
 
@@ -1649,7 +1647,7 @@ async def run_detached_within_stall_bound(
     reported, is raised. ``ReadCancelled`` still propagates for a cancel. A
     call that finished just as the bound ran out is answered, or raises its
     own error, and an instant ``TimeoutError`` (``ProbeCapacityExceeded``, an
-    OS ``ETIMEDOUT``) keeps its own type and message (codex 4579904147).
+    OS ``ETIMEDOUT``) keeps its own type and message.
     Whatever ends the wait, the call is told to stop at its next report.
     """
     bound = conversion_stall_bound() if stall is None else stall
@@ -1976,6 +1974,45 @@ async def collect_verify(
     return result
 
 
+class RunnerService:
+    """What every tool service shares over its ``SubprocessRunner`` (#543).
+
+    A service sets ``self._runner``. One that streams a verify subclasses
+    :class:`VerifyingRunnerService` instead.
+    """
+
+    _runner: "SubprocessRunner"
+
+    def active_pids(self) -> list[int]:
+        return self._runner.active_pids()
+
+    def abandoned_pids(self) -> list[int]:
+        """Children that outlived SIGKILL; see ``SubprocessRunner``."""
+        return self._runner.abandoned_pids()
+
+
+class VerifyingRunnerService(RunnerService):
+    """A service whose verify streams events: it defines ``verify_stream``,
+    and ``verify`` here drains it (``collect_verify``)."""
+
+    verify_fallback_message = "Verification failed"
+
+    def verify_stream(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        """This tool's verify events for *path*; a tool with a verify defines it."""
+        raise NotImplementedError(f"{type(self).__name__} has no verify")
+
+    async def verify(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> dict:
+        """``{"valid", "message"}`` for *path*: ``verify_stream`` drained."""
+        return await collect_verify(
+            self.verify_stream(path, cancel_event=cancel_event),
+            fallback_message=self.verify_fallback_message,
+        )
+
+
 def _split_stream_lines(buffer: str) -> tuple[list[str], str]:
     """Segment accumulated subprocess output into complete lines + a remainder.
 
@@ -2259,8 +2296,14 @@ class SubprocessRunner:
         env: Mapping[str, str] | None = None,
         on_abandoned: Callable[[int], None] | None = None,
         verdict: bool = False,
+        stdin_path: str | None = None,
+        stdin_offset: int = 0,
     ) -> tuple[int | None, bytes, bytes]:
         """Run ``cmd`` to completion and capture ``(returncode, stdout, stderr)``.
+
+        With *stdin_path*, the child reads that file from *stdin_offset* on
+        its stdin (:func:`feed_stdin_from_file`, z3ds's ``zstd -t``, #543);
+        the feed is inside the same cancel and timeout race as the run.
 
         Shared one-shot counterpart to :meth:`run` for tools that need a
         buffered result rather than the streaming line loop (info / header /
@@ -2314,7 +2357,10 @@ class SubprocessRunner:
             cmd,
             # Never the caller's terminal: a tool that asks for input (7z
             # wanting a password) fails at once instead of waiting (#306).
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=(
+                asyncio.subprocess.PIPE if stdin_path is not None
+                else asyncio.subprocess.DEVNULL
+            ),
             stderr=(
                 asyncio.subprocess.STDOUT
                 if stderr_to_stdout
@@ -2324,7 +2370,22 @@ class SubprocessRunner:
             wrapped=wrapped,
         )
         self.track_pid(process.pid)
-        comm = asyncio.ensure_future(process.communicate())
+
+        async def _fed_then_communicate():
+            await feed_stdin_from_file(
+                process, stdin_path, offset=stdin_offset, cancel_event=cancel_event,
+                chunk_size=4 << 20,
+            )
+            if process.stdin is not None:
+                # A child that quit early on bad data closed its end first;
+                # its exit code and output are the verdict.
+                with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                    await process.stdin.wait_closed()
+            return await process.communicate()
+
+        comm = asyncio.ensure_future(
+            _fed_then_communicate() if stdin_path is not None else process.communicate()
+        )
         cancel_wait = (
             asyncio.ensure_future(cancel_event.wait())
             if cancel_event is not None
@@ -2534,8 +2595,13 @@ class SubprocessRunner:
         start_message: str = "Verifying integrity...",
         on_success_output: Callable[[bytes], None] | None = None,
         size: int | None = None,
+        stdin_path: str | None = None,
+        stdin_offset: int = 0,
     ) -> AsyncGenerator[dict, None]:
         """Run a one-shot verifier, yielding this tool's verify events.
+
+        *stdin_path* / *stdin_offset* feed the verifier a file on its stdin
+        (:meth:`run_capture`).
 
         For a verifier that prints nothing useful until it exits: the whole run
         is one :meth:`run_capture` bounded by :func:`resolve_verify_timeout` for
@@ -2578,6 +2644,9 @@ class SubprocessRunner:
                 env=env,
                 on_abandoned=abandoned_pid.append,
                 verdict=True,
+                **({} if stdin_path is None else {
+                    "stdin_path": stdin_path, "stdin_offset": stdin_offset,
+                }),
             )
         except OSError as exc:
             # The verifier couldn't be started: no verdict, so no stored check

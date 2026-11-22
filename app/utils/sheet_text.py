@@ -155,7 +155,7 @@ def _sheet_spellings(path: str | Path) -> tuple[list[str], str] | None:
         if exc.errno in (errno.ETIMEDOUT, errno.EIO):
             # Storage that didn't answer: "couldn't tell", never "no tracks",
             # for a caller that reads the unknown count (the queued identity's
-            # companion list, codex 4618766182).
+            # companion list).
             from utils.path_utils import _note_unknown  # local: no cycle
 
             _note_unknown()

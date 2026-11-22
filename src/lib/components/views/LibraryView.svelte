@@ -72,7 +72,7 @@
   // False once the view is gone: a RomM load that outlives it must not put
   // the file browser into RomM mode after the person has left.
   let alive = true;
-  // Bumped on every Library change (Codex 4652664864): a RomM load started
+  // Bumped on every Library change: a RomM load started
   // for an earlier one stops at its next await, so it never puts the shared
   // file browser back into RomM mode under a folder Library.
   let generation = 0;
@@ -91,8 +91,8 @@
 
   /**
    * Put the shared file browser back to the Drives. Whatever entered RomM
-   * mode (this view's load, or a Connection save's reload, CodeRabbit
-   * 4652729369), so the view needs no flag for it. Both calls are no-ops
+   * mode (this view's load, or a Connection save's reload), so the view
+   * needs no flag for it. Both calls are no-ops
    * when nothing is in RomM mode. The platform load is cancelled first: one
    * still in flight ends by selecting a console, which would re-enter it.
    */

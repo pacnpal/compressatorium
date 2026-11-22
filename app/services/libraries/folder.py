@@ -339,7 +339,7 @@ class FolderLibrary(LibraryDefaults):
 
     def platform_folders(self) -> Callable[[str], str | None]:
         """:meth:`platform_folder` for many paths: the root (and its ``roms``
-        folder) is listed once, not once per Image (Codex 4653575625)."""
+        folder) is listed once, not once per Image."""
         in_root = folder_holder(self.root)
         below = cache(folder_holder)
 
@@ -729,8 +729,7 @@ class FolderLibrary(LibraryDefaults):
 
         A game two folders claim (a symlinked alias, ``AmbiguousFolder``)
         counts for neither: that check still refuses to pick, but only this
-        console's folder is left unknown, never the whole listing (Codex
-        4653298954).
+        console's folder is left unknown, never the whole listing.
         """
         held: Counter = Counter()
         ambiguous = None
@@ -740,8 +739,8 @@ class FolderLibrary(LibraryDefaults):
             except AmbiguousFolder as exc:
                 ambiguous = str(exc)
                 continue
-            # None is the root: games sitting there count too (CodeRabbit
-            # 4653326177), so most games in the root open the root.
+            # None is the root: games sitting there count too, so most games in
+            # the root open the root.
             held[folder or None] += 1
         if not held:
             return None, ambiguous
@@ -852,7 +851,7 @@ class FolderLibrary(LibraryDefaults):
         The same walk as every listing: junk (OS metadata, RomM's
         ``.romm_tmp_*`` staging) is never listed, and a sheet's tracks belong
         to their sheet. The walk's own record of what it could not see goes
-        with them (Codex 4589796861): the folders it could not list
+        with them: the folders it could not list
         (``Scan.unwalked``) and the Image files it could not read
         (``Scan.unreadable_files``), as the walk's Findings already use them.
         Raises :class:`ListingInProgress` while another walk runs.

@@ -103,8 +103,7 @@ class DAT(Base):
     # How it arrived: "https", "http" (the Redump sync's plain-HTTP fallback,
     # #557) or "manual" (imported by hand). NULL for a DAT imported before
     # this was recorded, read as before (migration 0028). A DAT that came over
-    # plain HTTP never vouches for a delete (services.recognized, Codex
-    # 4659176015).
+    # plain HTTP never vouches for a delete (services.recognized).
     transport = Column(String, nullable=True)
 
 

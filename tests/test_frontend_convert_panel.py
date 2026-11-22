@@ -92,7 +92,7 @@ def test_one_click_starts_one_run_and_queues_what_was_planned():
 
 
 def test_a_delete_preview_never_opens_after_the_panel_is_gone():
-    """CodeRabbit 4654265189: the run's abort is checked between the preview
+    """the run's abort is checked between the preview
     request and the confirmation."""
     run = _PANEL.split("async function run() {", 1)[1]
     after_fetch = run.split("conversion.fetchDeletePlan(groups, outputDir)", 1)[1]
@@ -102,14 +102,14 @@ def test_a_delete_preview_never_opens_after_the_panel_is_gone():
 
 
 def test_cancelling_the_folder_picker_keeps_next_to_the_original():
-    """CodeRabbit 4654265200: the other-folder radio only opens the picker;
+    """the other-folder radio only opens the picker;
     it reads as chosen once a folder is."""
     assert "e.preventDefault();\n            setWhere('folder');" in _PANEL
     assert "checked={!!outputDir}" in _PANEL
 
 
 def test_a_reloading_romm_catalog_keeps_the_picked_target():
-    """CodeRabbit 4654265178."""
+    """A RomM catalog that reloads keeps the picked target."""
     effect = _PANEL.split("// A RomM catalog reloading offers nothing for a moment", 1)[1]
     assert "if (catalogLoading) return;" in effect.split("untrack", 1)[0]
 
@@ -125,7 +125,7 @@ def test_leaving_the_view_answers_an_open_dialog():
 
 
 def test_a_big_plan_dialog_plans_again_when_its_options_change():
-    """Codex 4654538684: above the live limit the plan stays live while its
+    """above the live limit the plan stays live while its
     dialog is open, and Convert takes the plan as it is when confirmed."""
     effect = _PANEL.split("const key = conversion.keyFor(now);", 1)[1].split("});", 1)[0]
     assert "now.length > PLAN_LIVE_LIMIT && !planPrompt" in effect
@@ -136,7 +136,7 @@ def test_a_big_plan_dialog_plans_again_when_its_options_change():
 
 
 def test_the_big_plan_dialog_offers_pick_console_too():
-    """Codex 4654858500: the dialog's plan gets the same Pick console
+    """the dialog's plan gets the same Pick console
     callbacks as the inline plan; a pick re-plans through the live effect."""
     dialog = _PANEL.split("<BaseModal", 1)[1].split("</BaseModal>", 1)[0]
     plan = dialog.split("<ConvertPlan", 1)[1].split("/>", 1)[0]
@@ -146,7 +146,7 @@ def test_the_big_plan_dialog_offers_pick_console_too():
 
 
 def test_a_big_plan_confirm_takes_the_picks_made_in_its_dialog():
-    """Codex 4655058120: Convert to and Pick console are re-read with the
+    """Convert to and Pick console are re-read with the
     folder and safety choices once the dialog is confirmed."""
     run = _PANEL.split("async function run() {", 1)[1]
     confirmed = run.split("if (!(await waiting) || controller.signal.aborted) return;", 1)[1]
@@ -156,7 +156,7 @@ def test_a_big_plan_confirm_takes_the_picks_made_in_its_dialog():
 
 
 def test_the_options_stay_mounted_while_the_plan_is_made_again():
-    """Codex 4655165268: a compression edit re-plans; the Options keep
+    """a compression edit re-plans; the Options keep
     showing the last plan's pickers meanwhile, so none unmounts mid-edit."""
     rows = "const optionRows = $derived((shownPlan ?? []).filter((row) => row.mode));"
     assert rows in _PANEL

@@ -358,7 +358,7 @@ async def test_a_broken_binary_is_not_ready_and_says_why(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_version_line_on_stderr_alone_is_ready(tmp_path, monkeypatch):
-    """CodeRabbit 4615955387: a build that prints its version on stderr, with
+    """a build that prints its version on stderr, with
     stdout empty and exit 0, is ready; one that prints no version line at all
     is not, and the reason says that, not "did not run"."""
     on_stderr = _write_stub(
@@ -369,7 +369,7 @@ async def test_a_version_line_on_stderr_alone_is_ready(tmp_path, monkeypatch):
     SERVICE.forget_readiness()
     assert await TOOL.is_ready() is True
 
-    # CodeRabbit 4616898094: something else on stdout, the version on stderr.
+    # something else on stdout, the version on stderr.
     (tmp_path / "both").mkdir()
     both = _write_stub(
         tmp_path / "both" / "rom-converto",

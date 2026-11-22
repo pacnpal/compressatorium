@@ -74,8 +74,7 @@ async def _save_rules_locked(library: Library, payload: Any) -> dict[str, Any]:
 
 # One Rules save at a time: two patches each reading the stored Rules before
 # the other wrote would each write back without the other's console, and a
-# whole-map save landing inside a patch would be undone by its stale map
-# (CodeRabbit 4653612408).
+# whole-map save landing inside a patch would be undone by its stale map.
 # ponytail: one lock for every Library; per-Library locks if saves contend.
 _save_lock = asyncio.Lock()
 
@@ -96,7 +95,7 @@ async def patch_rules(library: Library, payload: Any) -> dict[str, Any]:
     (``{"rules": {id: rule | null}, "check_rules": {id: rule | null}}``) and
     save the result through :func:`save_rules`, with all its checks.
 
-    What the console table sends (#541, Codex 4653298940): one console's
+    What the console table sends (#541): one console's
     change, never the whole map, so a table holding none or some of the
     Rules (one that saved before they loaded) can't delete the others.
     """

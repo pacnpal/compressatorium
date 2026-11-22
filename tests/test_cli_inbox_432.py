@@ -1,4 +1,4 @@
-"""`run-rules`'s Inbox pass with archives (#432, Codex 4608417841).
+"""`run-rules`'s Inbox pass with archives (#432).
 
 An archive's Images are taken on by the unpack job that readied them, so a
 conversion can be queued after the pass's first drain of the job queue. The
@@ -28,7 +28,7 @@ _inbox_lines = inbox_433._inbox_lines
 @pytest.fixture(autouse=True)
 def _work_area(tmp_path, monkeypatch, env):
     """The app's own work area, where archives are unpacked. After ``env``,
-    which sets a work area of its own (CodeRabbit 4608968273), so the
+    which sets a work area of its own, so the
     cleanup check reads the folder extraction really used."""
     from config import settings
 
@@ -69,7 +69,7 @@ def test_one_run_converts_what_it_unpacks_and_moves_the_archive(
 
 
 def test_a_stop_cancels_a_job_intake_queued_after_the_last_cancel(monkeypatch):
-    """CodeRabbit 4608968227: under a stop, a conversion intake queues while
+    """under a stop, a conversion intake queues while
     its own work drains (after the queue was cancelled and drained) is
     cancelled and drained too before finish_all, so the run never ends with
     a live job."""

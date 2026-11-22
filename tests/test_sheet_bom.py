@@ -1,4 +1,4 @@
-"""A UTF-8 BOM is part of what chdman reads (CodeRabbit 4577311061).
+"""A UTF-8 BOM is part of what chdman reads.
 
 chdman 0.285 does not strip a BOM: a BOM-prefixed ``FILE "unrelated.bin"``
 on the first line tokenizes as ``\\ufeffFILE``, so chdman ignores it and

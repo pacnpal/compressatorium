@@ -578,8 +578,8 @@ async def test_an_upload_that_isnt_ips_or_bps_is_refused(
     assert lying.status_code == 400
 
 
-# The cap is held while the body arrives, not after it has been spooled
-# (codex 4605274134): a body of many times the cap is read only up to the cap
+# The cap is held while the body arrives, not after it has been spooled:
+# a body of many times the cap is read only up to the cap
 # and a little multipart framing, whether it declares its length or not.
 _BOUNDARY = "patchboundary"
 _BIG = 8 * 1024 * 1024
@@ -670,7 +670,7 @@ async def test_a_cancel_during_placement_still_records_the_placed_archive(
     env: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
     """Placing is irreversible, so a cancel that lands while the link is made
-    waits for it, and the job records what was placed (codex 4605274145)."""
+    waits for it, and the job records what was placed."""
     import asyncio
     import threading
     import time

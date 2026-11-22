@@ -124,12 +124,12 @@ def test_the_defaults_section_writes_the_shared_store():
 def test_the_defaults_section_edits_the_remembered_compression():
     src = _read("settings/Defaults.svelte")
     # The same per-tool preference the Convert panel remembers. The conversion
-    # store owns the save (its debounce outlives this section, Codex
-    # 4652247060) and applies it live even after an edit (Codex 4652247066);
+    # store owns the save (its debounce outlives this section) and applies it
+    # live even after an edit;
     # a pending save is flushed before the section reads the server's copy.
     assert "await conversion.flushCompressionPrefs();" in src
     assert "api.getConversionPrefs()" in src
-    # Only the edited tool goes to the store (CodeRabbit 4652269814).
+    # Only the edited tool goes to the store.
     assert "conversion.applySavedDefault(p.tool.id, wire);" in src
     assert "api.putConversionPrefs(" not in src and "setTimeout(" not in src
     assert "formatCompression(" in src and "parseCompression(" in src
@@ -162,8 +162,8 @@ def test_settings_is_five_sections_with_deep_links():
     for part in ("<Connections />", "<Identification />", "<NotificationSettings />",
                  "<Defaults />", "<Converters />"):
         assert part in src, part
-    # The in-page nav is sticky on a wide screen, below the sticky top bar
-    # (Codex 4652247071), and a section scrolled to stops below it too.
+    # The in-page nav is sticky on a wide screen, below the sticky top bar,
+    # and a section scrolled to stops below it too.
     assert "position: sticky" in src and "1100px" in src
     assert "top: calc(var(--topbar-height) + var(--space-4));" in src
     assert "scroll-margin-top: calc(var(--topbar-height) + var(--space-4));" in src
@@ -286,7 +286,7 @@ def _run_store(stubs: str, scenario: str) -> dict:
 
 
 def test_a_failed_redump_check_is_not_shown_as_no_consoles():
-    """CodeRabbit 4652269828: when asking which consoles Redump covers fails,
+    """when asking which consoles Redump covers fails,
     the store keeps the error (cleared by the next good answer), and the
     button says it couldn't check, with Try again, instead of claiming no
     Library has a console Redump covers."""
@@ -322,7 +322,7 @@ console.log(JSON.stringify(out));
 
 
 def test_a_superseded_hasheous_enable_never_probes_after_a_disable():
-    """CodeRabbit 4652269835: turning Hasheous on, then off before the first
+    """turning Hasheous on, then off before the first
     answer lands, must not let the older enable apply its state or start a
     probe once it resumes."""
     out = _run_store("""

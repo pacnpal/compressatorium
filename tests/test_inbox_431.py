@@ -656,7 +656,7 @@ async def _converted(vol, queue, box):
 
 @pytest.mark.asyncio
 async def test_a_parent_swapped_for_a_link_never_moves_a_file_outside_the_inbox(vol, db, queue):
-    """Codex 4603069915: the move to processed/ is anchored to the Inbox, so a
+    """the move to processed/ is anchored to the Inbox, so a
     folder swapped for a symlink after the conversion can't redirect it."""
     library = _library(vol)
     await _ps2_rule(library)
@@ -681,7 +681,7 @@ async def test_a_parent_swapped_for_a_link_never_moves_a_file_outside_the_inbox(
 
 @pytest.mark.asyncio
 async def test_a_source_replaced_after_its_conversion_stays_in_the_inbox(vol, db, queue):
-    """Codex 4603071785: the Library holds the old contents, so a replaced
+    """the Library holds the old contents, so a replaced
     source is not archived as processed; it settles and is taken again."""
     from services import inbox
 
@@ -700,7 +700,7 @@ async def test_a_source_replaced_after_its_conversion_stays_in_the_inbox(vol, db
 
 @pytest.mark.asyncio
 async def test_a_numbered_split_image_is_taken_as_one(vol, db):
-    """Codex 4603071794: Game.iso.0 and .1 are one Image, listed by its parts."""
+    """Game.iso.0 and .1 are one Image, listed by its parts."""
     library = _library(vol)
     box = _inbox(vol, library, settle=0)
     first = _drop(vol / "Downloads" / "ps3" / "Game.iso.0", b"part one")
@@ -717,7 +717,7 @@ async def test_a_numbered_split_image_is_taken_as_one(vol, db):
 
 @pytest.mark.asyncio
 async def test_a_finding_for_a_file_removed_across_a_restart_is_cleared(vol, db):
-    """Codex 4603071801: the held paths live in memory; the stored Findings are
+    """the held paths live in memory; the stored Findings are
     reconciled against each listing, so a restart doesn't strand one."""
     from services.inbox import intake
 
@@ -737,7 +737,7 @@ async def test_a_finding_for_a_file_removed_across_a_restart_is_cleared(vol, db)
 
 
 def test_saving_an_inbox_waits_for_a_library_registration(vol, db, monkeypatch):
-    """Codex 4603071815: Inbox and Library saves share one registration lock,
+    """Inbox and Library saves share one registration lock,
     so neither can pass its overlap check while the other is inserting."""
     from services import inbox, libraries
 
@@ -754,7 +754,7 @@ def test_saving_an_inbox_waits_for_a_library_registration(vol, db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_the_rules_source_check_runs_off_the_event_loop(vol, db, queue, monkeypatch):
-    """Codex 4603071827: whether the Rule's mode takes the file can read its
+    """whether the Rule's mode takes the file can read its
     header (xiso), so it runs on a worker thread, bounded."""
     import threading
 
@@ -781,7 +781,7 @@ async def test_the_rules_source_check_runs_off_the_event_loop(vol, db, queue, mo
 
 @pytest.mark.asyncio
 async def test_a_mode_that_cant_verify_is_not_asked_to(vol, db, queue, monkeypatch):
-    """Codex 4603071837: the Intact check runs where the mode supports it
+    """the Intact check runs where the mode supports it
     (the registry says), never forced onto one that can't."""
     from services.tools import registry
 
@@ -803,7 +803,7 @@ async def test_a_mode_that_cant_verify_is_not_asked_to(vol, db, queue, monkeypat
 
 @pytest.mark.asyncio
 async def test_the_copys_verifier_is_chosen_off_the_event_loop(vol, db, monkeypatch):
-    """Codex 4603362509: picking the tool that checks a staged copy can open
+    """picking the tool that checks a staged copy can open
     the file (romz lists an archive's members), so it runs on a worker thread."""
     import threading
 
@@ -830,7 +830,7 @@ async def test_the_copys_verifier_is_chosen_off_the_event_loop(vol, db, monkeypa
 
 @pytest.mark.asyncio
 async def test_a_source_changed_while_it_is_copied_is_not_placed(vol, db, monkeypatch):
-    """Codex 4603362517: a source rewritten in place mid-copy yields a copy
+    """a source rewritten in place mid-copy yields a copy
     that reads back as written but is neither version; it's discarded and the
     source left to settle again."""
     from services import inbox
@@ -877,7 +877,7 @@ async def test_a_source_changed_while_it_is_copied_is_not_placed(vol, db, monkey
 
 @pytest.mark.asyncio
 async def test_a_copy_tells_its_library_before_the_job_ends(vol, db, monkeypatch):
-    """Codex 4603362547: a finished inbox_copy has no output path for
+    """a finished inbox_copy has no output path for
     note_job_finished, so intake tells the Library itself, before the job is
     announced finished: its walk is dropped and the new Image is listed."""
     from models import ConversionMode, JobStatus
@@ -910,7 +910,7 @@ async def test_a_copy_tells_its_library_before_the_job_ends(vol, db, monkeypatch
 
 
 def test_two_finishes_at_once_both_count(vol, db):
-    """Codex 4603380513: two Images finishing together (a copy and a
+    """two Images finishing together (a copy and a
     conversion) both read the count before either wrote it; an atomic
     increment keeps both."""
     import threading
@@ -945,7 +945,7 @@ def test_two_finishes_at_once_both_count(vol, db):
 
 @pytest.mark.asyncio
 async def test_a_sheet_naming_a_track_outside_its_folder_is_held(vol, db):
-    """Codex 4603380526: a cue whose track the confined resolver refuses
+    """a cue whose track the confined resolver refuses
     (``../tracks/Game.bin``) has no members it can name, so it would be copied
     without its track; it's held with a Finding instead."""
     library = _library(vol)
@@ -970,7 +970,7 @@ async def test_a_sheet_naming_a_track_outside_its_folder_is_held(vol, db):
 
 
 def test_settle_time_saves_publish_in_commit_order(vol, db, monkeypatch):
-    """CodeRabbit 4603498503: a save that committed first can't publish last
+    """a save that committed first can't publish last
     over a later one: the write and its publication are one step."""
     import threading
 
@@ -1007,7 +1007,7 @@ def test_settle_time_saves_publish_in_commit_order(vol, db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_file_swapped_in_during_the_move_is_put_back(vol, db, queue, monkeypatch):
-    """CodeRabbit 4603498511: the entry actually moved must be the one
+    """the entry actually moved must be the one
     checked; a replacement that took its name meanwhile goes back."""
     from services import inbox
     from services.inbox import intake
@@ -1036,7 +1036,7 @@ async def test_a_file_swapped_in_during_the_move_is_put_back(vol, db, queue, mon
 
 
 def test_a_late_staged_copy_closes_its_slot(vol, db):
-    """CodeRabbit 4603498531: a copy that finishes after its awaiter gave up
+    """a copy that finishes after its awaiter gave up
     raises at its last progress report and closes its slot."""
     from services import inbox
     from services.inbox import intake
@@ -1063,7 +1063,7 @@ def test_a_late_staged_copy_closes_its_slot(vol, db):
 
 @pytest.mark.asyncio
 async def test_a_slow_placement_is_seen_through(vol, db, monkeypatch):
-    """CodeRabbit 4603498546: a placement past its bound may still land, so
+    """a placement past its bound may still land, so
     intake keeps waiting for its outcome rather than failing the copy."""
     import time as clock
 
@@ -1093,7 +1093,7 @@ async def test_a_slow_placement_is_seen_through(vol, db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_copy_waits_for_a_shared_conversion_slot(vol, db):
-    """CodeRabbit 4603498566, ruled binding: an Inbox copy counts toward the
+    """An Inbox copy counts toward the
     same max_concurrent as conversions. With the one slot taken (a conversion
     running), the copy waits, then runs once it's free, and gives it back."""
     import asyncio
@@ -1146,7 +1146,7 @@ async def test_the_concurrency_invariant_counts_a_copy_holding_a_slot(vol, db):
 
 @pytest.mark.asyncio
 async def test_removing_a_library_waits_for_a_registration(vol, db):
-    """CodeRabbit 4603498581: removal takes the registration lock across its
+    """removal takes the registration lock across its
     Inbox cleanup and the delete, so an Inbox save can't slip in between."""
     import asyncio
 
@@ -1163,7 +1163,7 @@ async def test_removing_a_library_waits_for_a_registration(vol, db):
 
 @pytest.mark.asyncio
 async def test_a_verifier_that_must_stop_stops_the_pass(vol, db, monkeypatch):
-    """CodeRabbit 4603498597: a check whose verifier was abandoned with a
+    """a check whose verifier was abandoned with a
     reader on the storage (stop) places nothing, and no further copy reads
     in that pass; the next pass goes on."""
     from services.inbox import intake
@@ -1200,7 +1200,7 @@ async def test_a_verifier_that_must_stop_stops_the_pass(vol, db, monkeypatch):
 
 
 def test_a_save_reloads_only_the_library_it_was_for():
-    """CodeRabbit 4603498609: the folder is picked, not typed (#541), so no
+    """the folder is picked, not typed (#541), so no
     draft can be lost; a save that lands after another Library was opened
     still reloads only its own."""
     panel = (
@@ -1219,7 +1219,7 @@ def _slots(folder: Path) -> list[Path]:
 
 @pytest.mark.asyncio
 async def test_a_cancel_after_the_last_report_still_closes_the_slot(vol, db, monkeypatch):
-    """CodeRabbit 4603871234: a cancel that lands after the copy's final
+    """a cancel that lands after the copy's final
     progress report, before its awaiter takes the slot, never leaks it."""
     import asyncio
     import time as clock
@@ -1258,7 +1258,7 @@ async def test_a_cancel_after_the_last_report_still_closes_the_slot(vol, db, mon
 
 @pytest.mark.asyncio
 async def test_a_cancelled_check_that_must_stop_still_stops_the_pass(vol, db, monkeypatch):
-    """CodeRabbit 4603876241 (a): a cancelled verdict with a reader still on
+    """A cancelled verdict with a reader still on
     the storage stops the pass as any stop does."""
     from services.inbox import intake
     from services.rules import check as checks
@@ -1287,7 +1287,7 @@ async def test_a_cancelled_check_that_must_stop_still_stops_the_pass(vol, db, mo
 
 @pytest.mark.asyncio
 async def test_a_stop_reaches_a_copy_already_running_beside_it(vol, db, monkeypatch):
-    """CodeRabbit 4603876241 (b): with two slots, a copy staged beside the one
+    """With two slots, a copy staged beside the one
     whose check stops is checked against the stop under the same lock, so it
     neither verifies nor places."""
     import asyncio
@@ -1338,7 +1338,7 @@ async def test_a_stop_reaches_a_copy_already_running_beside_it(vol, db, monkeypa
 
 @pytest.mark.asyncio
 async def test_cancelling_a_slot_wait_never_leaks_the_slot(vol, db):
-    """CodeRabbit 4603877228: a hold_slot cancelled while the slot is taken
+    """a hold_slot cancelled while the slot is taken
     leaves no acquisition behind to take it later."""
     import asyncio
 
@@ -1363,7 +1363,7 @@ async def test_cancelling_a_slot_wait_never_leaks_the_slot(vol, db):
 
 
 def test_a_name_replaced_between_link_and_unlink_is_never_deleted(tmp_path, monkeypatch):
-    """CodeRabbit 4603878576: the link fallback removes the source name only
+    """the link fallback removes the source name only
     while it is still the file it linked; a replacement there stays."""
     from utils import path_utils
 
@@ -1413,7 +1413,7 @@ def test_the_no_replace_rename_is_preferred_over_link_and_unlink(tmp_path, monke
 
 
 def test_a_put_back_that_fails_is_reported(tmp_path, monkeypatch, caplog):
-    """CodeRabbit 4603878576: move_anchored no longer swallows a failed put
+    """move_anchored no longer swallows a failed put
     back: it is logged and raised as MoveRollbackFailed."""
     import logging
 
@@ -1487,7 +1487,7 @@ def _quarantined(folder) -> list:
 
 def test_a_replacement_between_link_and_quarantine_is_put_back(tmp_path, monkeypatch):
     """Where there is no atomic no-replace rename, a user's file moves by link,
-    quarantine rename and check (#431, CodeRabbit 4604215988): a file put
+    quarantine rename and check (#431): a file put
     under the name between the link and the quarantine rename is put back,
     and the file moved stays moved. Nothing is deleted."""
     from utils import path_utils
@@ -1594,7 +1594,7 @@ def test_a_replacement_that_cant_be_put_back_is_kept_and_named(tmp_path, monkeyp
 
 @pytest.mark.asyncio
 async def test_a_copy_paused_before_its_first_open_sees_the_stop(vol, db, monkeypatch):
-    """CodeRabbit 4604222784: with two slots, a copy that reached its first
+    """with two slots, a copy that reached its first
     file open before the other's check stopped checks the stop there, and
     opens nothing."""
     import asyncio
@@ -1646,7 +1646,7 @@ async def test_a_copy_paused_before_its_first_open_sees_the_stop(vol, db, monkey
 
 @pytest.mark.asyncio
 async def test_a_copy_cancelled_while_it_waits_to_place_places_nothing(vol, db):
-    """Codex 4604289928: a copy cancelled while it waits for the
+    """a copy cancelled while it waits for the
     check-and-place lock (no tool checks a PS2 .iso) doesn't place."""
     import asyncio
 
@@ -1680,7 +1680,7 @@ async def test_a_copy_cancelled_while_it_waits_to_place_places_nothing(vol, db):
 
 @pytest.mark.asyncio
 async def test_a_slow_move_to_processed_is_seen_through(vol, db, monkeypatch):
-    """Codex 4604289941: a move to processed/ past its bound may still land;
+    """a move to processed/ past its bound may still land;
     intake waits for its outcome and counts it, rather than holding the
     Image with a Finding that then vanishes."""
     import time as clock
@@ -1712,7 +1712,7 @@ async def test_a_slow_move_to_processed_is_seen_through(vol, db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_copy_waits_for_another_job_writing_its_output(vol, db):
-    """Codex 4604289947: a copy takes the shared output locks for what it
+    """a copy takes the shared output locks for what it
     places; one another job holds (a conversion writing that name) leaves the
     Image for the next poll, untouched and with no Finding."""
     from services.lock_manager import lock_manager
@@ -1740,7 +1740,7 @@ async def test_a_copy_waits_for_another_job_writing_its_output(vol, db):
 
 @pytest.mark.asyncio
 async def test_a_conversion_is_queued_with_its_sources_identity(vol, db, queue):
-    """Codex 4604325922: intake hands the conversion the Source's identity and
+    """intake hands the conversion the Source's identity and
     the Inbox it must stay under, which the job checks before its tool runs
     (tests/test_source_identity_431.py)."""
     from services import inbox
@@ -1765,7 +1765,7 @@ async def test_a_conversion_is_queued_with_its_sources_identity(vol, db, queue):
 
 @pytest.mark.asyncio
 async def test_an_open_in_flight_when_the_stop_lands_reads_nothing(vol, db, monkeypatch):
-    """CodeRabbit 4604533199, ruled: a copy past `_may_open()` but not yet in
+    """A copy past `_may_open()` but not yet in
     `os.open()` when another copy's check stops may finish that one open, but
     the stop is checked again as soon as it returns: the file is closed
     without a byte read, and the copy ends deferred."""
@@ -1840,7 +1840,7 @@ async def test_an_open_in_flight_when_the_stop_lands_reads_nothing(vol, db, monk
 
 
 def test_the_quarantine_is_a_private_folder_no_name_can_collide_with(tmp_path, monkeypatch):
-    """CodeRabbit 4605168938, ruled: the source is quarantined into a fresh
+    """The source is quarantined into a fresh
     folder of its own (mode 0700, same filesystem), not under a name in the
     shared folder: a name already there is never overwritten, and the
     quarantined entry is reachable only inside the private folder."""
@@ -1887,7 +1887,7 @@ def test_the_quarantine_is_a_private_folder_no_name_can_collide_with(tmp_path, m
 
 @pytest.mark.asyncio
 async def test_a_stop_before_the_read_back_open_reads_nothing(vol, db, monkeypatch):
-    """CodeRabbit 4605167178: the read-back of the staged copy is an open like
+    """the read-back of the staged copy is an open like
     any other: a stop that lands between its check and its open closes it
     unread, and the copy ends deferred."""
     from services.inbox import intake
@@ -1922,7 +1922,7 @@ async def test_a_stop_before_the_read_back_open_reads_nothing(vol, db, monkeypat
 
 @pytest.mark.asyncio
 async def test_images_that_share_a_track_are_held_together(vol, db):
-    """Codex 4605210987, ruled: two sheets naming one track are held, both,
+    """Two sheets naming one track are held, both,
     with a Finding naming the other; nothing is taken or moved."""
     library = _library(vol)
     box = _inbox(vol, library, settle=0)
@@ -1946,7 +1946,7 @@ async def test_images_that_share_a_track_are_held_together(vol, db):
 
 @pytest.mark.asyncio
 async def test_output_locks_taken_after_their_wait_gave_up_are_released(vol, db, monkeypatch):
-    """Codex 4605210998, ruled: an output-lock acquisition that outlives its
+    """An output-lock acquisition that outlives its
     bound hands what it took back once it finishes; no lock is left held."""
     import asyncio
     import time as clock
@@ -1982,7 +1982,7 @@ async def test_output_locks_taken_after_their_wait_gave_up_are_released(vol, db,
 
 @pytest.mark.asyncio
 async def test_tracks_beside_a_sheet_that_cant_be_read_are_held(vol, db):
-    """Codex 4606061269, ruled: a sheet that can't be read whole (here, over
+    """A sheet that can't be read whole (here, over
     the size cap) owns nobody, so the files beside it that it could name are
     held with a Finding naming it, and none is taken."""
     from utils.sheet_text import MAX_SHEET_BYTES
@@ -2013,7 +2013,7 @@ async def test_tracks_beside_a_sheet_that_cant_be_read_are_held(vol, db):
 
 @pytest.mark.asyncio
 async def test_a_poll_whose_inbox_is_removed_meanwhile_starts_no_copy(vol, db, monkeypatch):
-    """CodeRabbit 4606147955, ruled: removing the Inbox while a poll awaits
+    """Removing the Inbox while a poll awaits
     its listing revokes that poll's state; it admits no new copy."""
     from models import ConversionMode
     from services import inbox
@@ -2044,7 +2044,7 @@ async def test_a_poll_whose_inbox_is_removed_meanwhile_starts_no_copy(vol, db, m
 
 @pytest.mark.asyncio
 async def test_a_slow_move_after_a_conversion_never_holds_up_the_poll(vol, db, queue, monkeypatch):
-    """CodeRabbit 4606147968, ruled: moving a converted original to
+    """Moving a converted original to
     processed/ is a tracked flight the poll doesn't wait on; its real outcome
     is reconciled when it finishes."""
     import time as clock
@@ -2078,7 +2078,7 @@ async def test_a_slow_move_after_a_conversion_never_holds_up_the_poll(vol, db, q
 
 @pytest.mark.asyncio
 async def test_removing_a_library_gives_up_on_a_registration_that_wont_end(vol, db, monkeypatch):
-    """CodeRabbit 4606147989, ruled: removal waits a bounded time for the
+    """Removal waits a bounded time for the
     registration lock, then answers a retryable 409 with nothing cleaned up."""
     from services import inbox, libraries
 
@@ -2096,7 +2096,7 @@ async def test_removing_a_library_gives_up_on_a_registration_that_wont_end(vol, 
 
 
 def test_the_quarantine_is_set_up_before_anything_is_published(tmp_path, monkeypatch):
-    """CodeRabbit 4606148011, ruled: the private folder is made before the
+    """The private folder is made before the
     destination is linked, so a failure making it publishes nothing."""
     import errno
 
@@ -2193,7 +2193,7 @@ def test_a_failure_once_the_file_has_moved_says_the_placement_was_committed(
 
 
 def test_the_inbox_screenshot_requires_its_own_inbox():
-    """CodeRabbit 4606148050: after a 409 the shot lists the Library's
+    """after a 409 the shot lists the Library's
     Inboxes and requires the expected folder, and waits for its row."""
     shots = (Path(__file__).resolve().parents[1] / "shots.yml").read_text()
     start = shots.index("shot === 'library-watch-folders'")
@@ -2208,7 +2208,7 @@ def test_the_inbox_screenshot_requires_its_own_inbox():
 def test_a_failed_unpublish_after_a_failed_quarantine_says_it_is_committed(
     tmp_path, monkeypatch,
 ):
-    """CodeRabbit 4606441954, ruled: the quarantine rename fails and taking
+    """The quarantine rename fails and taking
     the destination back fails too. Both names are left, so the move is
     answered PlacementCommitted (dst still published), the first failure
     chained, never swallowed."""
@@ -2243,7 +2243,7 @@ def test_a_failed_unpublish_after_a_failed_quarantine_says_it_is_committed(
 
 @pytest.mark.asyncio
 async def test_removing_an_inbox_waits_for_a_copy_being_admitted(vol, db, monkeypatch):
-    """CodeRabbit 4606443430, ruled: a copy's revoked check and its
+    """A copy's revoked check and its
     scheduling are one step under the state's lock, so a removal on another
     thread can't land between them."""
     import threading
@@ -2279,7 +2279,7 @@ async def test_removing_an_inbox_waits_for_a_copy_being_admitted(vol, db, monkey
 async def test_a_conversion_queued_as_its_inbox_is_removed_is_cancelled(
     vol, db, queue, monkeypatch,
 ):
-    """CodeRabbit 4606443430, ruled: an Inbox removed while its conversion is
+    """An Inbox removed while its conversion is
     being queued has the jobs just made cancelled while they are still
     queued, and the Source is left alone."""
     from services import inbox
@@ -2362,7 +2362,7 @@ eval(require('fs').readFileSync(process.argv[2], 'utf8'))
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node isn't installed")
 def test_the_inbox_shot_refuses_another_inbox_named_downloads():
-    """CodeRabbit 4606444987, ruled: the shot compares the full canonical
+    """The shot compares the full canonical
     folder (resolved as the backend resolves it), so another Inbox whose
     basename is also ``downloads`` is never taken for the expected one."""
     refused = _run_inbox_shot(["/real/other/downloads"])
@@ -2375,7 +2375,7 @@ def test_the_inbox_shot_refuses_another_inbox_named_downloads():
 def test_a_cleanup_that_cant_stat_the_destination_says_it_is_committed(
     tmp_path, monkeypatch,
 ):
-    """CodeRabbit 4606738359, ruled: when the quarantine rename fails and the
+    """When the quarantine rename fails and the
     cleanup can't stat the destination (anything but ENOENT), it can't tell
     whether dst is still published: PlacementCommitted, both failures
     chained, so a caller rolls it back."""
@@ -2425,7 +2425,7 @@ def _rule_output(vol, library) -> str:
 
 @pytest.mark.asyncio
 async def test_a_destination_only_locked_by_another_job_is_tried_again(vol, db, queue):
-    """Codex 4606794174, ruled: a destination name another job holds right
+    """A destination name another job holds right
     now, with nothing on disk, is a retry: no Finding, the file isn't marked
     done, and the next poll queues it once the lock is gone."""
     from services.lock_manager import lock_manager
@@ -2457,7 +2457,7 @@ async def test_a_destination_only_locked_by_another_job_is_tried_again(vol, db, 
 
 @pytest.mark.asyncio
 async def test_a_destination_already_on_disk_stays_taken(vol, db, queue):
-    """Codex 4606794174: only a real output on disk is already taken: held
+    """only a real output on disk is already taken: held
     with a Finding, never queued."""
     library = _library(vol)
     await _ps2_rule(library)
@@ -2514,7 +2514,7 @@ def test_a_move_whose_landing_cant_be_checked_says_it_is_committed(tmp_path, mon
 async def test_a_removal_cancelled_before_its_worker_starts_lets_go_of_the_lock(
     vol, db, monkeypatch,
 ):
-    """CodeRabbit 4606887332, ruled: the registration lock is let go of by
+    """The registration lock is let go of by
     the delete's worker once it has started, else by the request: a removal
     cancelled while waiting for a worker leaves no lock behind."""
     import asyncio
@@ -2542,7 +2542,7 @@ async def test_a_removal_cancelled_before_its_worker_starts_lets_go_of_the_lock(
 
 
 def test_a_take_that_left_both_names_is_put_back_and_not_moved(vol, monkeypatch):
-    """CodeRabbit 4606887339, ruled: a PlacementCommitted that left both
+    """A PlacementCommitted that left both
     names (the Source never moved; the slot holds a second link to it) isn't
     a move. The second link is taken back once checked to be the same file,
     and take says it failed, so the swap fails cleanly."""
@@ -2602,7 +2602,7 @@ def test_a_take_that_moved_but_couldnt_clean_up_is_a_move(vol, monkeypatch):
 def test_a_cleanup_that_cant_stat_the_destination_itself_says_it_is_committed(
     tmp_path, monkeypatch,
 ):
-    """CodeRabbit 4607070950 (c): the cleanup's stat of the destination (not
+    """The cleanup's stat of the destination (not
     the source) failing is PlacementCommitted too."""
     from utils import path_utils
 
@@ -2642,7 +2642,7 @@ def test_a_cleanup_that_cant_stat_the_destination_itself_says_it_is_committed(
 def test_a_source_replaced_before_a_failed_quarantine_leaves_the_original_committed(
     tmp_path, monkeypatch,
 ):
-    """CodeRabbit 4607070950 (a): an Inbox writer replaces the source after
+    """An Inbox writer replaces the source after
     the link, then the quarantine rename fails. The destination still holds
     the original (its only name now): PlacementCommitted, never a plain
     error, and neither file is touched."""
@@ -2676,7 +2676,7 @@ def test_a_source_replaced_before_a_failed_quarantine_leaves_the_original_commit
 async def test_a_committed_move_whose_name_is_taken_again_is_kept_and_reported(
     vol, db, queue, monkeypatch,
 ):
-    """CodeRabbit 4607070950 (b): a move to processed/ that committed while
+    """A move to processed/ that committed while
     the Inbox name was taken by a replacement is never moved back over it:
     the original stays in processed/ (its only name), and the Finding names
     both paths."""
@@ -2725,7 +2725,7 @@ def _oversized_sheet(track: str) -> bytes:
 
 @pytest.mark.asyncio
 async def test_a_track_below_an_unreadable_sheet_is_held_too(vol, db):
-    """Codex 4607108018, ruled: a sheet that can't be read holds every loose
+    """A sheet that can't be read holds every loose
     track-type file in its folder and every folder below it."""
     library = _library(vol)
     box = _inbox(vol, library, settle=0)
@@ -2743,7 +2743,7 @@ async def test_a_track_below_an_unreadable_sheet_is_held_too(vol, db):
 
 @pytest.mark.asyncio
 async def test_a_sheet_hold_lifts_once_the_other_sheet_is_gone(vol, db):
-    """Codex 4607108025, ruled: an ownership hold remembers the sheets that
+    """An ownership hold remembers the sheets that
     caused it; once B.cue is removed, A.cue is taken without waiting to
     change, and its stale Finding goes."""
     library = _library(vol)
@@ -2767,7 +2767,7 @@ async def test_a_sheet_hold_lifts_once_the_other_sheet_is_gone(vol, db):
 
 @pytest.mark.asyncio
 async def test_a_track_held_by_an_unreadable_sheet_is_taken_once_it_is_gone(vol, db):
-    """Codex 4607108025, ruled: once the unreadable sheet is removed, the
+    """Once the unreadable sheet is removed, the
     track it held is taken on its own and the stale Finding goes."""
     library = _library(vol)
     box = _inbox(vol, library, settle=0)
@@ -2787,7 +2787,7 @@ async def test_a_track_held_by_an_unreadable_sheet_is_taken_once_it_is_gone(vol,
 
 @pytest.mark.asyncio
 async def test_archival_waits_for_a_job_reading_the_original(vol, db):
-    """Codex 4607108034, ruled: the originals are moved to processed/ only
+    """The originals are moved to processed/ only
     under the lock manager's exclusive locks; while another job reads one
     (its input lock), archival is deferred, with no Finding and nothing
     moved, and the next poll after the lock goes moves it."""
@@ -2815,7 +2815,7 @@ async def test_archival_waits_for_a_job_reading_the_original(vol, db):
 
 @pytest.mark.asyncio
 async def test_a_slow_but_moving_listing_isnt_cut_off(vol, db, monkeypatch):
-    """Codex 4607108046, ruled: the listing reports progress between Images
+    """The listing reports progress between Images
     through grouping, fingerprinting and the ownership checks, so its stall
     bound measures stalled storage, not the whole pass."""
     import time as clock
@@ -2844,7 +2844,7 @@ async def test_a_slow_but_moving_listing_isnt_cut_off(vol, db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_track_named_by_an_absolute_path_is_held_by_its_sheet(vol, db):
-    """Codex 4607280415, ruled: a readable sheet whose track list doesn't
+    """A readable sheet whose track list doesn't
     fully resolve (here, an absolute reference to the track beside it, which
     ``image_members`` drops) is an unknown owner, like an unreadable sheet:
     the loose track stays put, held with a Finding naming the sheet."""
@@ -2894,7 +2894,7 @@ def _verifies(monkeypatch) -> list[str]:
 async def test_an_archive_declaring_more_than_the_cap_is_held_unverified(
     vol, db, monkeypatch,
 ):
-    """Codex 4607318277 (P1), ruled: an archive whose declared uncompressed
+    """An archive whose declared uncompressed
     size is over the Inbox cap is held with a Finding naming the limit, and is
     neither verified nor copied."""
     import zipfile
@@ -2921,7 +2921,7 @@ async def test_an_archive_declaring_more_than_the_cap_is_held_unverified(
 
 @pytest.mark.asyncio
 async def test_an_archive_over_the_ratio_cap_is_held(vol, db, monkeypatch):
-    """Codex 4607318277: an archive that expands more than the Inbox ratio cap
+    """an archive that expands more than the Inbox ratio cap
     (200:1 by default) is held, naming the limit."""
     import zipfile
 
@@ -2944,7 +2944,7 @@ async def test_an_archive_over_the_ratio_cap_is_held(vol, db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_normal_rom_zip_is_unpacked_and_taken(vol, db, monkeypatch):
-    """Codex 4607318277: an ordinary ROM zip is within every cap. Since #432
+    """an ordinary ROM zip is within every cap. Since #432
     it is unpacked: the ROM in it is checked and copied in, and the zip moves
     to processed/."""
     import zipfile
@@ -2969,7 +2969,7 @@ async def test_a_normal_rom_zip_is_unpacked_and_taken(vol, db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_an_archives_verify_bound_comes_from_its_declared_size(vol, monkeypatch):
-    """Codex 4607318277, ruled: `7z t`'s bound is sized by what it
+    """`7z t`'s bound is sized by what it
     decompresses, the members' declared sizes, never the archive's own
     (small) size."""
     import zipfile

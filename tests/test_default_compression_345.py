@@ -167,7 +167,7 @@ def test_a_codec_mode_with_no_declared_default_sends_no_level(monkeypatch) -> No
 
 
 # --------------------------------------------------------------------------- #
-# Each container's own codecs (codex 4581559119)
+# Each container's own codecs
 # --------------------------------------------------------------------------- #
 
 
@@ -263,7 +263,7 @@ async def test_an_out_of_range_level_is_clamped_and_the_tool_still_refuses_one(e
 
 def test_the_codec_is_read_after_a_priority_prefix(monkeypatch) -> None:
     """On Linux with `ionice`, the runner puts `ionice -c 2 -n …` before
-    dolphin-tool; its `-c` is the I/O class, not the codec (codex 4581651579)."""
+    dolphin-tool; its `-c` is the I/O class, not the codec."""
     service = registry.get("dolphin")._service
 
     cmd = ["ionice", "-c", "2", "-n", "7"] + service._build_convert_command(
@@ -275,7 +275,7 @@ def test_the_codec_is_read_after_a_priority_prefix(monkeypatch) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# A chain step resolves its codec at the convert boundary (CodeRabbit 4581672840)
+# A chain step resolves its codec at the convert boundary
 # --------------------------------------------------------------------------- #
 
 

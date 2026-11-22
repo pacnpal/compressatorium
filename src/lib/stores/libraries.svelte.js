@@ -142,7 +142,7 @@ class LibrariesStore {
   list = $state([]);
   loading = $state(false);
   // True once a list load has answered (or failed): an id not in the list
-  // then means the Library is gone, not "still loading" (CodeRabbit 4652729380).
+  // then means the Library is gone, not "still loading".
   loaded = $state(false);
   error = $state(null);
   selectedId = $state(ROMM_LIBRARY_ID);

@@ -469,8 +469,8 @@ class ChdmanTool(BaseTool):
     async def prime_embedded_hashes(
         self, path: str, *, cancel_event: asyncio.Event | None = None,
     ) -> None:
-        # A CHD no scan has seen (an Inbox's bound copy, #432, Codex
-        # 4609181291): `chdman info` read once, under its own bound and the
+        # A CHD no scan has seen (an Inbox's bound copy, #432): `chdman info`
+        # read once, under its own bound and the
         # caller's cancel, and the store primed for that path, as a scan or
         # raw_image_sha1 would.
         if Path(path).suffix.lower() != ".chd":

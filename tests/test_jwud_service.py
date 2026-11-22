@@ -891,7 +891,7 @@ async def test_process_job_revalidates_split_companions_after_locking(
             attr,
             str(volume),
         )
-    # The whole split set's identity, as it was queued (CodeRabbit 4615955496).
+    # The whole split set's identity, as it was queued.
     queued = queued_source_identity(str(primary), "jwud_compress")
     assert str(part2) in [each["ref"] for each in queued["companions"]]
     # Then part 2 is swapped for a link out of the volume, while queued.

@@ -13,7 +13,7 @@ from logging_setup import get_logger
 import os
 import re
 from collections.abc import Awaitable, Callable
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import delete, select
@@ -188,10 +188,6 @@ class CHDMetadataStore:
         row = await run_in_threadpool(self._get_sync, chd_path)
         return None if row is None else row.metadata_json
 
-    async def get_media_type(self, chd_path: str) -> Optional[str]:
-        row = await run_in_threadpool(self._get_sync, chd_path)
-        return None if row is None else row.media_type
-
     async def get_full_info(self, chd_path: str) -> tuple[Optional[dict], Optional[str]]:
         row = await run_in_threadpool(self._get_sync, chd_path)
         if row is None:
@@ -299,36 +295,6 @@ class CHDMetadataStore:
             return row.metadata_json if self._describes(row, st) else None
 
         return await run_in_threadpool(_read)
-
-    async def get_batch(self, chd_paths: list) -> Dict[str, dict]:
-        """Bulk fetch: returns ``{path: {"media_type": str|None, "cached": True}}``
-        for every cached entry.  Un-cached paths are simply absent."""
-        if not chd_paths:
-            return {}
-        norm_map = {
-            p: await run_in_threadpool(self._normalize_path, p) for p in chd_paths
-        }
-        unique_norms = list(set(norm_map.values()))
-
-        def _fetch() -> dict[str, str | None]:
-            # Chunk to stay under SQLite's bind-parameter limit (default 999).
-            chunk_size = 900
-            by_norm: dict[str, str | None] = {}
-            with self._session() as session:
-                for i in range(0, len(unique_norms), chunk_size):
-                    batch = unique_norms[i:i + chunk_size]
-                    rows = session.scalars(
-                        select(_db.CHDMetadata).where(_db.CHDMetadata.chd_path.in_(batch))
-                    ).all()
-                    by_norm.update({r.chd_path: r.media_type for r in rows})
-            return by_norm
-
-        by_norm = await run_in_threadpool(_fetch)
-        return {
-            orig: {"media_type": by_norm[norm], "cached": True}
-            for orig, norm in norm_map.items()
-            if norm in by_norm
-        }
 
     # ------------------------------------------------------------------
     # Writes
@@ -611,9 +577,6 @@ class CHDMetadataStore:
     # Legacy dirty/flush interface (kept as no-ops).  SQLite commits
     # synchronously per-call, so there is nothing to flush.
     # ------------------------------------------------------------------
-
-    def is_dirty(self) -> bool:
-        return False
 
     async def flush_async(self) -> None:
         return None

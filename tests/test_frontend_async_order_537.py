@@ -51,7 +51,7 @@ const tick = () => new Promise((r) => setImmediate(r));
 
 
 def test_a_stale_scan_status_never_overrides_a_scan_that_started(tmp_path):
-    """CodeRabbit 4651856954: the mount's status read answers after Scan."""
+    """the mount's status read answers after Scan."""
     got = _store(tmp_path, "stores/chdMetadata.svelte.js", _DEFERRED + """
 const SvelteMap = Map;
 const api = {
@@ -74,7 +74,7 @@ process.stdout.write(JSON.stringify({ running: s.scanRunning }));
 
 
 def test_a_failed_poll_keeps_the_scan_running(tmp_path):
-    """CodeRabbit 4651856958: one failed status read must not end polling."""
+    """one failed status read must not end polling."""
     got = _store(tmp_path, "stores/chdMetadata.svelte.js", _DEFERRED + """
 const SvelteMap = Map;
 const api = {
@@ -111,7 +111,7 @@ process.stdout.write(JSON.stringify(defaults.values));
 
 
 def test_findings_count_their_authoritative_reads():
-    """Codex 4651838336 / CodeRabbit 4651856938: only a read that wrote the
+    """Only a read that wrote the
     list counts, so a superseded read can't stand for the latest one."""
     store = _read("stores/findings.svelte.js")
     assert "reads = $state(0);" in store
@@ -129,14 +129,14 @@ def test_activity_decides_its_tab_after_both_reads():
 
 
 def test_add_library_confirms_once():
-    """CodeRabbit 4651856945: a second confirm while one runs does nothing."""
+    """a second confirm while one runs does nothing."""
     src = _read("components/modals/AddLibraryModal.svelte")
     assert "if (pending) return;" in src
     assert "pending = true;" in src
 
 
 def test_a_switching_romm_catalog_cannot_convert():
-    """CodeRabbit 4651856950: while a new platform's catalog loads, the old
+    """while a new platform's catalog loads, the old
     rows can't be converted with the new platform's tools."""
     # Restructure 2/6: the panel's own Convert-to list replaces ModeSelect.
     panel = _read("components/panels/ConvertPanel.svelte")

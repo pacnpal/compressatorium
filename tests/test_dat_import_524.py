@@ -266,7 +266,7 @@ async def test_redump_sync_refetches_when_its_dat_was_deleted(store, prefs, fetc
 async def test_redump_sync_records_how_each_dat_arrived(
     store, prefs, monkeypatch, tmp_path, meta, transport,
 ):
-    """Codex 4659176015: the Recognized delete proof must be able to tell a
+    """the Recognized delete proof must be able to tell a
     DAT fetched over plain HTTP from one fetched over HTTPS."""
     monkeypatch.setattr(dat_import, "present_platforms", lambda: {"psx"})
     monkeypatch.setattr(dat_import, "REQUEST_GAP_SECONDS", 0)
@@ -303,7 +303,7 @@ def _transport_fetch(monkeypatch, body: bytes, scheme: list[str], asked: list[di
 async def test_identical_bytes_over_https_upgrade_a_dat_fetched_over_http(
     store, prefs, monkeypatch,
 ):
-    """Codex 4659261223: the same bytes again over HTTPS prove the plain-HTTP
+    """the same bytes again over HTTPS prove the plain-HTTP
     download was genuine, so it may vouch from now on. A DAT fetched over
     HTTP is asked for again unconditionally, or a 304 would keep it untrusted."""
     scheme, asked = ["http"], []
@@ -890,7 +890,7 @@ def test_https_that_cannot_connect_falls_back_to_plain_http(wire, tmp_path, erro
     assert http["closed"]
     assert Path(path).read_bytes() == b"PK"
     assert meta["etag"] == '"e"'
-    # Recorded with the DAT, so it can never vouch for a delete (4659176015).
+    # Recorded with the DAT, so it can never vouch for a delete.
     assert meta["transport"] == "http"
 
 

@@ -24,6 +24,7 @@ from pathlib import Path
 from config import settings
 from logging_setup import get_logger
 from services.subprocess_runner import (
+    RunnerService,
     ConversionCancelled,
     SubprocessRunner,
     remove_partial_output,
@@ -198,8 +199,11 @@ def read_nkit_header(path: str) -> dict:
     }
 
 
-class Nkit2IsoService:
-    """Wrapper for the ``nkit2iso`` binary."""
+class Nkit2IsoService(RunnerService):
+    """Wrapper for the ``nkit2iso`` binary.
+
+    A plain ``RunnerService``: nkit2iso has no verify of its own (#543).
+    """
 
     def __init__(self) -> None:
         self.nkit2iso_path = settings.nkit2iso_path
@@ -233,13 +237,6 @@ class Nkit2IsoService:
             "-recovery", recovery,
         ]
         return cmd
-
-    def active_pids(self) -> list[int]:
-        return self._runner.active_pids()
-
-    def abandoned_pids(self) -> list[int]:
-        """Children that outlived SIGKILL; see ``SubprocessRunner``."""
-        return self._runner.abandoned_pids()
 
     @staticmethod
     def is_convertible(filename: str) -> bool:

@@ -6,7 +6,6 @@ import re
 from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from pathlib import Path
 from typing import Annotated
 
 from config import settings
@@ -254,13 +253,6 @@ def get_unique_output_path(base_path: str, mode: str | None = None) -> str:
         return _get_unique_output_path(base_path, mode)
     except (OutputPathLocked, OutputPathExhausted):
         raise SkipFile(SkipReason.OUTPUT_LOCKED) from None
-
-
-def _input_extension(path: str) -> str:
-    if "::" in path:
-        _, internal = path.split("::", 1)
-        return Path(internal).suffix.lower()
-    return Path(path).suffix.lower()
 
 
 def _declares_input(path: str, spec) -> bool:

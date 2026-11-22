@@ -268,7 +268,7 @@ def _archive_verdict(source_path: str) -> tuple[str, List[str]] | None:
         logger.debug("Could not list %s", archive, exc_info=True)
         return ("unreadable", [os.path.basename(archive)])
     # Fail closed on a name or kind the extraction validator refuses, before
-    # anything is created from any name (codex 4577029535).
+    # anything is created from any name.
     unsafe = [m.name for m in members if _unsafe_member_reason(m)]
     if unsafe:
         return ("unsafe", unsafe)
@@ -321,7 +321,7 @@ def _other_owner(
         return None  # reported as missing already
     boundary = lock_boundary_root(part)
     if boundary is None:
-        # Outside every Volume: never walked (Codex 4655058131). The plan
+        # Outside every Volume: never walked. The plan
         # already refuses such a path (unsafe_paths), and the job's delete
         # step checks the Volumes again.
         return None
@@ -494,21 +494,6 @@ def build_delete_plan(
         "errors": errors,
         "warnings": warnings,
     }
-
-
-def collect_delete_paths(source_path: str) -> List[str]:
-    plan = build_delete_plan(source_path)
-    errors = list(plan.get("errors", []))
-    unsafe = list(plan.get("unsafe_paths", []))
-    missing = list(plan.get("missing_paths", []))
-
-    if errors or unsafe:
-        details = "; ".join(errors + unsafe)
-        raise ValueError(details or "Unsafe delete plan")
-    if missing:
-        raise ValueError("Missing companion files; refusing to delete")
-
-    return list(plan.get("delete_paths", []))
 
 
 def build_delete_snapshot(source_path: str) -> Dict[str, object]:

@@ -1930,11 +1930,10 @@ async def _save_settings(submitted: dict) -> dict:
         # halves of the cleanup are idempotent, so replaying costs nothing.
         # A move of the instance waits for every RomM swap in flight to end,
         # its undo included, and starts none meanwhile: a swap renames a ROM
-        # by id, which the new instance reuses for another game (Codex
-        # 4594286722). It waits, as this route waits for sweeps and the
+        # by id, which the new instance reuses for another game. It waits, as
+        # this route waits for sweeps and the
         # settle pass, but only so long: a swap stuck on a mount that stopped
-        # answering gets a 409 to try again, with nothing saved (CodeRabbit
-        # 4594841850).
+        # answering gets a 409 to try again, with nothing saved.
         try:
             async with (
                 romm_swap_referrer.identity_change() if changed else contextlib.nullcontext()

@@ -245,7 +245,7 @@ class FindingsStore {
    * The view's finished delete jobs (#389). Each one this page started
    * settles its Finding's delete: a dialog open on that Finding closes on a
    * plain success, stays done with a warning when the copy kept changed
-   * meanwhile (Codex 4593499350), or shows why the job failed or was
+   * meanwhile, or shows why the job failed or was
    * cancelled. Lists again when any settled. Returns `[{ job, result }]` for
    * those it settled; a job it did not start, or already settled, is ignored.
    */

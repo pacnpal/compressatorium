@@ -107,7 +107,7 @@
   // Turning it on saves first: the scheduler reads the server's Rules, so an
   // edit still waiting would run on the previous ones. Off needs no care.
   // Bumped by every switch: an "on" still waiting for a save never lands
-  // after a later "off" (CodeRabbit 4653326180).
+  // after a later "off".
   let autoChoice = 0;
   async function setAuto(enabled) {
     const mine = ++autoChoice;
@@ -133,8 +133,8 @@
   async function applyRecommended() {
     applying = true;
     try {
-      // What its title promises, whatever the saved defaults say
-      // (CodeRabbit 4652729316): check every new file, keep originals.
+      // What its title promises, whatever the saved defaults say:
+      // check every new file, keep originals.
       const { added, skipped } = await source.applyRecommended(
         () => ({ verify_after: true, delete_on_verify: false }),
       );
@@ -254,8 +254,8 @@
         <Button size="sm" variant="secondary" onclick={() => source.loadRules().catch(() => {})}>Try again</Button>
       </p>
     {:else if !source.rulesLoaded}
-      <!-- No control that changes a Rule before the Rules are read (Codex
-           4653298940): an edit then would start from none of them. -->
+      <!-- No control that changes a Rule before the Rules are read: an edit
+      then would start from none of them. -->
       <p class="muted"><Spinner size="sm" label="Loading" /> Loading this Library's settings…</p>
     {:else if source.platformsBusy}
       <!-- A listing of the folder is still running: a wait, not an error. -->

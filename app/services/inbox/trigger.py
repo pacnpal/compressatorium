@@ -201,13 +201,13 @@ def _platform_ids(library: Any, local: str) -> list[str]:
     """The Library's console ids for the game at *local*. Blocking.
 
     Its console is what Platform detection says, the person's folder
-    mappings included (`My discs` mapped to ps2 is ps2, Codex 4652664859),
+    mappings included (`My discs` mapped to ps2 is ps2),
     matched on the console's id or slug. A console detection can't name
     at all (RomM's renamed folder) is RomM's own: the folder it sits in,
     matched on the console's folder. One whose header and folder disagree
     is neither, and nothing runs for it. Consoles that are one to detection
     (RomM's nes and famicom) are narrowed to the one whose folder holds it,
-    or none (Codex 4653575642).
+    or none.
     """
     from services import platform_detect
 
@@ -291,8 +291,8 @@ def _checked(
 
 
 async def check_one(path: str) -> dict[str, Any]:
-    """:func:`check`, and for a Library path the answer an import would get
-    (CodeRabbit 4652729358): never "works" for one the import would skip."""
+    """:func:`check`, and for a Library path the answer an import would get:
+    never "works" for one the import would skip."""
     rules = await load_rewrites()
     try:
         found, _real, ids = await asyncio.wait_for(
@@ -300,7 +300,7 @@ async def check_one(path: str) -> dict[str, Any]:
         )
     except (OSError, TimeoutError, ValueError, LibraryUnreadable) as exc:
         # A busy or unreadable Library is this path's answer, as in
-        # `process` (CodeRabbit 4653326169).
+        # `process`.
         return {"path": path, "local": rewrite(path, rules), "inbox_id": None,
                 "library_id": None, "problem": f"Couldn't check it: {exc}",
                 "suggestion": None}
@@ -361,9 +361,9 @@ async def process(paths: list[str], *, source: str) -> dict[str, Any]:
         boxes[box.id] = box
         accepted.append({"path": path, "local": found["local"], "inbox_id": box.id})
     for library, _ids, locals_ in sweeps.values():
-        # The Library's own hook (#353), once per Library (CodeRabbit
-        # 4653612399): a walk listed before these files arrived is dropped,
-        # so the sweep sees them (Codex 4653298959).
+        # The Library's own hook (#353), once per Library: a walk listed before
+        # these files arrived is dropped,
+        # so the sweep sees them.
         library.note_paths_changed(locals_)
     jobs = [_poll_now(box) for box in boxes.values()]
     jobs += [_sweep_now(library, ids) for library, ids, _locals in sweeps.values()]

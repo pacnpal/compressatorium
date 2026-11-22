@@ -256,7 +256,7 @@ const row = (platform) => [{ path: '/v/roms/misc', platform }];
 
 
 def test_a_response_from_an_earlier_opening_is_ignored(tmp_path):
-    """CodeRabbit 4579059374: each opening of the dialog owns its own read.
+    """each opening of the dialog owns its own read.
 
     Opened, closed and opened again on the same folder: the first read
     (``ps2``, from before a save) answers after the second (``psp``). The
@@ -299,7 +299,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_a_failed_mapping_read_is_shown_and_can_be_retried(tmp_path):
-    """CodeRabbit 4579059377: "couldn't load" is not "no mapping", and Retry reads again."""
+    """"couldn't load" is not "no mapping", and Retry reads again."""
     data = _run(tmp_path, _DEFERRED_MAPPINGS + """
 findings.openMapping('/v/roms/misc', 'misc');
 await tick();
@@ -635,7 +635,7 @@ def test_the_summary_keeps_the_savings_split_and_a_running_check():
 
 
 def test_delete_loads_the_real_file_entry_so_the_check_still_applies():
-    """Codex 4659056910: DeleteModal asks to acknowledge an unverified
+    """DeleteModal asks to acknowledge an unverified
     replacement from the entry's `outputs`. Needs attention loads the file's
     real listing entry first; if it can't, Delete doesn't open."""
     view = _VIEW.read_text(encoding="utf-8")

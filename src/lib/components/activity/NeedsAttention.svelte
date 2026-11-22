@@ -360,7 +360,7 @@
 
   // Delete opens on the file's real listing entry, with its replacement
   // outputs, so the dialog still asks before an original whose new file
-  // isn't checked goes (Codex 4659056910). Not found: it doesn't open.
+  // isn't checked goes. Not found: it doesn't open.
   async function remove(row) {
     if (busy[row.id]) return;
     busy = { ...busy, [row.id]: true };

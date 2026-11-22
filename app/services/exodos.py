@@ -706,8 +706,7 @@ class ExodosService:
         except (OSError, ValueError, zipfile.BadZipFile) as exc:
             # The shared rule, as every tool's verify uses it: a file that
             # could not be read (EACCES, EIO, a mount gone) is no verdict
-            # (`inconclusive`, so a stored check stays); a format error is one
-            # (codex 4582164683).
+            # (`inconclusive`, so a stored check stays); a format error is one.
             yield verify_exception_event(exc)
             return
         yield {"type": "complete", "valid": True, "message": "File is Intact"}

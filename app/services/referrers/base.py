@@ -153,12 +153,12 @@ class StagedPlacement:
     is_placed: Callable[[], bool] = field(default=lambda: False, compare=False)
     # The same placing, blocking and with no hand-off of the job's locks, for
     # a Referrer that runs it as a step of its own it always waits for (the
-    # RomM swap, Codex 4594650576). None: only ``place`` is offered.
+    # RomM swap). None: only ``place`` is offered.
     place_blocking: Callable[[], None] | None = field(default=None, compare=False)
     held: threading.Event = field(default_factory=threading.Event, compare=False)
     # The Sources' fingerprints from before the conversion (the delete
     # snapshot: size, mtime_ns, inode, device, by path): what a Referrer that
-    # moves a Source checks it against before it does (Codex 4594537162).
+    # moves a Source checks it against before it does.
     source_fingerprints: Mapping[str, Mapping[str, int]] = field(
         default_factory=dict, compare=False,
     )
@@ -265,12 +265,12 @@ class WriteJournal:
 
     Kept apart from the hook's outcome on purpose: a phase the hook stops
     waiting for (a Cancel, its bound) returns no records, but its worker may
-    already have written, and goes on recording here until it ends (Codex
-    4602538922). Its writes are refused from the moment it is abandoned
+    already have written, and goes on recording here until it ends. Its writes
+    are refused from the moment it is abandoned
     (``check_write``), so once every worker has ended (:meth:`wait_idle`)
     the journal is complete. Restoring writes back exactly the bytes that
     were there, never a re-plan, so an entry the rename didn't change is never
-    touched (Codex 4602560232). Thread-safe.
+    touched. Thread-safe.
     """
 
     def __init__(self) -> None:
@@ -339,7 +339,7 @@ class WriteGuard:
 
 
 # The guard ``check_write`` consults. A context variable, not thread-local
-# state, so one mechanism covers both kinds of apply (codex 4588646144): the
+# state, so one mechanism covers both kinds of apply: the
 # hook's worker thread sets it for its plain applies, and each async apply's
 # task runs in a context that holds it (``guarded_context``).
 _guard: contextvars.ContextVar[WriteGuard | None] = contextvars.ContextVar(

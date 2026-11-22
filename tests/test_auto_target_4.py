@@ -156,7 +156,7 @@ async def test_delete_on_verify_reaches_only_the_groups_that_can_delete(queue_en
     by_mode = {call["mode"]: call for call in queue_env["calls"]}
     assert by_mode["createdvd"]["delete_on_verify"] is True
     assert by_mode["createdvd"]["container_only"] is True
-    # The PS3 folder's group keeps its originals (CodeRabbit 4654265240: the
+    # The PS3 folder's group keeps its originals (the
     # group must be there, not silently missing).
     assert by_mode["folder_to_iso"]["delete_on_verify"] is False
     assert by_mode["folder_to_iso"]["container_only"] is False
@@ -221,7 +221,7 @@ def test_the_cli_to_routes_like_the_plan(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_game_whose_new_file_exists_is_skipped_in_the_plan(queue_env):
-    """CodeRabbit 4654265187: the queue skips a game whose new file is already
+    """the queue skips a game whose new file is already
     there, so the plan says so up front and its delete preview never covers it."""
     folder = queue_env["tmp_path"] / "pile"
     done = _ps2(folder / "done.iso")
@@ -238,7 +238,7 @@ async def test_a_game_whose_new_file_exists_is_skipped_in_the_plan(queue_env):
 
 @pytest.mark.asyncio
 async def test_rename_still_queues_a_game_whose_new_file_exists(queue_env):
-    """CodeRabbit 4654557556: only the panel's Skip leaves an existing output
+    """only the panel's Skip leaves an existing output
     out; an API caller's Rename still queues it, as before."""
     from app.models import DuplicateAction
 

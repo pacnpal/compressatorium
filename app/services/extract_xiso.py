@@ -39,10 +39,10 @@ from config import settings
 from logging_setup import get_logger
 from services.output_placement import OutputPlacement
 from services.subprocess_runner import (
+    VerifyingRunnerService,
     ConversionCancelled,
     ReadCancelled,
     SubprocessRunner,
-    collect_verify,
     remove_partial_tree,
     run_detached,
     run_detached_within_stall_bound,
@@ -338,19 +338,12 @@ def _probe_convertible(path: str, size: int, mtime_ns: int) -> bool:
         return False
 
 
-class ExtractXisoService:
+class ExtractXisoService(VerifyingRunnerService):
     """Wrapper for the ``extract-xiso`` binary."""
 
     def __init__(self) -> None:
         self.extract_xiso_path = settings.extract_xiso_path
         self._runner = SubprocessRunner(owner=_OWNER)
-
-    def active_pids(self) -> list[int]:
-        return self._runner.active_pids()
-
-    def abandoned_pids(self) -> list[int]:
-        """Children that outlived SIGKILL; see ``SubprocessRunner``."""
-        return self._runner.abandoned_pids()
 
     # --- source / output naming -----------------------------------------
 
@@ -676,14 +669,6 @@ class ExtractXisoService:
                 f"but the file is {size}",
             )
         return stats
-
-    async def verify(
-        self, file_path: str, *, cancel_event: asyncio.Event | None = None,
-    ) -> dict:
-        return await collect_verify(
-            self.verify_stream(file_path, cancel_event=cancel_event),
-            fallback_message="Verification failed",
-        )
 
     async def verify_stream(
         self, file_path: str, *, cancel_event: asyncio.Event | None = None,

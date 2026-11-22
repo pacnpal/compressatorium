@@ -76,7 +76,7 @@ def folder_holding(parent: str, path: str) -> str | None:
 def folder_holder(parent: str) -> Callable[[str], str | None]:
     """:func:`folder_holding` for many paths: *parent* is listed and its
     folders resolved once, here, so a listing of thousands of Images doesn't
-    list it again for each (Codex 4653575625). Raises OSError when *parent*
+    list it again for each. Raises OSError when *parent*
     can't be listed."""
     with os.scandir(parent) as listing:
         folders = [

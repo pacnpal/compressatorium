@@ -530,7 +530,7 @@ async def test_an_import_a_rule_would_not_run_now_is_left_alone(
 
 @pytest.mark.asyncio
 async def test_an_import_into_a_folder_mapped_to_a_console_runs_its_rule(client, vol, queued):
-    """Codex 4652664855: a folder the person mapped to a console (`My discs`
+    """a folder the person mapped to a console (`My discs`
     -> ps2) is that console, as detection reads it, not a slug guess."""
     from services import platform_detect, platform_mappings
     from services.inbox import trigger
@@ -571,7 +571,7 @@ async def test_an_import_whose_console_is_unclear_is_left_alone(client, vol, que
 
 @pytest.mark.asyncio
 async def test_a_rule_paused_after_the_import_was_accepted_is_not_run(vol, db, queued):
-    """CodeRabbit 4652729285: the import's sweep never gets Run now's
+    """the import's sweep never gets Run now's
     named-console override. A console paused between accepting the path and
     the sweep stays paused."""
     from services.inbox import trigger
@@ -587,7 +587,7 @@ async def test_a_rule_paused_after_the_import_was_accepted_is_not_run(vol, db, q
 
 @pytest.mark.asyncio
 async def test_the_path_test_says_what_an_import_would_do(client, vol, queued):
-    """CodeRabbit 4652729358: Test a path gives the import's own answer for a
+    """Test a path gives the import's own answer for a
     Library path, so it never promises a conversion the import would skip."""
     _library, game = await _ps2_library(vol, automation=False)
 
@@ -598,7 +598,7 @@ async def test_the_path_test_says_what_an_import_would_do(client, vol, queued):
 
 @pytest.mark.asyncio
 async def test_an_import_right_after_a_listing_is_found(client, vol, queued):
-    """Codex 4653298959: a game imported within the walk's cache time must
+    """a game imported within the walk's cache time must
     not be missed by a sweep reading the walk from before it arrived."""
     from routes import libraries as routes
     from services.inbox import trigger
@@ -618,7 +618,7 @@ async def test_an_import_right_after_a_listing_is_found(client, vol, queued):
 
 @pytest.mark.asyncio
 async def test_a_batch_drops_the_librarys_listing_once(client, vol, queued, monkeypatch):
-    """CodeRabbit 4653612399: a hundred imports into one Library drop its
+    """a hundred imports into one Library drop its
     listing once, after they are all checked, not once each (a walk each)."""
     from services.inbox import trigger
     from services.libraries.folder import FolderLibrary
@@ -641,7 +641,7 @@ async def test_a_batch_drops_the_librarys_listing_once(client, vol, queued, monk
 
 @pytest.mark.asyncio
 async def test_a_busy_library_listing_skips_that_path_only(client, vol, queued, monkeypatch):
-    """CodeRabbit 4653326169: a walk already running (`ListingInProgress`)
+    """a walk already running (`ListingInProgress`)
     is one path's skip, never the end of the request or the check."""
     from services.libraries.folder import FolderLibrary, ListingInProgress
 
@@ -663,7 +663,7 @@ async def test_a_busy_library_listing_skips_that_path_only(client, vol, queued, 
 
 
 def test_consoles_sharing_a_slug_run_only_the_folder_holding_it(monkeypatch, tmp_path):
-    """Codex 4653575642: RomM's nes and famicom are one console to detection,
+    """RomM's nes and famicom are one console to detection,
     so an import into famicom/ runs only Famicom's Rule, never NES's."""
     from services import platform_detect
     from services.inbox import trigger

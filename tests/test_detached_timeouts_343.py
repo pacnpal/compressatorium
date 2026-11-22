@@ -1,4 +1,4 @@
-"""A detached call's own TimeoutError is not its deadline (codex 4579904147).
+"""A detached call's own TimeoutError is not its deadline.
 
 ``asyncio.TimeoutError`` is the built-in ``TimeoutError``, which a network
 filesystem raises as ``ETIMEDOUT``. The bounded detached helpers tell the two
@@ -114,7 +114,7 @@ def _fails_at_the_deadline(seconds):
 
 @pytest.mark.parametrize("helper", ["bounded", "undoable", "mutation", "stall"])
 def test_a_failure_that_lands_at_the_deadline_is_that_failure(helper, monkeypatch):
-    """CodeRabbit 4580102968: the worker settles with its own error just as
+    """the worker settles with its own error just as
     the wait runs out; every helper re-raises that error, not a timeout."""
     from services import subprocess_runner
 

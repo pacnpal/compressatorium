@@ -97,7 +97,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_the_nightly_switch_covers_consoles_with_games_and_no_format(tmp_path):
-    """Codex 4653752396: games already compressed need no conversion Rule
+    """games already compressed need no conversion Rule
     to be re-checked every night."""
     data = _node(_plain(_TABLE) + """
 const platforms = [{ id: 'ps2' }, { id: 'gc' }, { id: 'gba' }];
@@ -243,7 +243,7 @@ def test_the_table_saves_every_change_and_has_no_save_button():
 
 
 def test_a_paused_console_can_be_turned_back_on(tmp_path):
-    """Codex 4652664852: picking the same format isn't a retarget, so the row
+    """picking the same format isn't a retarget, so the row
     has its own On switch, and it resumes a console paused any way."""
     data = _node(_plain(_TABLE) + """
 const paused = { mode: 'createcd', enabled: false };
@@ -255,7 +255,7 @@ process.stdout.write(JSON.stringify(ruleUpdate(paused, { enabled: true })));
 
 
 def test_an_unfinished_pattern_is_never_saved():
-    """Codex 4652664855: autosave of `(` would be refused by the backend,
+    """autosave of `(` would be refused by the backend,
     which nulls it and pauses the console. The server is asked first, and
     only an answer for the text still in the box saves it
     (tests/test_rule_pattern_check_541.py checks the server's side)."""
@@ -293,7 +293,7 @@ process.stdout.write(JSON.stringify([numberValue(''), numberValue('abc'), number
 
 
 def test_browse_opens_where_each_consoles_games_are():
-    """Codex 4652664869: not the placement for new arrivals, which after a
+    """not the placement for new arrivals, which after a
     layout change is an empty folder."""
     browse = (_COMPONENTS / "LibraryBrowse.svelte").read_text(encoding="utf-8")
     assert "platform.folder" in browse
@@ -301,7 +301,7 @@ def test_browse_opens_where_each_consoles_games_are():
 
 
 def test_the_console_table_says_when_the_consoles_cannot_be_listed():
-    """Codex 4652664862: a listing still running or one that failed is not
+    """a listing still running or one that failed is not
     "no consoles found yet". Each has its own line and a way to try again,
     as the Rules view had."""
     src = (_COMPONENTS / "LibraryAutomation.svelte").read_text(encoding="utf-8")
@@ -330,7 +330,7 @@ def test_the_library_page_keeps_what_the_rules_and_romm_views_showed():
 
 
 def test_apply_recommended_waits_for_the_rules_and_reports_a_failed_save(tmp_path):
-    """CodeRabbit 4652729322 / 4652729388: before the Library's Rules have
+    """Before the Library's Rules have
     loaded, Apply would save its few consoles over Rules it never read; and a
     save that fails must not be reported as done."""
     data = _node(_SOURCE_STUBS + _plain(_SOURCE) + """
@@ -356,7 +356,7 @@ process.stdout.write(JSON.stringify(out));
 
 
 def test_apply_recommended_keeps_its_promise(tmp_path):
-    """CodeRabbit 4652729316: "checks every new file, and keeps originals",
+    """"checks every new file, and keeps originals",
     whatever the saved defaults say."""
     automation = (_COMPONENTS / "LibraryAutomation.svelte").read_text(encoding="utf-8")
     body = automation[automation.index("async function applyRecommended()"):]
@@ -365,7 +365,7 @@ def test_apply_recommended_keeps_its_promise(tmp_path):
 
 
 def test_a_re_check_can_be_reached_without_a_format(tmp_path):
-    """CodeRabbit 4652729352: "Don't convert" leaves the console's re-check;
+    """"Don't convert" leaves the console's re-check;
     its settings and the nightly switch still reach it."""
     data = _node(_plain(_TABLE) + """
 process.stdout.write(JSON.stringify({
@@ -375,7 +375,7 @@ process.stdout.write(JSON.stringify({
 """, tmp_path)
     assert data == {"onlyChecks": True, "none": False}
     # Every console row reaches More settings, with or without a Rule, so a
-    # console's own re-check can be set up (Codex 4653752396).
+    # console's own re-check can be set up.
     table = (_COMPONENTS / "RuleTable.svelte").read_text(encoding="utf-8")
     assert "configured || check" not in table
     assert "{#if open.has(platform.id)}" in table
@@ -388,7 +388,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_a_late_folder_save_never_undoes_a_later_choice():
-    """CodeRabbit 4652729306: picking None while ES-DE's folder is saving
+    """picking None while ES-DE's folder is saving
     must stay None."""
     src = (_COMPONENTS / "FrontendSelect.svelte").read_text(encoding="utf-8")
     body = src[src.index("async function useFolder("):]
@@ -399,14 +399,14 @@ def test_a_late_folder_save_never_undoes_a_later_choice():
     choose = choose[: choose.index("\n  }\n")]
     assert "const mine = ++choice;" in choose
     # Batocera's folder clear finishing after a later None must not turn the
-    # updates back on (codex 4653575633).
+    # updates back on.
     clear = choose.index("await source.setGamelistsFolder('');")
     guard = choose.index("if (mine !== choice) return;", clear)
     assert guard < choose.rindex("setEsFrontend(true)")
 
 
 def test_browse_names_games_without_a_console_even_with_no_consoles():
-    """CodeRabbit 4652729331: a Library of unsorted games still shows the
+    """a Library of unsorted games still shows the
     notice and its Fix in Activity link."""
     src = (_COMPONENTS / "LibraryBrowse.svelte").read_text(encoding="utf-8")
     empty = src.index("No games found here yet")
@@ -415,7 +415,7 @@ def test_browse_names_games_without_a_console_even_with_no_consoles():
 
 
 def test_the_library_page_leaves_romm_mode_however_it_was_entered():
-    """CodeRabbit 4652729369: a Connection save can enter RomM mode; leaving
+    """a Connection save can enter RomM mode; leaving
     the page always cancels and exits it, and a save that lands after the
     page is gone puts the browser back too."""
     view = (_COMPONENTS.parent / "views" / "LibraryView.svelte").read_text(encoding="utf-8")
@@ -426,7 +426,7 @@ def test_the_library_page_leaves_romm_mode_however_it_was_entered():
 
 
 def test_an_unknown_library_id_stops_loading_once_the_list_is_in():
-    """CodeRabbit 4652729380: with no Libraries at all, the page says the
+    """with no Libraries at all, the page says the
     Library isn't here instead of loading for ever."""
     view = (_COMPONENTS.parent / "views" / "LibraryView.svelte").read_text(encoding="utf-8")
     assert "{:else if libraries.loading || !libraries.loaded}" in view
@@ -435,7 +435,7 @@ def test_an_unknown_library_id_stops_loading_once_the_list_is_in():
 
 
 def test_a_save_sends_only_the_consoles_that_changed(tmp_path):
-    """Codex 4653298940: a save that went out before the Rules loaded (or
+    """a save that went out before the Rules loaded (or
     with any partial map) sent the whole map and wiped the others. Each save
     now names only the consoles changed since the last one; null removes."""
     stubs = _SOURCE_STUBS.replace(
@@ -464,7 +464,7 @@ process.stdout.write(JSON.stringify(__saves));
 
 
 def test_the_table_waits_for_the_rules_before_it_can_change_them():
-    """Codex 4653298940: no rule-changing control before the Rules load."""
+    """no rule-changing control before the Rules load."""
     src = (_COMPONENTS / "LibraryAutomation.svelte").read_text(encoding="utf-8")
     table = src.index("<RuleTable {source} />")
     guard = src.rfind("{:else if !source.rulesLoaded}", 0, table)
@@ -473,7 +473,7 @@ def test_the_table_waits_for_the_rules_before_it_can_change_them():
 
 
 def test_a_run_waits_for_a_pattern_still_being_checked(tmp_path):
-    """Codex 4653298945: Run now within the debounce, or while the server
+    """Run now within the debounce, or while the server
     checks a pattern, ran with the old filter. `flush()` waits for every
     check in progress, and refuses while a typed filter isn't valid."""
     data = _node(_SOURCE_STUBS + _plain(_SOURCE) + """
@@ -506,7 +506,7 @@ process.stdout.write(JSON.stringify({ waited, done, saved: __saves, refused, rea
 
 
 def test_a_busy_listing_is_retried_after_every_busy_answer():
-    """CodeRabbit 4653326178: two busy answers in a row stopped the retry.
+    """two busy answers in a row stopped the retry.
     The retry re-arms whenever a read ends with the folder still busy."""
     for name in ("LibraryAutomation.svelte", "LibraryBrowse.svelte"):
         src = (_COMPONENTS / name).read_text(encoding="utf-8")
@@ -514,7 +514,7 @@ def test_a_busy_listing_is_retried_after_every_busy_answer():
 
 
 def test_a_later_switch_wins_over_an_earlier_one_still_saving():
-    """CodeRabbit 4653326180: on, then off, while a Rule save is out must
+    """on, then off, while a Rule save is out must
     end off."""
     src = (_COMPONENTS / "LibraryAutomation.svelte").read_text(encoding="utf-8")
     body = src[src.index("async function setAuto(enabled)"):]

@@ -1,4 +1,4 @@
-"""A numbered split part is guarded by its logical owner's lock (codex 4577940381).
+"""A numbered split part is guarded by its logical owner's lock.
 
 A folder_to_iso job in another process (a CLI run) holds the cross-process
 lock on the logical ``Game.iso`` only; the parts it writes (``Game.iso.0``,

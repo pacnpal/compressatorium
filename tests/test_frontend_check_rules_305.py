@@ -98,7 +98,7 @@ process.stdout.write(JSON.stringify({{
 
 
 def test_editing_the_window_drops_a_stale_invalid_window_flag(tmp_path) -> None:
-    """4577383258: the server owns invalid_window. The store drops it once the window
+    """The server owns invalid_window. The store drops it once the window
     or Enabled changes, and never sends it back."""
     data = _run_store(tmp_path, f"""
 const source = new FolderRulesSource({_FOLDER});
@@ -154,7 +154,7 @@ process.stdout.write(JSON.stringify({{ edited, call: __log[1] }}));
 
 
 def test_a_check_runs_events_update_the_badges_in_order(tmp_path) -> None:
-    """Codex 4578116084, 4578154653: each Image's new state arrives as it
+    """each Image's new state arrives as it
     settles. One that failed loses its Intact badge; a newer pass that lands
     after it (a repair and re-verify) is not undone by the run's later events,
     and a conversion's own flags still apply as before."""
@@ -193,7 +193,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_a_failure_during_a_reload_survives_the_older_snapshot(tmp_path) -> None:
-    """Codex 4578598280: a reload (page load, SSE reconnect) is in flight when
+    """a reload (page load, SSE reconnect) is in flight when
     a check run says X is no longer Intact. The older snapshot still lists X;
     replaying it must not bring the badge back. Additions and changes made
     meanwhile survive the same way."""
@@ -223,7 +223,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_a_run_whose_progress_events_were_dropped_is_caught_up_at_its_end(tmp_path) -> None:
-    """Codex 4578664511: every per-Image event is lost (a full stream queue).
+    """every per-Image event is lost (a full stream queue).
     The terminal event lists the paths the run settled; the store re-reads
     just those from the database, and the failed Image loses its badge, while
     a live event that lands during the re-read still wins."""
@@ -262,7 +262,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_an_older_full_load_never_undoes_a_newer_lookup(tmp_path) -> None:
-    """Codex 4579128146: a full reload is still out when a check run's end
+    """a full reload is still out when a check run's end
     re-reads its paths. The lookup removes a failed Image and lands first;
     the older full answer, which still lists it, must not bring it back.
     Responses only replace state older than their own request."""
@@ -293,7 +293,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_an_older_lookup_never_undoes_a_newer_full_load(tmp_path) -> None:
-    """Codex 4579151542, the reverse order: a lookup is still out when a newer
+    """A lookup is still out when a newer
     full reload answers first and says the path has no check. A full answer
     covers every path, even one it never names, so the older lookup that
     lands after it cannot bring the badge back. A live write after the full

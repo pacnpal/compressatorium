@@ -45,7 +45,7 @@ def output_status(mode: str, output_path: str) -> tuple[bool, bool]:
     """``(on_disk, locked)`` for an output path *and all of its companion
     outputs*: whether any of them is on disk, and whether any is held by a
     job right now. A name only locked is a temporary conflict; one on disk is
-    a real output (#431, Codex 4606794174)."""
+    a real output (#431)."""
     on_disk, locked = lock_manager.check_file_status(output_path)
     for companion in registry.for_mode(mode).companion_outputs(output_path, mode):
         c_exists, c_locked = lock_manager.check_file_status(companion)

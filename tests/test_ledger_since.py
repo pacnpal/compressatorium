@@ -115,7 +115,7 @@ async def test_the_csv_export_takes_the_same_filters():
 
 @pytest.mark.asyncio
 async def test_a_job_that_only_waited_is_recorded_as_waiting_with_why():
-    """Codex 4658826956: a watch-folder archive with no room to unpack ends
+    """a watch-folder archive with no room to unpack ends
     COMPLETED with `result.waiting` and a warning (finish_external_job_waiting).
     History says it waited, and why, instead of "Unpacked"."""
     from services.job_manager import JobManager
@@ -145,7 +145,7 @@ def test_history_shows_a_waiting_row_as_waiting_with_its_reason():
 
 @pytest.mark.asyncio
 async def test_every_finished_job_keeps_its_warning():
-    """Codex 4658906850: a job that ends with a warning (an eXoDOS repack whose
+    """a job that ends with a warning (an eXoDOS repack whose
     config names files outside the game) keeps it on its row, whatever its
     status, beside a failure's own error."""
     now = datetime.now(timezone.utc)
@@ -178,7 +178,7 @@ def test_history_shows_a_jobs_warning():
 
 @pytest.mark.asyncio
 async def test_a_relative_since_is_fixed_once_for_a_whole_export(monkeypatch):
-    """Codex 4658906854: `since=24h` is resolved once, when the export starts.
+    """`since=24h` is resolved once, when the export starts.
     With a clock that moves an hour between pages, a row near the cutoff that
     matched the first page is still exported on the last."""
     from routes import ledger as routes
@@ -199,7 +199,7 @@ async def test_a_relative_since_is_fixed_once_for_a_whole_export(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_jobs_closing_summary_is_kept():
-    """Codex 4659056907: an external job's last message is its outcome (a check
+    """an external job's last message is its outcome (a check
     run's "2 Intact, 1 inconclusive, 3 skipped"). Every row keeps it, and
     History shows it beside what the job did."""
     from services.job_manager import JobManager

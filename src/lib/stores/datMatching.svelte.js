@@ -246,7 +246,7 @@ class DATMatchingStore {
   async setHasheousEnabled(enabled) {
     // Every toggle takes a number; one that a later toggle overtook stops at
     // its next await, so it never applies its state or starts a probe after
-    // the newer choice (CodeRabbit 4652269835).
+    // the newer choice.
     const toggle = ++this.#hasheousToggles;
     const state = await api.setHasheousEnabled(enabled);
     if (toggle !== this.#hasheousToggles) return state;

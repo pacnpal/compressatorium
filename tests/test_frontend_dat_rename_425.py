@@ -42,9 +42,8 @@ def test_the_dialog_is_mounted_follows_its_job_and_blocks_background_refresh():
     # running jobs every 0.1 s), so the job is tracked through the API by the
     # jobs store (``jobs.track``, its runtime test is in
     # test_frontend_jobs_store), independent of the dialog: it lands in the
-    # list whether the dialog is still open or not (CodeRabbit 4602644957,
-    # 4602984524), and a job the server no longer has shows an error
-    # (CodeRabbit 4602644995).
+    # list whether the dialog is still open or not, and a job the server no
+    # longer has shows an error.
     assert "async function follow(" not in modal
     assert "jobs.track(id)" in modal
     assert "The rename job is no longer known" in modal
@@ -52,7 +51,7 @@ def test_the_dialog_is_mounted_follows_its_job_and_blocks_background_refresh():
 
 def test_the_start_answer_stays_in_the_dialog_session_that_asked():
     """A start answered after the dialog closed and reopened on another
-    selection never lands in the new one (CodeRabbit 4602644943)."""
+    selection never lands in the new one."""
     modal = _MODAL.read_text()
     confirm = modal.split("async function confirm()", 1)[1].split("\n  }\n", 1)[0]
     assert "const mine = request;" in confirm

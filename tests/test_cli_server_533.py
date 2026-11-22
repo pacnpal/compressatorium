@@ -319,8 +319,8 @@ def _isos(volume, count):
 def test_a_server_with_a_shallow_queue_still_gets_every_input(
     volume, dolphin, capsys, server_lock, monkeypatch,
 ):
-    """A server whose MAX_QUEUE_DEPTH is below the CLI's window (Codex
-    4650363719): a refused batch is split until it fits, never failed."""
+    """A server whose MAX_QUEUE_DEPTH is below the CLI's window: a refused
+    batch is split until it fits, never failed."""
     from config import settings
 
     monkeypatch.setattr(settings, "max_concurrent_jobs", 2)  # a window of 4
@@ -360,7 +360,7 @@ def test_a_full_server_queue_is_waited_for(volume, dolphin, capsys, server_lock,
 def test_a_tool_ready_only_on_the_server_still_converts(
     volume, dolphin, capsys, server_lock, monkeypatch,
 ):
-    """The server's readiness decides a remote run (Codex 4650363722): a tool
+    """The server's readiness decides a remote run: a tool
     that cannot run in the CLI's container (nsz with the keys mounted only on
     the server) still has its Images sent."""
     from services.tools import registry
@@ -411,7 +411,7 @@ def _advertise(held, **fields):
 
 def test_the_lock_names_the_servers_addresses(server_lock):
     """The holder note carries an id and the host's own IPv4 addresses, so a
-    CLI on the default bridge (no DNS) can still reach it (Codex 4650363716)."""
+    CLI on the default bridge (no DNS) can still reach it."""
     import ipaddress
 
     from services import scheduler_lock
@@ -561,8 +561,8 @@ def _stop_with(stub, monkeypatch, jobs: int):
 def test_a_cancel_the_server_did_not_take_is_tried_again(
     volume, dolphin, capsys, server_lock, monkeypatch, fault,
 ):
-    """A cancel that lost its connection, or met a 503, is not the end of it
-    (CodeRabbit 4650577581, 4650577590): every job is cancelled, the first
+    """A cancel that lost its connection, or met a 503, is not the end of it:
+    every job is cancelled, the first
     one too, and every line says so."""
     import cli
 
@@ -598,8 +598,8 @@ def test_a_job_that_ended_before_its_cancel_is_not_cancelled_again():
 
 
 def test_a_failed_publish_of_the_holder_note_is_retried(server_lock, monkeypatch):
-    """A write of the note that fails leaves it to the next one
-    (CodeRabbit 4650577590), on the same file."""
+    """A write of the note that fails leaves it to the next one,
+    on the same file."""
     from services import scheduler_lock
 
     inode = os.stat(scheduler_lock.lock_path()).st_ino

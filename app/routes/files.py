@@ -296,7 +296,7 @@ def _summarize_archive(
 async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
     # The path's own lock, or for a numbered split part (Game.iso.0) the lock
     # on its logical owner, which a split build in another process holds while
-    # it writes parts that have no lock of their own (codex 4577940381).
+    # it writes parts that have no lock of their own.
     if await run_in_threadpool(locked_for_mutation, path) is not None:
         raise HTTPException(
             status_code=409, detail="Path is locked by an active conversion",
@@ -1166,7 +1166,7 @@ def real_path_set(paths: list[str]) -> set[str]:
 def _split_set_by_name(path: str) -> list[str]:
     """The other numbered parts beside *path* of the split output it belongs
     to (``Game.iso.0`` / ``.1`` / …), by name alone, so a part the tool's
-    probe can't stat still counts (CodeRabbit 4654883856). Blocking."""
+    probe can't stat still counts. Blocking."""
     owner = registry.split_owner_name(path)
     if owner is None:
         return []
@@ -1313,7 +1313,7 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
     # to come waits for a later round, whatever order the request lists them
     # in; one whose owner stays (outside the request, or its delete failed) is
     # kept.
-    # Containment first (Codex 4655058131): a path outside every Volume gets
+    # Containment first: a path outside every Volume gets
     # the plain access-denied answer and nothing beside it is listed, stat'ed
     # or read; only the contained paths take part in the ownership checks.
     by_path: dict[str, dict] = {}

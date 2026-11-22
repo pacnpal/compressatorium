@@ -31,9 +31,9 @@ from pathlib import Path
 
 from config import settings
 from services.subprocess_runner import (
+    VerifyingRunnerService,
     ReadCancelled,
     SubprocessRunner,
-    collect_verify,
     remove_partial_tree,
     run_detached,
     verify_preflight,
@@ -102,7 +102,7 @@ def xcz_decoded_size(path: str) -> int:
     return size * 4
 
 
-class NszService:
+class NszService(VerifyingRunnerService):
     """Wrapper for the nsz binary."""
 
     def __init__(self):
@@ -304,13 +304,6 @@ class NszService:
                 cmd.append("-S")
         cmd += ["-o", work_dir, input_path]
         return cmd
-
-    def active_pids(self) -> list[int]:
-        return self._runner.active_pids()
-
-    def abandoned_pids(self) -> list[int]:
-        """Children that outlived SIGKILL; see ``SubprocessRunner``."""
-        return self._runner.abandoned_pids()
 
     # ----- output paths -----------------------------------------------------
 
@@ -548,14 +541,6 @@ class NszService:
                     raise RuntimeError("nsz -D produced no XCI") from e
         except InsufficientDiskSpace as e:
             raise RuntimeError(f"not enough scratch space to decompress: {e}") from e
-
-    async def verify(
-        self, file_path: str, *, cancel_event: asyncio.Event | None = None,
-    ) -> dict:
-        return await collect_verify(
-            self.verify_stream(file_path, cancel_event=cancel_event),
-            fallback_message="Verification failed",
-        )
 
     async def verify_stream(
         self, file_path: str, *, cancel_event: asyncio.Event | None = None,

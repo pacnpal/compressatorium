@@ -92,7 +92,7 @@ async def test_an_unknown_library_is_404(db: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_each_console_says_where_its_games_are(mixed: Path) -> None:
-    """Codex 4652664869: Browse links to where a console's games are, not to
+    """Browse links to where a console's games are, not to
     where new ones would go (RomM style puts those in roms/<console>)."""
     from routes import libraries as routes
 
@@ -107,7 +107,7 @@ async def test_each_console_says_where_its_games_are(mixed: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_an_ambiguous_console_folder_does_not_fail_the_listing(mixed: Path, monkeypatch) -> None:
-    """Codex 4653298954: a console whose folder can't be told (a symlinked
+    """a console whose folder can't be told (a symlinked
     alias) gets no folder and a note; the rest of the listing still answers."""
     from routes import libraries as routes
     from services import libraries
@@ -138,7 +138,7 @@ async def test_an_ambiguous_console_folder_does_not_fail_the_listing(mixed: Path
 
 @pytest.mark.asyncio
 async def test_the_console_folders_are_listed_once_per_listing(mixed: Path, monkeypatch) -> None:
-    """Codex 4653575625: each console's folder is found from one listing of
+    """each console's folder is found from one listing of
     the root, not one per game (5,000 games took about 5 s)."""
     from routes import libraries as routes
     from services import libraries
@@ -165,7 +165,7 @@ async def test_the_console_folders_are_listed_once_per_listing(mixed: Path, monk
 
 @pytest.mark.asyncio
 async def test_games_mostly_in_the_root_open_the_root(db: Path) -> None:
-    """CodeRabbit 4653326177: two PS2 games in the root and one in ps2/ open
+    """two PS2 games in the root and one in ps2/ open
     the root, where most of them are."""
     from routes import libraries as routes
 

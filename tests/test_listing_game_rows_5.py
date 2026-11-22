@@ -159,7 +159,7 @@ async def test_a_stalled_pass_marks_nothing_and_still_lists(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_playlists_naming_each_other_stay_listed(tmp_path):
-    """CodeRabbit 4654265165: a playlist is never another playlist's disc, so
+    """a playlist is never another playlist's disc, so
     two that name each other both stay rows."""
     folder = tmp_path / "psx"
     disc = _write(folder / "Game (Disc 1).chd")

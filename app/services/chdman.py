@@ -7,12 +7,12 @@ from pathlib import Path
 
 from config import settings
 from services.subprocess_runner import (
+    VerifyingRunnerService,
     ReadCancelled,
     StorageAbandoned,
     abandonment_checkpoint,
     ConversionCancelled,
     SubprocessRunner,
-    collect_verify,
     info_timeout,
 )
 
@@ -29,8 +29,10 @@ CONVERTIBLE_EXTENSIONS = CHDMAN_CONVERTIBLE_EXTENSIONS
 logger = get_logger("chdman")
 
 
-class ChdmanService:
+class ChdmanService(VerifyingRunnerService):
     """Wrapper for chdman binary."""
+
+    verify_fallback_message = "CHD verification failed"
 
     def __init__(self):
         self.chdman_path = settings.chdman_path
@@ -73,13 +75,6 @@ class ChdmanService:
             cmd = cmd[:2] + ["-c", compression] + cmd[2:]
 
         return cmd
-
-    def active_pids(self) -> list[int]:
-        return self._runner.active_pids()
-
-    def abandoned_pids(self) -> list[int]:
-        """Children that outlived SIGKILL; see ``SubprocessRunner``."""
-        return self._runner.abandoned_pids()
 
     async def convert(
         self,
@@ -184,21 +179,6 @@ class ChdmanService:
             )
             return False
         return True
-
-    async def verify(
-        self, chd_path: str, *, cancel_event: asyncio.Event | None = None,
-    ) -> dict:
-        """Verify the integrity of a CHD file.
-
-        Returns:
-            dict: {"valid": bool, "message": str}, plus "cancelled": True when
-            ``cancel_event`` stopped the run before it reached a verdict.
-
-        """
-        return await collect_verify(
-            self.verify_stream(chd_path, cancel_event=cancel_event),
-            fallback_message="CHD verification failed",
-        )
 
     def verify_stream(
         self, chd_path: str, *, cancel_event: asyncio.Event | None = None,

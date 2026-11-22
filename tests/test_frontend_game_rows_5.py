@@ -133,7 +133,7 @@ process.stdout.write(JSON.stringify({ shown: fileBrowser.visibleEntries.map((e) 
 
 
 def test_an_everywhere_search_answering_after_this_folder_is_dropped(tmp_path):
-    """Codex 4654246817: back on This folder, a late Everywhere answer must not
+    """back on This folder, a late Everywhere answer must not
     put the view into search mode over the folder filter."""
     data = _run(tmp_path, _LISTING + """
 fileBrowser.currentPath = '/v';
@@ -157,7 +157,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_a_finished_convert_unticks_only_what_it_sent(tmp_path):
-    """CodeRabbit 4654265194: a game ticked while the queue request was out
+    """a game ticked while the queue request was out
     stays ticked; a playlist whose discs went with the run is unticked."""
     data = _run(tmp_path, _LISTING + """
 const m = fileBrowser.rows.find((r) => r.path === '/v/Saga.m3u');
@@ -174,7 +174,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_a_refresh_during_a_search_keeps_the_newest_words(tmp_path):
-    """CodeRabbit 4654557567: Refresh while `beta` is still searching
+    """Refresh while `beta` is still searching
     searches `beta` again, not the last finished `alpha`."""
     data = _run(tmp_path, _LISTING + """
 fileBrowser.currentPath = '/v';
@@ -195,7 +195,7 @@ process.stdout.write(JSON.stringify({ query: fileBrowser.searchQuery }));
 
 
 def test_delete_never_takes_part_of_a_split_disc(tmp_path):
-    """Codex 4654710759: a playlist whose disc is a folded split set
+    """a playlist whose disc is a folded split set
     (`Game.iso.0`, `split_parts: 2`) is deleted without that disc; a partial
     set is never sent."""
     data = _run(tmp_path, """
@@ -213,7 +213,7 @@ process.stdout.write(JSON.stringify(fileBrowser.filesToDelete().map((e) => e.pat
 
 
 def test_delete_reads_each_ticked_game_as_the_listing_has_it_now(tmp_path):
-    """CodeRabbit 4654883878: a refresh after ticking changes a game's files;
+    """a refresh after ticking changes a game's files;
     Delete takes the files the row has now, and drops a row that's gone."""
     data = _run(tmp_path, """
 const cue = { name: 'A.cue', path: '/v/A.cue', type: 'file', size: 1 };
@@ -230,7 +230,7 @@ process.stdout.write(JSON.stringify(fileBrowser.filesToDelete().map((e) => e.pat
 
 
 def test_an_archive_opens_without_the_folders_name_filter(tmp_path):
-    """Codex 4655058125: the folder's name filter would hide the archive's
+    """the folder's name filter would hide the archive's
     members; it is dropped on entering the archive and on leaving it."""
     data = _run(tmp_path, _LISTING + """
 fileBrowser.currentPath = '/v';
@@ -248,7 +248,7 @@ process.stdout.write(JSON.stringify({ inside, after: fileBrowser.folderQuery }))
 
 
 def test_leaving_everywhere_drops_what_this_folder_does_not_list(tmp_path):
-    """Codex 4655165264: a nested game ticked in Everywhere results is
+    """a nested game ticked in Everywhere results is
     unticked on the way back to This folder; one the folder lists stays."""
     data = _run(tmp_path, _LISTING + """
 fileBrowser.currentPath = '/v';
@@ -275,7 +275,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_the_store_names_the_query_it_applies(tmp_path):
-    """Codex 4655353322: the box shows what the store filters by, in
+    """the box shows what the store filters by, in
     either scope, so a remounted FileList starts from it."""
     data = _run(tmp_path, _LISTING + """
 fileBrowser.currentPath = '/v';
@@ -298,7 +298,7 @@ def test_a_remounted_file_list_shows_the_query_still_applied():
 
 
 def test_a_folded_game_shows_when_any_of_its_files_matches(tmp_path):
-    """Codex 4655464285: a playlist whose discs are CHDs stays under the
+    """a playlist whose discs are CHDs stays under the
     CHD filter; a name query keeps a game when a disc or track matches."""
     data = _run(tmp_path, _LISTING + """
 const shown = () => fileBrowser.filteredEntries.map((e) => e.path);
@@ -333,7 +333,7 @@ process.stdout.write(JSON.stringify({ byDisc, byName }));
 
 
 def test_every_folded_file_keeps_its_own_actions():
-    """Codex 4655722988 / 4655978936: a disc, a track or a part shown under its
+    """A disc, a track or a part shown under its
     game is a row of its own (the same FileRow, one level in), so it has its
     actions menu, its checkbox, its badges and its own files under it."""
     row = (_LIB / "components" / "panels" / "FileRow.svelte").read_text(encoding="utf-8")
@@ -390,7 +390,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_background_work_sees_every_file_folded_under_a_row(tmp_path):
-    """Codex 4655978936: metadata, DAT matching and badges are fetched for the
+    """metadata, DAT matching and badges are fetched for the
     files on screen, folded discs and tracks included."""
     data = _run(tmp_path, _LISTING + """
 process.stdout.write(JSON.stringify(fileBrowser.visibleFiles.map((e) => e.path).sort()));

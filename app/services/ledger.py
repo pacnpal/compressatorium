@@ -88,7 +88,7 @@ def row_from_job(job: ConversionJob) -> dict:
         "duration_s": duration,
         # A job that only had to wait (a watch-folder archive with no room to
         # unpack, `finish_external_job_waiting`) did nothing yet: its row says
-        # "waiting" and why, never "completed" (Codex 4658826956).
+        # "waiting" and why, never "completed".
         "status": WAITING if waited else getattr(job.status, "value", str(job.status)),
         "check_passed": job.check_passed or "none",
         "check_dat": getattr(job, "check_dat", None),
@@ -145,7 +145,7 @@ def _bump_totals(session, row: dict) -> None:
     )
 
 
-# Serialises writing a job's row with amending it (CodeRabbit 4594978832):
+# Serialises writing a job's row with amending it:
 # the row is built from the job under this lock, so an amend either finds the
 # row already written or runs before it is built (and the row then carries
 # the amended values).
@@ -208,7 +208,7 @@ async def amend(job: ConversionJob) -> None:
     """Amend listener (``JobManager.add_amend_listener``): update *job*'s row,
     if it was written, with what the job removed and its Referrer records,
     which an apply handed off at shutdown can change after the job ended
-    (#391, CodeRabbit 4594978832). A row not yet written is left to
+    (#391). A row not yet written is left to
     :func:`record`, which then writes the amended values. Never raises."""
     try:
         await run_in_threadpool(_amend_sync, job)
@@ -444,7 +444,7 @@ async def export_csv(flt: LedgerFilter):
     if flt.since:
         # A relative `since` (24h, 7d) is fixed once, as the export starts:
         # measured again for each page, a row near the cutoff would age out
-        # of the middle of the download (Codex 4658906854).
+        # of the middle of the download.
         flt = replace(flt, since=since_cutoff(flt.since))
     session = await run_in_threadpool(_open_snapshot)
     try:

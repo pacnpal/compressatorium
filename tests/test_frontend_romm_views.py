@@ -350,7 +350,7 @@ def test_using_romms_choices_reads_its_plan():
 
 
 def test_the_romm_summary_counts_the_format_the_panel_makes():
-    """Codex 4654538693: a format-valued Convert to (`.chd`) has no mode, so
+    """a format-valued Convert to (`.chd`) has no mode, so
     the summary matches the format, and with Best each game's planned file."""
     browse = (Path(__file__).resolve().parents[1] / "src" / "lib" / "components"
               / "library" / "RommBrowse.svelte").read_text(encoding="utf-8")

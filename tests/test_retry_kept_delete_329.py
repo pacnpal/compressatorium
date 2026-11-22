@@ -129,7 +129,7 @@ def _content_checking_verify(monkeypatch, seen=None, stall=0.0):
 
 
 def test_an_output_rewritten_in_place_keeps_the_source(env, dolphin, capsys, kept, monkeypatch):
-    """Codex 4580346573: every output byte rewritten, same length, mtime put
+    """every output byte rewritten, same length, mtime put
     back, so size, mtime, inode and device all match the record. The retry
     re-runs the output's check, which fails: the Source is kept."""
     output = kept["output"]
@@ -399,8 +399,8 @@ def test_a_validation_paused_rule_keeps_it_even_when_named(env, dolphin, capsys,
 
 
 def test_an_automatic_import_never_deletes_for_a_paused_console(env, dolphin, capsys, kept):
-    """An *arr import names its console but honours the pause (#541, codex
-    4653575647): a kept Source of a paused console is not tried."""
+    """An *arr import names its console but honours the pause (#541): a kept
+    Source of a paused console is not tried."""
     from services.rules import sweep as rules_sweep
 
     _store_rules(env, {"shelf": _rule(env, enabled=False)})
@@ -474,7 +474,7 @@ def test_a_new_check_level_keeps_the_source_and_drops_the_entry(
     env, dolphin, capsys, kept,
 ):
     """Kept under the container check; the Rule now asks for the Round-trip,
-    which the Intact record never passed (codex 4579636593)."""
+    which the Intact record never passed."""
     _store_rules(env, {"shelf": _rule(env, check_level="round_trip")})
 
     code, lines, _err = _cli(capsys, "run-rules", "--json")
@@ -503,7 +503,7 @@ def test_forget_history_while_a_completion_waits_records_nothing(
 ):
     """Forget history runs while a finished job's listener waits for the
     sweep lock: the entry it was about to write is not written after the
-    clear (codex 4579636594)."""
+    clear."""
     from services import job_manager as job_manager_module
     from services.job_manager import JobManager
     from services.lock_manager import LockManager, lock_manager
@@ -608,7 +608,7 @@ def test_a_stalled_path_resolve_in_the_delete_step_is_off_the_loop_and_bounded(
     env, dolphin, capsys, kept, monkeypatch,
 ):
     """The shared delete step resolves and stats its paths on a detached
-    thread under a bound (CodeRabbit 4579539704), for the job and the retry
+    thread under a bound, for the job and the retry
     alike: a volume that stops answering neither stalls the event loop nor
     hangs the step, and nothing is removed."""
     import os
@@ -658,7 +658,7 @@ def test_a_stalled_path_resolve_in_the_delete_step_is_off_the_loop_and_bounded(
 
 
 # --------------------------------------------------------------------------- #
-# The Library is part of the decision (Codex 4579589757)
+# The Library is part of the decision
 # --------------------------------------------------------------------------- #
 
 
@@ -825,7 +825,7 @@ def _started_delete_findings(library_id: str) -> list[dict]:
 
 
 def test_a_rule_edit_reports_a_started_delete_it_drops(env, dolphin, capsys):
-    """Codex 4580328581: saving the Rule with its delete off while a Source is
+    """saving the Rule with its delete off while a Source is
     half deleted drops the entry, and says which files are left."""
     from services import findings
 
@@ -894,7 +894,7 @@ def test_romm_identity_cleanup_reports_a_started_delete_under_no_library(
 
 
 # --------------------------------------------------------------------------- #
-# Every stage under the sweep lock is bounded (Codex 4579683118)
+# Every stage under the sweep lock is bounded
 # --------------------------------------------------------------------------- #
 
 
@@ -1005,7 +1005,7 @@ def test_a_stage_that_stalls_is_given_up_within_the_bound(
 
 
 # --------------------------------------------------------------------------- #
-# The same Source, however its path is spelled (Codex 4579683123)
+# The same Source, however its path is spelled
 # --------------------------------------------------------------------------- #
 
 
@@ -1032,7 +1032,7 @@ def test_a_source_under_a_symlinked_root_is_still_deleted(
 
 
 # --------------------------------------------------------------------------- #
-# A mutation is never abandoned with its locks (Codex 4579725632)
+# A mutation is never abandoned with its locks
 # --------------------------------------------------------------------------- #
 
 
@@ -1155,7 +1155,7 @@ def _source_locked(path) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# A mutation that never started keeps its locks with the caller (Codex 4579801887)
+# A mutation that never started keeps its locks with the caller
 # --------------------------------------------------------------------------- #
 
 
@@ -1241,8 +1241,8 @@ def test_an_unlink_that_cannot_start_is_a_counted_kept_attempt(
 def test_a_job_cancelled_during_its_unlink_keeps_its_output_locks_until_it_ends(
     env, dolphin, monkeypatch,
 ):
-    """The job path's hand-off carries the output lock too (CodeRabbit
-    4579839955): cancelled while its Source's unlink is still running, the job
+    """The job path's hand-off carries the output lock too: cancelled while its
+    Source's unlink is still running, the job
     does not let go of its output lock in cleanup; the unlink's worker does,
     once the unlink has finished. Until then no other job may take it."""
     import os
@@ -1301,7 +1301,7 @@ def test_a_job_cancelled_during_its_unlink_keeps_its_output_locks_until_it_ends(
 def test_a_stalled_probe_in_lock_acquisition_never_blocks_the_event_loop(
     env, dolphin, capsys, kept, monkeypatch,
 ):
-    """Codex 4579852997's repro: the Source's ``isfile`` stalls inside lock
+    """The Source's ``isfile`` stalls inside lock
     acquisition. The retry returns within its bound, and its cleanup (letting
     go of the output lock it already holds) never waits on the lock manager's
     mutex on the event loop: a heartbeat keeps ticking throughout."""
@@ -1360,7 +1360,7 @@ def test_an_unlink_that_raises_its_own_timeout_error_is_a_counted_attempt(
     env, dolphin, capsys, kept, monkeypatch,
 ):
     """A network filesystem's ETIMEDOUT from the unlink is the unlink's own
-    failure, not the retry's deadline (codex 4579904147): a counted kept
+    failure, not the retry's deadline: a counted kept
     attempt, never "unknown", so the cap and the Finding stay reachable."""
     import errno
     import os
@@ -1385,7 +1385,7 @@ def test_an_unlink_that_raises_its_own_timeout_error_is_a_counted_attempt(
 
 
 # --------------------------------------------------------------------------- #
-# Letting go of locks never stalls the sweep (Codex 4579986280)
+# Letting go of locks never stalls the sweep
 # --------------------------------------------------------------------------- #
 
 
@@ -1454,7 +1454,7 @@ def test_a_stalled_lock_release_neither_holds_the_sweep_nor_the_pool(
 
 
 # --------------------------------------------------------------------------- #
-# The retry asks the sweep's own plan (Codex security review 4580012814)
+# The retry asks the sweep's own plan (Codex security review)
 # --------------------------------------------------------------------------- #
 
 
@@ -1480,7 +1480,7 @@ def test_a_rule_that_no_longer_selects_the_source_keeps_it(
 
 
 # --------------------------------------------------------------------------- #
-# A renamed output is still this Rule's output (Codex 4580078019)
+# A renamed output is still this Rule's output
 # --------------------------------------------------------------------------- #
 
 
@@ -1561,7 +1561,7 @@ def test_a_policy_changed_away_from_rename_drops_the_entry(
 
 
 # --------------------------------------------------------------------------- #
-# A late Finding write is bound to its Library (Codex 4580078026)
+# A late Finding write is bound to its Library
 # --------------------------------------------------------------------------- #
 
 
@@ -1607,7 +1607,7 @@ def test_a_late_finding_write_after_the_library_is_forgotten_writes_nothing(
 
 
 # --------------------------------------------------------------------------- #
-# Companion outputs are part of the output (CodeRabbit 4580102953)
+# Companion outputs are part of the output
 # --------------------------------------------------------------------------- #
 
 
@@ -1668,7 +1668,7 @@ def test_an_untouched_companion_output_is_deleted_with_its_source(
 
 
 # --------------------------------------------------------------------------- #
-# A started delete is one unit: it finishes or is reported (Codex 4580176201)
+# A started delete is one unit: it finishes or is reported
 # --------------------------------------------------------------------------- #
 
 
@@ -1791,7 +1791,7 @@ def test_a_job_cancelled_during_its_unlinks_still_removes_every_planned_file(
 
 
 # --------------------------------------------------------------------------- #
-# Once a file is removed, the delete has started (Codex 4580227623)
+# Once a file is removed, the delete has started
 # --------------------------------------------------------------------------- #
 
 
@@ -1845,8 +1845,7 @@ def test_a_started_delete_whose_output_then_changed_is_reported(
     assert not _rule_state(env)["gc"].get("kept_sources")
     reported = [f for f in findings.list_findings() if f["kind"] == findings.SOURCE_KEPT]
     assert len(reported) == 1 and "part" in reported[0]["reason"]
-    # The Source is its path, and every file left is named (CodeRabbit
-    # 4580360093), as the hand-started reporter does.
+    # The Source is its path, and every file left is named, as the hand-started reporter does.
     assert reported[0]["path"] == str(kept["iso"])
     assert reported[0]["cause"][findings.REMAINING] == [str(kept["iso"])]
 
@@ -1989,7 +1988,7 @@ def test_settling_hand_started_findings_is_bounded(
 
 
 # --------------------------------------------------------------------------- #
-# A cancel during a started delete (CodeRabbit 4580360083, 4580360089, and the
+# A cancel during a started delete (and the
 # outside-diff note on job_manager.py:3362)
 # --------------------------------------------------------------------------- #
 
@@ -2106,7 +2105,7 @@ def test_a_retry_cancelled_mid_delete_is_recorded_as_deleting(
 
 
 # --------------------------------------------------------------------------- #
-# Settling Findings (CodeRabbit 4580360066, 4580360075)
+# Settling Findings
 # --------------------------------------------------------------------------- #
 
 
@@ -2198,7 +2197,7 @@ def _hold_first_refuse_second(monkeypatch, first, second):
 def test_a_job_cancelled_during_its_first_unlink_is_reported(
     env, dolphin, two_file_source, monkeypatch,
 ):
-    """CodeRabbit 4580360083: the cancel lands while the first unlink still
+    """the cancel lands while the first unlink still
     runs, so nothing is seen removed yet; the worker then removes it and is
     refused the next. The handed-off delete counts as started: the Finding
     names every planned file not seen removed, the one left among them."""
@@ -2270,8 +2269,7 @@ def test_a_retry_cancelled_during_its_first_unlink_is_finished_later(
 
 # --------------------------------------------------------------------------- #
 # Codex on ee7142ac: a Rule change, a removed Library, a stop and a cancel
-# during the off-lock part of a delete (4580441297, 4580441301, 4580441303,
-# 4580441305)
+# during the off-lock part of a delete
 # --------------------------------------------------------------------------- #
 
 
@@ -2371,7 +2369,7 @@ def test_a_stop_during_the_recheck_deletes_nothing(env, dolphin, capsys, kept, m
 
 # --------------------------------------------------------------------------- #
 # #354 review: a Round-trip mismatch, a stalled stream reader, a verifier
-# with no verdict (CodeRabbit 5915313566, 4582189521, 4582189529)
+# with no verdict
 # --------------------------------------------------------------------------- #
 
 
@@ -2487,7 +2485,7 @@ def test_a_stalled_stream_reader_cannot_overwrite_a_newer_check(
 
 
 # --------------------------------------------------------------------------- #
-# Persist before publish (codex 4582270883): a reader that stops at the
+# Persist before publish: a reader that stops at the
 # terminal event never cuts the record short
 # --------------------------------------------------------------------------- #
 
@@ -2663,7 +2661,7 @@ async def _until(event) -> None:
 def test_the_reader_gets_the_verdict_only_once_the_store_write_is_done(
     env, dolphin, capsys, kept, monkeypatch,
 ):
-    """CodeRabbit 4582189521: the store write itself (its worker thread) is
+    """the store write itself (its worker thread) is
     paused. Until it finishes, the reader gets no terminal event and the lane
     stays held, so no newer check can start and be overwritten."""
     from routes import info as info_routes

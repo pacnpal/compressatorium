@@ -28,7 +28,7 @@
 // No imports on purpose: the store tests evaluate this file with Node.
 
 // `invalid_window` belongs to the server: `normalize_rule` recomputes it from
-// the window on every save, so the editor never sends it (Codex 4577383258: a
+// the window on every save, so the editor never sends it (a
 // sent flag kept a corrected window paused for good). It is dropped on screen
 // as soon as the window or Enabled changes, so a stale error does not linger
 // until the save answers. Any other edit leaves the server's error showing.
@@ -97,14 +97,14 @@ export class RulesSource {
   #saveTimer = null;
   // The consoles changed since the last save, conversion and check Rules
   // apart. A save sends only these (null for one removed) and the server
-  // merges them (#541, Codex 4653298940): a table holding none or some of
+  // merges them (#541): a table holding none or some of
   // the Rules can never wipe the others.
   #changedRules = {};
   #changedChecks = {};
   // Edits still being checked before they can be saved (a name filter the
   // server is compiling), and those it refused, by field: Preview, Run now
-  // and the automation switch wait for the first and refuse on the second
-  // (Codex 4653298945), so they never run with a filter the screen doesn't show.
+  // and the automation switch wait for the first and refuse on the second,
+  // so they never run with a filter the screen doesn't show.
   #holds = [];
   #unsaved = {};
 
@@ -386,7 +386,7 @@ export class RulesSource {
    */
   async applyRecommended(fieldsFor = () => ({})) {
     // Merged into Rules never read, a save would replace the Library's own
-    // with these few (CodeRabbit 4652729322).
+    // with these few.
     if (!this.rulesLoaded || this.rulesError) {
       throw new Error("This Library's settings haven't loaded yet");
     }
@@ -407,7 +407,7 @@ export class RulesSource {
       });
       added.push(String(platformId));
     }
-    // A save that fails is no set-up (CodeRabbit 4652729388): the draft
+    // A save that fails is no set-up: the draft
     // stays, dirty, for the table's Try again.
     if (added.length && !(await this.flush())) {
       throw new Error(this.saveError ?? "Couldn't save");

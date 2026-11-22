@@ -1,4 +1,4 @@
-"""An Inbox copy is admitted in the same FIFO as conversions (#431, Codex 4606061259).
+"""An Inbox copy is admitted in the same FIFO as conversions (#431).
 
 A copy reserves its ticket when it asks for a slot, as a queued conversion
 does, and the dispatcher hands it the local slot when its ticket comes up; it
@@ -92,8 +92,7 @@ async def test_a_copy_behind_queued_conversions_never_deadlocks(env, one_slot) -
 
         copy = asyncio.ensure_future(_copy(job_manager, held))
         await _all_done(job_manager, jobs, copy)
-        # Every run to its very end (its slot given back) before reading it
-        # (CodeRabbit 4606887354).
+        # Every run to its very end (its slot given back) before reading it.
         await job_manager.drain()
     finally:
         dispatcher.cancel()

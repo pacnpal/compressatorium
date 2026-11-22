@@ -584,7 +584,7 @@ async def set_rules(library: Library, raw: Any, *, strict: bool = False) -> dict
             await store.write(store.STATE_KEY, library, state)
         # Any change at all moves the Platform's Rule revision on: a pending
         # delete being tried right now is re-planned, never deleted, under a
-        # Rule it was not planned for (codex 4580441297). Only a Platform with
+        # Rule it was not planned for. Only a Platform with
         # pending deletes can have one being tried, so no other state moves.
         revised = sorted(
             pid for pid in {*previous, *rules} if previous.get(pid) != rules.get(pid)
@@ -662,7 +662,7 @@ async def forget_converted_locked(
 
 async def release_failed(library: Library, platform_ids: list[str] | None = None) -> int:
     """Drop only the failed holds of *platform_ids* (or every Platform), so
-    the next run tries those Images again (#541, CodeRabbit 4652729342).
+    the next run tries those Images again (#541).
 
     Unlike :func:`forget_converted` it keeps the converted history: under a
     rename or overwrite Rule that history is what stops a converted Image from
@@ -726,8 +726,8 @@ async def forget_library(library: Library) -> None:
 
 
 async def _orphan_job(library: Library, image_key: str, job) -> None:
-    """A job of a Library being removed has no sweep owner any more (codex
-    4580441301): it reports its own partial delete from now on, under no
+    """A job of a Library being removed has no sweep owner any more: it reports
+    its own partial delete from now on, under no
     Library, and one it already handed over is reported here, since its
     owner will not take it."""
     if job is None:
@@ -1059,7 +1059,7 @@ async def note_job_finished(job) -> None:
     unfinished = getattr(job, "_unfinished_delete", None)
     if unfinished:
         # Its delete stopped part way: finish it like a kept Source, from the
-        # files still to remove (codex 4580227623).
+        # files still to remove.
         await _remember_kept_source(
             library, platform_id, rom_id, job, generation, decision,
             unfinished=list(unfinished),
@@ -1123,8 +1123,7 @@ async def _remember_kept_source(
     queued: the delete decision identity and the decision generation. Recorded
     only while both still hold, checked under ``_sweep_lock``: a job that ends
     after its Rule, its Library or its history changed (a retarget, a new
-    check level, Forget history, RomM's identity cleanup) records nothing
-    (codex 4579636593, 4579636594).
+    check level, Forget history, RomM's identity cleanup) records nothing.
 
     *unfinished* is a delete that stopped part way: the files still to
     remove. Recorded as ``state: deleting`` to be finished; when it cannot be
@@ -1152,7 +1151,7 @@ async def _remember_kept_source(
     async with _sweep_lock:
         if _generations.get(library.id, 0) != generation:
             # Removed meanwhile: nothing goes back into its state, and a
-            # started delete is reported under no Library (codex 4580441301).
+            # started delete is reported under no Library.
             if unfinished:
                 await _report_unfinished(
                     library, image_key, job, unfinished, owner=findings.NO_LIBRARY,
@@ -1196,8 +1195,8 @@ async def _report_unfinished(
 DELETE_DECISION_FIELDS = (*OUTPUT_IDENTITY_FIELDS, "delete_on_verify", "check_level")
 DECISION_GENERATION = "decision_generation"
 # A Platform's Rule revision, in its Rule state entry: moved on by every
-# `set_rules` change to that Platform's Rule, whatever the field (codex
-# 4580441297). A pending delete tried off `_sweep_lock` deletes only while it
+# `set_rules` change to that Platform's Rule, whatever the field. A pending
+# delete tried off `_sweep_lock` deletes only while it
 # is the one the try was planned under, so no field (a selection filter
 # included) can change under a delete unnoticed.
 RULE_REVISION = "rule_revision"
@@ -1243,7 +1242,7 @@ async def _invalidate_decisions(
 
     A pending delete that has not started is dropped as it is: the Source is
     whole. One whose unlinks began (``deleting``) is reported first, with the
-    files it left (codex 4580328581), under *owner* when the Library itself
+    files it left, under *owner* when the Library itself
     will not hold the Finding (its removal, RomM's identity cleanup).
     """
     for pid in platform_ids:
@@ -1279,7 +1278,7 @@ def _planned_delete(image: Image, rule: dict, tool, spec, source: str, output: s
     writes it, not whether to write it again); the duplicate policy itself is
     a decision-identity input. Under the ``rename`` policy the output may be
     the numbered sibling the rename gave that destination (``Game_1.rvz``,
-    ``is_renamed_from``, codex 4580078019); ``overwrite`` and ``skip`` take
+    ``is_renamed_from``); ``overwrite`` and ``skip`` take
     the destination exactly. Either way the retry then requires the check
     record of that very output to name this Source.
     """
@@ -1364,8 +1363,8 @@ async def _report_started_delete(
 async def _file_kept_finding(
     library: Library, item: findings.Observed, *, owner: str | None = None,
 ) -> None:
-    """Write *item* under *library*, bound to its generation (codex
-    4580078026), or under *owner* ``findings.NO_LIBRARY``, bound to none."""
+    """Write *item* under *library*, bound to its generation, or under *owner*
+    ``findings.NO_LIBRARY``, bound to none."""
     if owner == findings.NO_LIBRARY:
         await _probe(findings.observe, owner, item, default=None, library=library)
         return
@@ -1409,7 +1408,7 @@ async def _kept_outcome(
         # The delete started: the unlinks outlived the wait (the worker
         # removes the rest of the plan), one failed after another succeeded,
         # or a cancel stopped it. Not an attempt; the next sweep finishes it
-        # from the recorded plan, not a new one (codex 4580176201, 4580227623).
+        # from the recorded plan, not a new one.
         return {
             **pending, "state": KEPT_DELETING,
             "planned": list(outcome.planned) or planned, "last_reason": outcome.reason,
@@ -1521,7 +1520,7 @@ async def _plan_kept_deletes(
         rule = rules.get(platform_id)
         if rule and _rule_paused(rule, None if honour_pauses else wanted):
             # The same pause the Platform pass honours: its entries wait,
-            # neither retried nor dropped (codex 4579529040).
+            # neither retried nor dropped.
             continue
         remaining = dict(kept)
         listings: dict = {}  # this Platform's Images, listed once if needed
@@ -1563,8 +1562,8 @@ async def _plan_kept_deletes(
                 continue
             # The authority: the sweep's own selection and plan for this one
             # Source under the current Rule and Library. Deleted only while
-            # that plan is still this conversion to this output (codex
-            # 4580012814); the identity above is the fast pre-check.
+            # that plan is still this conversion to this output; the identity
+            # above is the fast pre-check.
             plan = await _current_plan(
                 library, platform_id, rule, str(image_key), pending, listings, stopping,
             )
@@ -1655,7 +1654,7 @@ async def _run_kept_deletes(
     stopping: Callable[[], bool] = lambda: False,
 ) -> None:
     """Try each planned pending delete, after the sweep let go of
-    ``_sweep_lock`` (codex 4580346573).
+    ``_sweep_lock``.
 
     Each is prepared under its own file locks, held throughout
     (``job_manager.kept_delete``): the record, the Source, and the output's
@@ -1664,7 +1663,7 @@ async def _run_kept_deletes(
     record the outcome, so a long check never holds up other sweeps, Rule
     edits or job completions.
 
-    A stop (*stopping*: ``run-rules`` on SIGTERM, codex 4580441303) is asked
+    A stop (*stopping*: ``run-rules`` on SIGTERM) is asked
     before each try, before its output check, and before its unlinks: once it
     is true nothing new starts and no unlink begins, and nothing is recorded
     for what was not tried. Unlinks already handed to their worker carry on,
@@ -1708,8 +1707,7 @@ async def _run_kept_delete(
                     try:
                         outcome = await run.delete()
                     except asyncio.CancelledError:
-                        # Stopped once the unlinks began (CodeRabbit
-                        # 4580360089): what started is recorded, bounded,
+                        # Stopped once the unlinks began: what started is recorded, bounded,
                         # then the cancel goes on.
                         if run.started is not None:
                             await _record_cancelled_delete(library, attempt, run.started, result)
@@ -1722,7 +1720,7 @@ async def _run_kept_delete(
                 return  # not tried: nothing to record
     except Exception as exc:
         # One entry's failure (an unlink refused, an I/O error) is that
-        # entry's attempt, never the sweep's (codex 4579529048).
+        # entry's attempt, never the sweep's.
         logger.warning(
             "rules: retrying the delete of %s failed", pending.get("source"), exc_info=True,
         )
@@ -1769,8 +1767,8 @@ def _never_checked(job) -> bool:
     """Whether *job* was refused because its Source never answered: the
     batch's identity capture stalled before reaching it, or the job's own
     check when it ran timed out (#449). That says nothing about the Image,
-    so it is neither held nor released, and the next sweep queues it again
-    (CodeRabbit 4615955365). A Source the capture did reach and refused
+    so it is neither held nor released, and the next sweep queues it again.
+    A Source the capture did reach and refused
     (outside the Volumes, reached through a link) is held as before."""
     identity = getattr(job, "_source_identity", None)
     return bool(identity and identity.get("unanswered"))
@@ -2048,7 +2046,7 @@ async def sweep(
     runs the console's conversion Rule only (``(CONVERT,)``), never a
     budget's worth of its check Rule (#541). *honour_pauses* keeps an
     operator's pause even for the Platforms named: Run now's override is for
-    a person's click, never for an automatic run (CodeRabbit 4652729285). It
+    a person's click, never for an automatic run. It
     is read under ``_sweep_lock``, so a pause made after the import was
     accepted still holds.
 
@@ -2114,6 +2112,129 @@ async def sweep(
     # The sweep is finished: every sweep that ran returns through here, after
     # the lock is released. `result["dry_run"]` tells a preview from a run.
     return result
+
+
+async def _read_delete_snapshots(
+    library: Library, batch: list[str], stopping: Callable[[], bool],
+) -> tuple[dict, list[str]]:
+    """Each Source's delete snapshot, and the Sources whose snapshot could not
+    be read (#543: a step of ``_sweep_locked``)."""
+    unreadable: list[str] = []
+    snapshots = {}
+    for path in batch:
+        # One probe per Source, each up to its bound: a stop
+        # must not wait for the rest of them.
+        if stopping():
+            break
+        # Bounded, and a missing snapshot is not silently
+        # accepted: `_process_job` refuses to delete without
+        # one, so an unreadable source must drop out of the
+        # batch rather than reach the runner and fail there.
+        snapshot = await _probe(
+            build_delete_snapshot, path, default=None, library=library,
+        )
+        if snapshot is None:
+            unreadable.append(path)
+            continue
+        snapshots[path] = snapshot
+    return snapshots, unreadable
+
+
+async def _after_queued(
+    library: Library, *, platform_id: str, platform_ref: Any, kind: str,
+    rule: dict, spec, states: dict, jobs: list, batch: list[str],
+    image_by_path: dict, destinations: dict, pre_by_path: dict,
+    fingerprint_by_path: dict, resolved_by_path: dict, active_paths: set,
+    summary: dict, result: dict,
+) -> None:
+    """Record a queued batch: its jobs' Platform and owner, the Library's own
+    steps, what the Rule converted, and the claimed Sources (#543: a step of
+    ``_sweep_locked``)."""
+    summary["queued"] = len(jobs)
+    result["queued"] += len(jobs)
+    # The Library's Platform for each job, for its Ledger row
+    # (#346). Before any await, so a job that starts at once has it.
+    for job in jobs:
+        queued_image = image_by_path.get(job.file_path)
+        if queued_image is not None and queued_image.platform:
+            job.platform = queued_image.platform
+
+    # Before the first await after acceptance. The terminal-job
+    # listener fires from the queue worker, so a fast conversion on
+    # an idle queue can end while the bookkeeping below is still
+    # running -- and an outcome announced before its owner is
+    # registered is discarded. See `_own_jobs`.
+    job_by_path = {j.file_path: j.id for j in jobs}
+    converted = _converted_entries([
+        (image_by_path[path].key, destinations[path],
+         pre_by_path[path], job_by_path.get(path))
+        for path in batch
+    ])
+    _own_jobs(
+        library, platform_id, converted, _output_identity(rule),
+        fingerprints={
+            str(image_by_path[path].key): fingerprint_by_path.get(path)
+            for path in batch
+        },
+        decision=(
+            _delete_decision_identity(rule, library),
+            _decision_generation(states[kind].get(platform_id)),
+        ),
+    )
+    notifications.sweep_jobs_queued(jobs)  # sync, before any await
+
+    # Only now, with the jobs actually queued: the steps only this
+    # Library performs (RomM snapshots metadata for formats it
+    # cannot hash-match). Before the queue call they would leave
+    # records behind for conversions that never ran.
+    #
+    # Every path in `batch` is queued or none is: create_jobs_atomic
+    # takes the queue lock once and checks backpressure for the
+    # whole set, so reaching here means the batch went in.
+    await library.after_queue(
+        rule, spec,
+        [
+            QueuedImage(
+                image=image_by_path[path], source=path,
+                destination=destinations[path], pre=pre_by_path[path],
+            )
+            for path in batch
+        ],
+        summary, result,
+    )
+
+    # Record what this rule has now converted, so `overwrite` and
+    # `rename` stop here instead of reconverting the same sources
+    # every interval. Only after the queue accepted them.
+    if rule["duplicate_action"] != "skip":
+        # Paired by source path, not by position (see
+        # `_converted_entries` above): the record is only
+        # meaningful if it names the job whose outcome decides
+        # whether this ROM was really converted.
+        try:
+            await _mark_converted(library, platform_id, converted)
+        except Exception:
+            # Isolated for the same reason as the re-pin write
+            # above, and this one is worse: the batch is already
+            # running, and reaching the handler below would report
+            # it as `queue_failed` -- which skips this very record
+            # and leaves `overwrite`/`rename` with no memory of the
+            # accepted jobs, so the next sweep converts them all
+            # again. A failed write costs this run its provenance
+            # and nothing else; the terminal-job listener still
+            # writes each outcome as it lands.
+            logger.warning(
+                "%s: could not record what Platform %s in Library %s "
+                "produced; this run is not remembered",
+                log_prefix(library), platform_ref, library.name,
+                exc_info=True,
+            )
+            summary["provenance_failed"] = True
+
+    # Claim them immediately so a later platform in the same sweep
+    # cannot queue the same source twice. Already resolved during
+    # selection, so this costs no further disk work.
+    active_paths.update(resolved_by_path.values())
 
 
 async def _sweep_locked(
@@ -2552,25 +2673,10 @@ async def _sweep_locked(
                 # missing") and fails every job after doing the full
                 # conversion. Same helper the manual path uses.
                 snapshots = None
-                unreadable: list[str] = []
                 if rule["delete_on_verify"]:
-                    snapshots = {}
-                    for path in batch:
-                        # One probe per Source, each up to its bound: a stop
-                        # must not wait for the rest of them.
-                        if stopping():
-                            break
-                        # Bounded, and a missing snapshot is not silently
-                        # accepted: `_process_job` refuses to delete without
-                        # one, so an unreadable source must drop out of the
-                        # batch rather than reach the runner and fail there.
-                        snapshot = await _probe(
-                            build_delete_snapshot, path, default=None, library=library,
-                        )
-                        if snapshot is None:
-                            unreadable.append(path)
-                            continue
-                        snapshots[path] = snapshot
+                    snapshots, unreadable = await _read_delete_snapshots(
+                        library, batch, stopping,
+                    )
                     if unreadable:
                         batch = [p for p in batch if p not in set(unreadable)]
                         logger.warning(
@@ -2630,91 +2736,15 @@ async def _sweep_locked(
                     # and none can land mid-admission (PR #518).
                     admission=functools.partial(_owned_as_listed, owned_at),
                 )
-                summary["queued"] = len(jobs)
-                result["queued"] += len(jobs)
-                # The Library's Platform for each job, for its Ledger row
-                # (#346). Before any await, so a job that starts at once has it.
-                for job in jobs:
-                    queued_image = image_by_path.get(job.file_path)
-                    if queued_image is not None and queued_image.platform:
-                        job.platform = queued_image.platform
-
-                # Before the first await after acceptance. The terminal-job
-                # listener fires from the queue worker, so a fast conversion on
-                # an idle queue can end while the bookkeeping below is still
-                # running -- and an outcome announced before its owner is
-                # registered is discarded. See `_own_jobs`.
-                job_by_path = {j.file_path: j.id for j in jobs}
-                converted = _converted_entries([
-                    (image_by_path[path].key, destinations[path],
-                     pre_by_path[path], job_by_path.get(path))
-                    for path in batch
-                ])
-                _own_jobs(
-                    library, platform_id, converted, _output_identity(rule),
-                    fingerprints={
-                        str(image_by_path[path].key): fingerprint_by_path.get(path)
-                        for path in batch
-                    },
-                    decision=(
-                        _delete_decision_identity(rule, library),
-                        _decision_generation(states[kind].get(platform_id)),
-                    ),
+                await _after_queued(
+                    library, platform_id=platform_id, platform_ref=platform_ref,
+                    kind=kind, rule=rule, spec=spec, states=states, jobs=jobs,
+                    batch=batch, image_by_path=image_by_path,
+                    destinations=destinations, pre_by_path=pre_by_path,
+                    fingerprint_by_path=fingerprint_by_path,
+                    resolved_by_path=resolved_by_path, active_paths=active_paths,
+                    summary=summary, result=result,
                 )
-                notifications.sweep_jobs_queued(jobs)  # sync, before any await
-
-                # Only now, with the jobs actually queued: the steps only this
-                # Library performs (RomM snapshots metadata for formats it
-                # cannot hash-match). Before the queue call they would leave
-                # records behind for conversions that never ran.
-                #
-                # Every path in `batch` is queued or none is: create_jobs_atomic
-                # takes the queue lock once and checks backpressure for the
-                # whole set, so reaching here means the batch went in.
-                await library.after_queue(
-                    rule, spec,
-                    [
-                        QueuedImage(
-                            image=image_by_path[path], source=path,
-                            destination=destinations[path], pre=pre_by_path[path],
-                        )
-                        for path in batch
-                    ],
-                    summary, result,
-                )
-
-                # Record what this rule has now converted, so `overwrite` and
-                # `rename` stop here instead of reconverting the same sources
-                # every interval. Only after the queue accepted them.
-                if rule["duplicate_action"] != "skip":
-                    # Paired by source path, not by position (see
-                    # `_converted_entries` above): the record is only
-                    # meaningful if it names the job whose outcome decides
-                    # whether this ROM was really converted.
-                    try:
-                        await _mark_converted(library, platform_id, converted)
-                    except Exception:
-                        # Isolated for the same reason as the re-pin write
-                        # above, and this one is worse: the batch is already
-                        # running, and reaching the handler below would report
-                        # it as `queue_failed` -- which skips this very record
-                        # and leaves `overwrite`/`rename` with no memory of the
-                        # accepted jobs, so the next sweep converts them all
-                        # again. A failed write costs this run its provenance
-                        # and nothing else; the terminal-job listener still
-                        # writes each outcome as it lands.
-                        logger.warning(
-                            "%s: could not record what Platform %s in Library %s "
-                            "produced; this run is not remembered",
-                            log_prefix(library), platform_ref, library.name,
-                            exc_info=True,
-                        )
-                        summary["provenance_failed"] = True
-
-                # Claim them immediately so a later platform in the same sweep
-                # cannot queue the same source twice. Already resolved during
-                # selection, so this costs no further disk work.
-                active_paths.update(resolved_by_path.values())
             except LibrariesChanged:
                 # The listing may hold a new inner Library's files: queue none
                 # of them under these Rules; the next run lists again.
@@ -2801,10 +2831,10 @@ async def _sweep_locked(
             # Stamped with the moment the sweep found each Rule due, not when
             # the run finished: a night's run that ends past midnight still
             # counts for the window that picked it, so the next one keeps its
-            # own run (4577171597). The reservation covers the time between.
+            # own run. The reservation covers the time between.
             # With *attempted*, only a Rule whose picked Images the run all
             # reached is recorded: one it never got to (a stop on an abandoned
-            # verifier, a cancel) stays due (4578054443). Each carries the walk
+            # verifier, a cancel) stays due. Each carries the walk
             # generation its pick listed at, compared now, as it is recorded:
             # conversions that finished while the job checked leave it due (#360).
             for platform_id, summary, manual, at, keys, listed_at in check_runs:
@@ -3154,7 +3184,7 @@ async def _sweep_check(
         # A Platform whose tool is missing waits for the next tick, not a day.
         # Nor is a pick that came up empty only because its Images are held
         # elsewhere for now (another check run, a conversion queued or running,
-        # a writer's lock) the night's run (4578116078, 4578154650): once they
+        # a writer's lock) the night's run: once they
         # are free, the Rule must still be due. *listed_at* goes with the run:
         # a listing a finished job made out of date, before the pick ended or
         # while the job checks, leaves it unrecorded (`_record_run`, #353,

@@ -348,7 +348,7 @@ async def test_a_read_that_stalls_ends_at_the_bound_and_stops_the_run(
 ) -> None:
     """A read that stops moving ends at the stall bound, and its thread is
     left behind on the mount: like a child that outlived teardown, that stops
-    the run there (Codex 4591089580), so a dead mount strands one thread, not
+    the run there, so a dead mount strands one thread, not
     one per file. Nothing is written."""
     from services import content_keys
 
@@ -434,7 +434,7 @@ async def test_removing_the_library_drops_its_groups_and_last_run(
 async def test_a_cancel_while_the_findings_write_waits_writes_nothing(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """Codex 4589796851: a Cancel that lands while the run waits to write its
+    """a Cancel that lands while the run waits to write its
     Findings ends the run as cancelled, with the Findings as they were."""
     from services import findings
 
@@ -482,7 +482,7 @@ async def test_a_cancel_while_the_findings_write_waits_writes_nothing(
 async def test_a_folder_the_walk_cannot_list_keeps_its_groups(
     db: Path, client: httpx.AsyncClient,
 ) -> None:
-    """Codex 4589796861: not listed is not gone. A group with a copy in a
+    """not listed is not gone. A group with a copy in a
     folder the walk could not list, or a file it could not read, is kept as it
     was, and the run says what it could not see."""
     roms = db / "roms"
@@ -517,7 +517,7 @@ async def test_a_folder_the_walk_cannot_list_keeps_its_groups(
 async def test_a_chd_replaced_with_the_same_mtime_gets_no_stale_key(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """Codex 4589796866: the CHD metadata cache checks the file's size as well
+    """the CHD metadata cache checks the file's size as well
     as its mtime before its hashes are used."""
     roms = db / "roms"
     sha1 = _disc(roms / "Game.iso", b"game")
@@ -549,7 +549,7 @@ async def test_a_chd_replaced_with_the_same_mtime_gets_no_stale_key(
 
 @pytest.mark.asyncio
 async def test_a_chd_rewritten_within_the_same_second_is_not_fresh(db: Path) -> None:
-    """CodeRabbit 4589859837: the cache's identity is size plus the integer
+    """the cache's identity is size plus the integer
     ``st_mtime_ns``, as ``content_keys`` uses, not the float mtime: a same-size
     rewrite one nanosecond later is another file."""
     chd = db / "Game.chd"
@@ -583,7 +583,7 @@ async def test_a_chd_row_from_before_the_identity_was_kept_is_stale(db: Path) ->
 async def test_an_upgraded_chd_row_is_stale_until_the_scan_refreshes_it(
     db: Path, monkeypatch,
 ) -> None:
-    """Codex 4590361153: a row from before 0017 has no size or mtime_ns. Every
+    """a row from before 0017 has no size or mtime_ns. Every
     freshness question in the store reads it as stale, so the metadata scan
     refreshes it and ``embedded_hashes`` supplies its SHA1s again."""
     from routes import info as info_routes
@@ -631,7 +631,7 @@ async def test_an_upgraded_chd_row_is_stale_until_the_scan_refreshes_it(
 async def test_a_copy_in_use_keeps_its_group_as_it_was(
     db: Path, client: httpx.AsyncClient,
 ) -> None:
-    """CodeRabbit 4589859830: a copy left out as in use (or changed while the
+    """a copy left out as in use (or changed while the
     run looked) is not seen, not gone: its stored group stays and is held."""
     from services.lock_manager import lock_manager
 
@@ -660,7 +660,7 @@ async def test_a_copy_in_use_keeps_its_group_as_it_was(
 async def test_a_copy_whose_stat_fails_keeps_its_group(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """CodeRabbit 4590616916: only a file confirmed missing drops a copy. One
+    """only a file confirmed missing drops a copy. One
     whose stat fails some other way (a stale handle, an I/O error) is unseen,
     and its group is kept as it was."""
     import errno
@@ -693,7 +693,7 @@ async def test_a_copy_whose_stat_fails_keeps_its_group(
 
 @pytest.mark.asyncio
 async def test_a_chd_swapped_while_chdman_info_reads_it_stores_nothing(db: Path) -> None:
-    """CodeRabbit 4590616908: the metadata is stored with the identity taken
+    """the metadata is stored with the identity taken
     before ``chdman info`` read the file, and only if the file is still that
     one afterwards: a swap during the read stores nothing."""
     chd = db / "Game.chd"
@@ -721,7 +721,7 @@ async def test_a_chd_swapped_while_chdman_info_reads_it_stores_nothing(db: Path)
 
 @pytest.mark.asyncio
 async def test_a_chd_whose_first_stat_fails_is_not_cached(db: Path, monkeypatch) -> None:
-    """CodeRabbit 4590832883: with no identity from before the read, nothing
+    """with no identity from before the read, nothing
     ties the metadata to the file, so it is returned but never cached, even
     when a later stat succeeds."""
     chd = db / "Game.chd"
@@ -752,7 +752,7 @@ async def test_a_chd_whose_first_stat_fails_is_not_cached(db: Path, monkeypatch)
 async def test_a_run_started_while_its_library_is_removed_is_refused(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """CodeRabbit 4590616934: once a Library's removal has begun, a
+    """once a Library's removal has begun, a
     find-duplicates run of it is refused, so nothing is written after its
     records are forgotten."""
     from services import library_records
@@ -821,7 +821,7 @@ def _romm_images_resolving(monkeypatch, release: threading.Event, paths: list[Pa
 async def test_a_romm_path_that_blocks_never_holds_the_loop(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """Codex 4590339545: a RomM Image's path is resolved lazily, on the mount.
+    """a RomM Image's path is resolved lazily, on the mount.
     The run resolves it off the loop and bounded, so the app keeps answering
     and Cancel ends the run."""
     roms = db / "romm"
@@ -868,7 +868,7 @@ async def test_a_romm_path_that_blocks_ends_the_run_at_the_bound(
 async def test_a_job_whose_paths_are_on_a_stuck_mount_never_holds_the_loop(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """Codex 4590506676: an active job's candidate paths (a sheet's tracks)
+    """an active job's candidate paths (a sheet's tracks)
     are read off the loop and bounded, in the job manager, so a mount that
     stops answering never freezes the app when a run starts."""
     from services import content_keys
@@ -902,7 +902,7 @@ async def test_a_job_whose_paths_are_on_a_stuck_mount_never_holds_the_loop(
 async def test_cancel_ends_a_run_stuck_in_chdman_info(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """Codex 4590506687: the run's cancel reaches ``chdman info``'s child, so
+    """the run's cancel reaches ``chdman info``'s child, so
     Cancel does not wait out the info timeout."""
     from services.chdman import chdman_service
 
@@ -935,7 +935,7 @@ async def test_cancel_ends_a_run_stuck_in_chdman_info(
 async def test_cancel_ends_a_run_waiting_for_the_match_lane(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """Codex 4590523785: a Dolphin hash waits for the ``match`` lane. Cancel
+    """a Dolphin hash waits for the ``match`` lane. Cancel
     ends the run at once and leaves no wait behind on the lane."""
     from services.workload_limiter import workload_limiter
 
@@ -969,7 +969,7 @@ async def test_cancel_ends_a_run_waiting_for_the_match_lane(
 async def test_a_romm_identity_change_forgets_its_duplicate_groups_and_run(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """Codex 4590339559: pointing RomM at another instance or library drops
+    """pointing RomM at another instance or library drops
     the old one's duplicate Findings, their dismissals and its last run, by
     the same call a folder Library's removal uses."""
     from routes import romm as romm_routes
@@ -1012,7 +1012,7 @@ def _two_uncached_chds(roms: Path) -> None:
 async def test_a_chdman_child_left_running_stops_the_run(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """Codex 4590926165: a ``chdman info`` whose child outlived SIGKILL means
+    """a ``chdman info`` whose child outlived SIGKILL means
     the storage is not answering. The run stops there instead of stranding
     one more child per CHD."""
     from services.chdman import chdman_service
@@ -1068,7 +1068,7 @@ def _two_rvzs(roms: Path) -> None:
 async def test_a_verifier_left_running_stops_the_run_whatever_the_read_returned(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """Codex 4591089580: a dolphin-tool verifier that outlives teardown records
+    """a dolphin-tool verifier that outlives teardown records
     itself and returns no hash, which is an unavailable key. The abandonment is
     checked before anything branches on the read, so the run stops there."""
     from services.subprocess_runner import _note_abandoned
@@ -1117,7 +1117,7 @@ async def test_an_unavailable_dolphin_hash_costs_that_file_only(
 
 @pytest.mark.asyncio
 async def test_a_lane_slot_that_arrives_as_its_caller_is_cancelled_is_given_back() -> None:
-    """Codex 4590926157: the caller is cancelled after the lane wait got its
+    """the caller is cancelled after the lane wait got its
     slot but before the slot was handed over. The slot goes back to the lane."""
     from services.workload_limiter import WorkloadLimiter
 

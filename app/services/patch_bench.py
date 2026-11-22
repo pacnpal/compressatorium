@@ -733,8 +733,8 @@ async def _pack_and_place(
         _stop_if_cancelled(job_id)
         # Placing is irreversible: the link may be made however late the call
         # returns. So it is never abandoned, not for a cancel and not for the
-        # stall bound, and the job learns where the archive landed
-        # (codex 4605274145). The steps before it may be abandoned: they only
+        # stall bound, and the job learns where the archive landed.
+        # The steps before it may be abandoned: they only
         # read, or write inside the work directory and the hidden staged name.
         return await run_detached_to_end(_place, staged, folder, stem)
     finally:

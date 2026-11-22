@@ -1,5 +1,5 @@
 """A track two sheets share is never deleted out from under one of them
-(#549 review, Codex 4654246812).
+(#549 review).
 
 Two listed ``.cue``/``.gdi`` sheets can name the same track. The listing then
 folds it under neither (it stays its own row), deleting a batch refuses a
@@ -99,7 +99,7 @@ def test_a_delete_on_verify_plan_keeps_a_track_another_sheet_names(vol):
     assert any("B.cue" in error for error in plan["errors"]), plan
 
 
-# --- Every kind of companion reference (Codex 4654538677) ---------------------
+# --- Every kind of companion reference ---------------------
 
 def _two_playlists_one_disc(folder: Path) -> tuple[Path, Path, Path]:
     disc = _write(folder / "Game (Disc 1).chd")
@@ -199,7 +199,7 @@ def test_a_delete_on_verify_plan_keeps_a_companion_another_owner_names(vol):
 
 @pytest.mark.asyncio
 async def test_a_track_stays_when_its_requested_sheet_fails_to_delete(vol, monkeypatch):
-    """CodeRabbit 4654557559: a sheet in the request that isn't actually
+    """a sheet in the request that isn't actually
     deleted still needs its tracks, whatever order the request lists them in."""
     folder = vol / "psx"
     track = _write(folder / "Game.bin")
@@ -237,7 +237,7 @@ async def test_a_track_listed_before_its_sheet_is_deleted_with_it(vol):
     assert not track.exists() and not cue.exists()
 
 
-# --- A set goes whole or not at all (Codex 4654710759) ------------------------
+# --- A set goes whole or not at all ------------------------
 
 def _split_disc_in_a_playlist(folder: Path) -> tuple[Path, Path, Path]:
     first = _write(folder / "Game.iso.0")
@@ -317,7 +317,7 @@ async def test_a_batch_keeps_an_old_style_rar_volume_without_its_first(vol):
     assert r00.exists()
 
 
-# --- A UTF-16 playlist (Codex 4654858505) ------------------------------------
+# --- A UTF-16 playlist ------------------------------------
 
 def _utf16(text: str) -> bytes:
     return "\ufeff".encode("utf-16-le") + text.encode("utf-16-le")
@@ -383,7 +383,7 @@ def test_a_path_that_cannot_be_stated_is_unknown_ownership(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_split_part_that_cannot_be_probed_still_keeps_the_set(vol, monkeypatch):
-    """CodeRabbit 4654883856: the tool's probe reads a part it can't stat as
+    """the tool's probe reads a part it can't stat as
     absent; the set is still told by name, so .0 alone is kept."""
     from services.tools import registry
 
@@ -403,7 +403,7 @@ async def test_a_split_part_that_cannot_be_probed_still_keeps_the_set(vol, monke
 
 @pytest.mark.asyncio
 async def test_removing_a_link_to_a_sheet_never_frees_its_tracks(vol):
-    """CodeRabbit 4654883868: deleting a link to A.cue removes the link, not
+    """deleting a link to A.cue removes the link, not
     the sheet, so the sheet's track stays."""
     folder = vol / "psx"
     track = _write(folder / "Track.bin")
@@ -420,7 +420,7 @@ async def test_removing_a_link_to_a_sheet_never_frees_its_tracks(vol):
     assert track.exists() and cue.exists()
 
 
-# --- Containment before any ownership scan (Codex 4655058131) -----------------
+# --- Containment before any ownership scan -----------------
 
 @pytest.fixture(name="split_roots")
 def _split_roots(tmp_path, monkeypatch):
@@ -499,7 +499,7 @@ def test_a_delete_plan_never_scans_outside_the_volumes(split_roots, monkeypatch)
     assert plan["unsafe_paths"], plan
 
 
-# --- An 8-bit playlist in another code page (Codex 4655165263) -----------------
+# --- An 8-bit playlist in another code page -----------------
 
 @pytest.mark.asyncio
 async def test_a_cp1252_playlist_still_owns_its_disc(vol):
@@ -559,7 +559,7 @@ async def test_a_cp1252_sheet_still_owns_its_track(vol):
     b"A\x1cB.chd\n",
 ])
 def test_every_entry_splits_on_cr_and_lf_only(data):
-    """CodeRabbit 4655194805: U+2028, NEL (Latin-1 0x85) and the other
+    """U+2028, NEL (Latin-1 0x85) and the other
     breaks str.splitlines knows are part of a name, not line ends."""
     from services.referrers import m3u
 

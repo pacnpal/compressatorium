@@ -148,11 +148,11 @@ class ConversionStore {
   compressionSaveError = $state(null);
   // Bumped by every read of the remembered compression and every local
   // change to it; a read adopts its answer only if nothing came after it, so
-  // a late boot read can't put old values over a newer edit (Codex 4652391157).
+  // a late boot read can't put old values over a newer edit.
   #prefsGeneration = 0;
   // The tools whose compression changed here and isn't on the server yet. A
-  // save sends only these over the server's current copy (CodeRabbit
-  // 4652269814), so it never writes back what another tab saved meanwhile.
+  // save sends only these over the server's current copy, so it never
+  // writes back what another tab saved meanwhile.
   #dirtyTools = {};
   // Only the newest delete-plan ask may answer; an older one, landing late or
   // failing late, is dropped (null) instead of replacing or clearing it.
@@ -421,7 +421,7 @@ class ConversionStore {
     this.#planAbort = controller;
     try {
       // The route plans with the saved compression: a change still inside
-      // its debounce is sent first (Codex 4654246814).
+      // its debounce is sent first.
       await this.flushCompressionPrefs();
       if (seq !== this.#planSeq) return;
       const plan = await api.getAutoPlan(snapshot, this.outputDir || null, {

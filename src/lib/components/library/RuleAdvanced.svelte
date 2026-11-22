@@ -82,7 +82,7 @@
   let errors = $state({});
   const timers = {};
   // Each field's check in progress, as the source holds it: Run now waits
-  // for it (Codex 4653298945). Settled when the check ends or is superseded.
+  // for it. Settled when the check ends or is superseded.
   const settle = {};
   const fieldKey = (field) => `${platform.id}:${field}`;
   const patternError = (field) => errors[field] ?? null;
@@ -176,8 +176,7 @@
 </script>
 
 <div class="advanced">
-  <!-- A console set to "Don't convert" keeps its re-check (CodeRabbit
-       4652729352): only that is shown for it. -->
+  <!-- A console set to "Don't convert" keeps its re-check: only that is shown for it. -->
   {#if rule.mode}
   {#if compresses}
     <fieldset>

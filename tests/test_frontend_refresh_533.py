@@ -1,4 +1,4 @@
-"""The web UI's refreshes after #533 (CodeRabbit 4650577592, 4650577595).
+"""The web UI's refreshes after #533.
 
 * The Ledger cards keep each good read when another of the three fails.
 * The file listing refreshes on a new finished job, keyed on job identity

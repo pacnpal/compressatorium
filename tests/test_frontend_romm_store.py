@@ -713,7 +713,7 @@ await tick();
 
 
 def test_a_failed_save_keeps_its_own_error_when_the_refresh_also_fails(tmp_path):
-    """CodeRabbit 4595283279: the caller gets the save's error, not the refresh's."""
+    """the caller gets the save's error, not the refresh's."""
     data = _run(tmp_path, _FAILING_REFRESH + """
 const second = store.saveSettings({ es_frontend: true }).catch((e) => e.message);
 await tick();

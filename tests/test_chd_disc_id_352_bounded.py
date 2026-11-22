@@ -1,4 +1,4 @@
-"""Disc-ID reads are bounded and cancellable (#352, Codex 4582416806).
+"""Disc-ID reads are bounded and cancellable (#352).
 
 A network Volume can answer a cached ``stat`` and then block every read. The
 library scan's disc-ID step reads a CHD's sectors (and a companion file), and a
@@ -182,7 +182,7 @@ async def test_a_source_that_never_answers_ends_the_hook_with_storage_abandoned(
     tmp_path, disc_id, monkeypatch, caplog,
 ):
     """The job manager fails the job on this, rather than hanging on the
-    storage in its next step (Codex 4582518760)."""
+    storage in its next step."""
     from services.tools import registry
 
     chdman = registry.get("chdman")

@@ -1258,7 +1258,7 @@ def _route_stored(path: str, record: dict, registry) -> tuple:
     # A record with no mode (a legacy one) never guesses among tools for
     # different Platforms (a generic .iso): the detected Platform decides,
     # and without one the file is skipped (the r7 order: stored mode, then
-    # Platform, then skip). codex 4577381607.
+    # Platform, then skip).
     # Every tool whose verify reads the name: a stored check must reach its
     # tool even when the file no longer looks like that tool's (damage must
     # fail, not vanish), so this is wider than the content claim.
@@ -1880,11 +1880,11 @@ async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> in
             return
         _finish_check_run(item, job)
         # An Inbox job that fails leaves its Finding and isn't a Rule's
-        # failure (CodeRabbit 4608135778); an Inbox that can't be polled
+        # failure; an Inbox that can't be polled
         # still fails the run, from the pass.
         if getattr(job, "inbox_id", None) is None:
             failed = failed or item.status in ("failed", "cancelled")
-        # An intake job names its own Library (#433, Codex 4607940252). A
+        # An intake job names its own Library (#433). A
         # sweep's job that ends while its sweep is still running has no owner
         # yet; the Library being swept queued it.
         library_id = (
@@ -1895,7 +1895,7 @@ async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> in
                      prefix=f"{library_id}: " if library_id else "")
 
     # Registered like the server's: the Rule history hears each job's outcome.
-    # And an Inbox conversion is settled the moment it ends (Codex 4608095516),
+    # And an Inbox conversion is settled the moment it ends,
     # not when the pass looks it up again, by which time history may be pruned.
     async with _job_runner(
         state, on_terminal, rules_sweep.note_job_finished, intake.on_job_finished,
@@ -1966,13 +1966,13 @@ async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs) -> 
     try:
         intake.restore_settle_memory(await preferences_store.get(INBOX_SETTLE_KEY))
         wanted = {inbox.library_id for inbox in inboxes}
-        # A stop admits nothing more (Codex 4607809613); what started drains.
-        # Each job it makes names its own Library (``job.library_id``, Codex
-        # 4607940252), so the job lines don't depend on when a job was made.
+        # A stop admits nothing more; what started drains.
+        # Each job it makes names its own Library (``job.library_id``), so the
+        # job lines don't depend on when a job was made.
         results = await intake.poll_all(
             library_ids=wanted, should_stop=lambda: state.stopping,
         )
-        # Drained to a fixed point (#432, Codex 4608417841): an unpack or a
+        # Drained to a fixed point (#432): an unpack or a
         # Recognize takes its Images on itself and may queue a conversion
         # after the queue last emptied, and a conversion ending starts intake
         # work. A stop cancels what is queued and admits nothing more, so the
@@ -1986,7 +1986,7 @@ async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs) -> 
                 break
         if state.stopping:
             # Intake's own work has drained, and may have queued a conversion
-            # after the cancel above (CodeRabbit 4608968227): cancelled and
+            # after the cancel above: cancelled and
             # drained too, so the run never ends with a live job.
             await jobs.cancel_all_jobs(reason=CANCEL_SHUTDOWN)
             await jobs.drain()
@@ -2001,7 +2001,7 @@ async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs) -> 
         every = {inbox.id for inbox in await run_in_threadpool(inbox_store.all_inboxes)}
         await preferences_store.put(INBOX_SETTLE_KEY, intake.settle_memory(every))
     except Exception as exc:
-        # On its own (CodeRabbit 4608135785): what the pass did is still
+        # On its own: what the pass did is still
         # reported and RomM still scans; the run fails and says why.
         logger.warning("run-rules: could not save intake's memory: %s", exc, exc_info=True)
         line = _inbox_line(None, status="error", reason=f"inbox_memory_not_saved: {exc}")
@@ -2015,8 +2015,7 @@ async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs) -> 
     summary = await report.after_pass(results)
     for library_id, entry in summary["libraries"].items():
         # An Inbox that couldn't be polled (its folder gone, outside a
-        # Volume, its Library missing) fails the run like a failed sweep
-        # (Codex 4607809607).
+        # Volume, its Library missing) fails the run like a failed sweep.
         for error in entry.get("errors") or []:
             line = _inbox_line(library_id, status="error", error=error)
             printer.summary(line, _inbox_text(line))

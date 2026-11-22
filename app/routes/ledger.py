@@ -34,7 +34,7 @@ def _filter(
 
     A relative ``since`` (24h, 7d) is resolved here, once per request, to the
     time it stands for: every page of a CSV export then reads the same
-    cutoff (Codex 4658906854)."""
+    cutoff."""
     if since:
         try:
             since = ledger.since_cutoff(since)

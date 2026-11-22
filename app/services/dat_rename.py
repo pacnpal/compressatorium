@@ -86,7 +86,7 @@ MAX_LISTED = 20
 # How long a request waits for the rename-conflict settle (#425).
 SETTLE_SECONDS = 5.0
 # Held by the rename-conflict settle that is running, across threads, until
-# its worker really ends: at most one in flight (CodeRabbit 4602978437).
+# its worker really ends: at most one in flight.
 _conflicts_settling = threading.Lock()
 
 # The job running now, if any: one rename at a time.
@@ -128,14 +128,14 @@ def _dat_of(record: dict) -> dict:
 
 def dat_file_name(game_name: str, name: str) -> str | None:
     """The file name the DAT's *game_name* gives a file now called *name*:
-    the game name with the file's own extension (compound ones whole, Codex
-    4602560251), made safe by the one shared rule (``safe_file_name``). None
+    the game name with the file's own extension (compound ones whole), made
+    safe by the one shared rule (``safe_file_name``). None
     when it can't be made a file name. The one naming rule: the rename to DAT
     name and the Inbox (#432) both name Images with it.
 
     A numbered part of a split output (``Game.iso.0``, the registry's
     ``split_owner_name``) keeps its logical extension and its part number:
-    ``Canonical Game.iso.0`` (Codex 4608919686)."""
+    ``Canonical Game.iso.0``."""
     logical = tools.split_owner_name(name)
     if logical is not None:
         named = safe_file_name(f"{game_name}{tools.extension_of(logical)}")
@@ -231,8 +231,8 @@ def _member_problem(path: str, tracks: Owners) -> str | None:
         return f"can't tell whether a sheet lists it as a track ({exc})"
     if sheet is not None:
         return f"a track of {os.path.basename(sheet)}: it is renamed with its sheet"
-    # A sheet anywhere in the Volumes may reach it through a link (Codex
-    # 4602560262): the Volume-wide walk the duplicate delete uses decides.
+    # A sheet anywhere in the Volumes may reach it through a link: the
+    # Volume-wide walk the duplicate delete uses decides.
     if _identity(path) in tracks.owners:
         return "a track a .cue or .gdi elsewhere lists: it is renamed with its sheet"
     if not image_rename.is_sheet(path) and image_sets.image_members(path):
@@ -507,8 +507,7 @@ async def _plan(path: str, tracks, why: str = "") -> tuple[dict, Any]:
     except DeadlineExpired:
         return _skip(item, "its Volume didn't answer in time"), None
     except Exception as exc:
-        # One Image that can't be checked never hides the others (CodeRabbit
-        # 4602644812): it is skipped with the reason.
+        # One Image that can't be checked never hides the others: it is skipped with the reason.
         logger.warning("dat_rename: couldn't check %s", path, exc_info=True)
         return _skip(item, f"couldn't be checked ({exc})"), None
 
@@ -595,12 +594,12 @@ def settling_conflicts() -> bool:
 
 async def settle_conflicts_bounded() -> None:
     """:func:`settle_conflicts` for a request: the Findings list, and saving
-    or resetting the DAT ranking (Codex 4603430802). Never raises (CodeRabbit
-    4602644770): one that fails or runs past ``SETTLE_SECONDS`` (it may
-    resolve a path on a Volume that stopped answering, CodeRabbit 4602644800)
+    or resetting the DAT ranking. Never raises: one that fails or runs past
+    ``SETTLE_SECONDS`` (it may
+    resolve a path on a Volume that stopped answering)
     leaves the Findings as they are, and the next request tries again.
-    Detached, and at most one in flight, held until its worker really ends
-    (CodeRabbit 4602978437): requests while one is stuck start none, so they
+    Detached, and at most one in flight, held until its worker really ends:
+    requests while one is stuck start none, so they
     can't use up the detached slots.
 
     A worker that finishes after the request stopped waiting may still clear
@@ -693,11 +692,10 @@ async def _rename_all(job_id: str, items: list[dict]) -> dict:
             ))
         except Exception as exc:
             # One Image that fails unexpectedly never hides the others'
-            # results (CodeRabbit 4602644812).
+            # results.
             logger.warning("dat_rename: renaming %s failed", path, exc_info=True)
             results.append(_result(path, new_path, "not_renamed", f"stopped on an error ({exc})"))
-    # A cancel that came during the last Image ends the job cancelled too
-    # (Codex 4603430454).
+    # A cancel that came during the last Image ends the job cancelled too.
     cancelled = cancelled or job_manager.is_cancelled(job_id)
     counts = {
         status: sum(1 for r in results if r["status"] == status)
@@ -738,8 +736,8 @@ async def _rename_one(
         return _result(path, confirmed, "skipped", why)
     files = _files_of(confirmed_files)
     if files is None and len(item["files"]) > 1:
-        # One path confirmed is never several files renamed (CodeRabbit
-        # 4604333160): only a single-file plan may come without ``files``.
+        # One path confirmed is never several files renamed: only a single-file
+        # plan may come without ``files``.
         return _result(
             path, confirmed, "skipped",
             "it is renamed with several files, and they weren't confirmed",

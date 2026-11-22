@@ -31,8 +31,8 @@ from config import settings
 from logging_setup import get_logger
 from services.chdman import ConversionCancelled
 from services.subprocess_runner import (
+    VerifyingRunnerService,
     SubprocessRunner,
-    collect_verify,
     remove_partial_output,
     verify_preflight,
     verify_exception_event,
@@ -119,7 +119,7 @@ def _effort_flags(mode: str, compression: str | None) -> list[str]:
 logger = get_logger("maxcso")
 
 
-class MaxcsoService:
+class MaxcsoService(VerifyingRunnerService):
     """Wrapper for the maxcso binary."""
 
     def __init__(self):
@@ -150,13 +150,6 @@ class MaxcsoService:
         cmd += _effort_flags(mode, compression)
         cmd += [input_path, "-o", output_path]
         return cmd
-
-    def active_pids(self) -> list[int]:
-        return self._runner.active_pids()
-
-    def abandoned_pids(self) -> list[int]:
-        """Children that outlived SIGKILL; see ``SubprocessRunner``."""
-        return self._runner.abandoned_pids()
 
     # ----- output paths -----------------------------------------------------
 
@@ -280,14 +273,6 @@ class MaxcsoService:
         return ext in MAXCSO_COMPRESS_EXTENSIONS or ext in MAXCSO_DECOMPRESS_EXTENSIONS
 
     # ----- verify -----------------------------------------------------------
-
-    async def verify(
-        self, file_path: str, *, cancel_event: asyncio.Event | None = None,
-    ) -> dict:
-        return await collect_verify(
-            self.verify_stream(file_path, cancel_event=cancel_event),
-            fallback_message="Verification failed",
-        )
 
     async def verify_stream(
         self, file_path: str, *, cancel_event: asyncio.Event | None = None,

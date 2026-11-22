@@ -484,7 +484,7 @@ def test_a_ps3_disc_folder_goes_to_folder_to_iso(tmp_path):
 
 def test_a_ps3_folder_named_like_an_iso_is_not_already_an_iso(tmp_path):
     # The "already the target format" check reads a file's name; a folder's
-    # name says nothing about what it holds (CodeRabbit 4576895545).
+    # name says nothing about what it holds.
     from .ps3_helpers import make_ps3_folder
 
     folder = make_ps3_folder(tmp_path / "downloads" / "Game.iso")
@@ -520,8 +520,7 @@ def test_an_iso_file_under_folder_to_iso_is_still_already_an_iso(tmp_path, monke
 
 
 def test_a_custom_probe_set_does_not_reuse_the_shared_cache(tmp_path):
-    # Same file, two probe sets: the second must not get the first's answer
-    # (CodeRabbit 4576895544).
+    # Same file, two probe sets: the second must not get the first's answer.
     from services.tools import registry
 
     iso = _gamecube(tmp_path / "neutral" / "game.iso")

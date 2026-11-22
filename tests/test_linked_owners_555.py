@@ -130,7 +130,7 @@ async def test_renaming_a_set_part_another_folder_links_to_is_refused(vol):
 
 
 def test_a_delete_on_verify_plan_keeps_a_track_a_linked_sheet_names(vol):
-    from utils.delete_plan import build_delete_plan, collect_delete_paths
+    from utils.delete_plan import build_delete_plan, build_delete_snapshot
 
     _sheet, _track = _sheet_through_a_folder_link(vol)
     own = _write(vol / "tracks" / "Own.cue", b'FILE "Shared.bin" BINARY\n  TRACK 01 MODE1/2352\n')
@@ -138,9 +138,10 @@ def test_a_delete_on_verify_plan_keeps_a_track_a_linked_sheet_names(vol):
     plan = build_delete_plan(str(own), confine_to_volumes=True)
 
     assert any("A.cue" in error for error in plan["errors"]), plan
-    # A plan with an error deletes nothing at all.
+    # A plan with an error deletes nothing at all: the delete-on-verify
+    # snapshot (the one gate before a Source delete) refuses it.
     with pytest.raises(ValueError, match="A.cue"):
-        collect_delete_paths(str(own))
+        build_delete_snapshot(str(own))
 
 
 @pytest.mark.asyncio
@@ -176,7 +177,7 @@ async def test_a_file_no_link_reaches_still_goes(vol):
 
 @pytest.mark.asyncio
 async def test_a_slow_folder_that_keeps_listing_is_never_cut_off(vol, monkeypatch):
-    """Codex 4658820242: the links walk reports every entry as it is read, so
+    """the links walk reports every entry as it is read, so
     a big or slow folder that keeps answering outlasts the stall bound."""
     import time
 
@@ -216,7 +217,7 @@ async def test_a_slow_folder_that_keeps_listing_is_never_cut_off(vol, monkeypatc
 
 @pytest.mark.asyncio
 async def test_one_stalled_volume_keeps_its_files_and_the_rest_still_go(tmp_path, monkeypatch):
-    """CodeRabbit 4658850274: a link walk that stops answering keeps that
+    """a link walk that stops answering keeps that
     Volume's files, with why; a healthy Volume's files are still deleted."""
     import threading
 
@@ -260,7 +261,7 @@ async def test_one_stalled_volume_keeps_its_files_and_the_rest_still_go(tmp_path
 
 
 def test_a_link_reaches_a_file_whatever_case_the_share_spells_it_in():
-    """CodeRabbit 4658850285: on a case-insensitive share a link's target and
+    """on a case-insensitive share a link's target and
     the file's real path may differ in case; the link still reaches it. Folding
     only widens which folders are read, so it never drops an owner."""
     from services import image_sets
@@ -276,7 +277,7 @@ def test_a_link_reaches_a_file_whatever_case_the_share_spells_it_in():
 
 
 def test_a_delete_plan_whose_link_walk_stalls_keeps_the_track(vol, monkeypatch):
-    """CodeRabbit 4658850290: the plan's link walk is stall-bounded; one that
+    """the plan's link walk is stall-bounded; one that
     stops answering makes the owners unknown, so the plan keeps the track
     instead of hanging the job."""
     import threading

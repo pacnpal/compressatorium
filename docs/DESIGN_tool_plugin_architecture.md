@@ -558,12 +558,17 @@ class SubprocessRunner:
 
     async def capture_verify(self, cmd: list[str], *, path: str,
                              success_message: str, cancel_event=None, env=None,
-                             start_message="Verifying integrity..."
+                             start_message="Verifying integrity...",
+                             stdin_path=None, stdin_offset=0,
                              ) -> AsyncGenerator[dict, None]:
-        """One-shot verifier (maxcso --crc, nsz -V, 7z t): the same event shape
-        around a single run_capture() with the same bound and cancel_event.
-        run_capture reports both an abort and a timeout as returncode None, so
-        the two are told apart by asking the cancel event which happened.
+        """One-shot verifier (maxcso --crc, nsz -V, 7z t, zstd -t): the same
+        event shape around a single run_capture() with the same bound and
+        cancel_event. run_capture reports both an abort and a timeout as
+        returncode None, so the two are told apart by asking the cancel event
+        which happened. stdin_path/stdin_offset feed the child a file on stdin
+        (feed_stdin_from_file) inside the same race: z3ds's `zstd -t` reads
+        the payload past the container header this way (#543), so no tool
+        spawns a child outside the runner.
         """
 
 
@@ -585,7 +590,14 @@ async def remove_partial_tree(path: str, *, label="work directory",
 
 `collect_verify(stream, *, fallback_message)` is the module-level reducer every
 `verify()` uses to turn one of those streams into `{"valid","message"}`
-(plus `"cancelled"`).
+(plus `"cancelled"`). The tool *services* (`services/<tool>.py`) share it the
+same way (#543). Every service subclasses `subprocess_runner.RunnerService`,
+which gives `active_pids()` and `abandoned_pids()`. A service that streams a
+verify subclasses `VerifyingRunnerService` instead: it defines `verify_stream`,
+and inherits a `verify()` that drains it with its `verify_fallback_message`
+("Verification failed" by default; chdman and Dolphin name their format).
+makeps3iso stays on `RunnerService` with its own `verify` (a PARAM.SFO
+readback), and nkit2iso, which has no verify, inherits none.
 
 Per-tool `convert()` becomes ~15 lines: build argv, then
 `async for u in self._runner.run(cmd, ..., parse_progress=self._parse_progress): yield u`.
@@ -2331,8 +2343,8 @@ SHA1 on the wire in the clear. Extra fields ride in the existing
 `(hash, hash_type, dat_id)` (migration 0022), so a hash two DATs know keeps
 both rows; it used to be `(hash, hash_type)`, and the later import overwrote
 the earlier one. Both import paths (`/dat/import` and the MAMERedump sync's
-staged `persist()`) go through one `DATStore._insert_dat`. `lookup_sha1` /
-`lookup_md5` return every DAT's record under `matches` (each with `dat_id`,
+staged `persist()`) go through one `DATStore._insert_dat`. `lookup_sha1`
+returns every DAT's record under `matches` (each with `dat_id`,
 `dat_name`, `family`, `game_name`, `rom_name`), and `_local_dat_record` carries
 them into the match result, so the cached `dat_matches.payload` stores the
 facts, not a verdict. `_local_lookup_match` looks up **every** candidate hash
@@ -7028,7 +7040,14 @@ holds only the check times. `sweep.get_rules` / `get_state` take the kind;
 
 **Sweep.** `_sweep_locked` walks every (kind, Platform) in priority, Platform,
 kind order, gating each on its own `enabled` and its own kind's state, and
-hands a check Rule to `_sweep_check`. Run now ignores both clocks, so it runs
+hands a check Rule to `_sweep_check`. Queueing a Platform's batch is two named
+steps (#543): `_read_delete_snapshots` (each Source's delete snapshot, and the
+ones that could not be read) and `_after_queued` (the jobs' Platform and owner,
+the Library's `after_queue`, what the Rule converted, the claimed Sources).
+`JobManager._process_job` is split the same way: `_complete_from_verified_output`,
+`_extract_archive_member`, `_fail_now`, `_verify_output`, `_decide_delete`,
+`_record_check` and `_finish_delete_on_verify`; the staged-output state its
+`finally` reads (`slot`, `placement`, `placeable`) stays in `_process_job`. Run now ignores both clocks, so it runs
 both kinds and a check spends another budget. A check Rule's Run now stamps
 `last_manual_run_at`, not `last_run_at` (either stamped with the `now` the
 sweep found the Rule due at, so a pick that runs past midnight counts for the

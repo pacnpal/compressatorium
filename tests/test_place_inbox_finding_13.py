@@ -238,7 +238,7 @@ def test_the_console_problem_no_longer_says_to_move_it_by_hand():
 
 @pytest.mark.asyncio
 async def test_a_file_another_job_reads_is_not_moved(vol, db):
-    """Codex 4658826950: a conversion started from Files holds shared input
+    """a conversion started from Files holds shared input
     locks on what it reads. Place it takes the exclusive locks intake's own
     move takes on every file, so it refuses while a reader holds one, and
     moves once the reader is done."""
@@ -270,7 +270,7 @@ async def test_a_file_another_job_reads_is_not_moved(vol, db):
 
 @pytest.mark.asyncio
 async def test_a_sheet_naming_a_track_in_another_folder_moves_nothing(vol, db):
-    """Codex 4658826953: `../Tracks/Game.bin` is dropped by the confined track
+    """`../Tracks/Game.bin` is dropped by the confined track
     resolver, so the sheet looked trackless and would move alone. The sheet's
     references are checked first, as intake checks them, and nothing moves."""
     box = _watch_folder(vol)
@@ -297,7 +297,7 @@ async def test_a_sheet_naming_a_track_in_another_folder_moves_nothing(vol, db):
 
 @pytest.mark.asyncio
 async def test_a_track_another_sheet_now_names_is_not_moved(vol, db):
-    """Codex 4658906849: B.cue arrives after A's problem was recorded and names
+    """B.cue arrives after A's problem was recorded and names
     the same Shared.bin. Placing A would take the track B still needs, so Place
     it runs intake's ownership check under its locks and refuses with nothing
     moved."""
@@ -325,7 +325,7 @@ async def test_a_track_another_sheet_now_names_is_not_moved(vol, db):
 
 @pytest.mark.asyncio
 async def test_a_slow_move_keeps_its_locks_until_it_ends(vol, db, monkeypatch):
-    """Codex 4658979972: a move that outlasts its bound may still land, so the
+    """a move that outlasts its bound may still land, so the
     exclusive locks stay held, and its outcome stays owned, until the worker
     has actually finished (intake's `_owned`, as `_move_to_processed` runs).
     Let go at the bound, a conversion could take input locks on files the
@@ -378,7 +378,7 @@ async def test_a_slow_move_keeps_its_locks_until_it_ends(vol, db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_loose_track_a_sheet_now_owns_is_not_moved(vol, db):
-    """Codex 4659056897: Game.bin was dropped alone and got its problem; then
+    """Game.bin was dropped alone and got its problem; then
     Game.cue arrives naming it. The BIN is now the sheet's track, so placing it
     would break the sheet: refused, naming the sheet, nothing moved."""
     box = _watch_folder(vol)
@@ -405,7 +405,7 @@ async def test_a_loose_track_a_sheet_now_owns_is_not_moved(vol, db):
 
 @pytest.mark.asyncio
 async def test_a_sheet_that_changes_after_its_check_moves_nothing(vol, db, monkeypatch):
-    """Codex 4659056902: the sheet is rewritten between the check and the move
+    """the sheet is rewritten between the check and the move
     (it now names a second track). The set checked is no longer the set on
     disk, so the move is refused under the locks and nothing moves."""
     box = _watch_folder(vol)

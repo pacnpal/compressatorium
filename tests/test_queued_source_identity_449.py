@@ -105,7 +105,7 @@ async def test_a_job_queued_without_an_identity_is_refused(tmp_volume, tmp_path)
 
 @pytest.mark.asyncio
 async def test_a_sheet_submitted_through_a_link_reads_its_tracks_beside_the_link(e2e_env):
-    """codex 4614857083: the job reads the sheet by the path it was submitted
+    """the job reads the sheet by the path it was submitted
     as, so its tracks are the ones beside that path (the ones it locked), not
     those beside the link's target."""
     from app.models import ConversionMode, DuplicateAction, JobCreateRequest, JobStatus
@@ -159,7 +159,7 @@ async def test_a_link_re_pointed_after_queueing_is_refused(e2e_env):
 
 @pytest.mark.asyncio
 async def test_a_batch_bigger_than_the_bound_keeps_every_identity(monkeypatch, tmp_path):
-    """codex 4614857109: the bound restarts after each Source, so batch size
+    """the bound restarts after each Source, so batch size
     alone never turns a healthy Source's identity into an error."""
     import time
 
@@ -209,7 +209,7 @@ async def test_a_source_that_stops_answering_keeps_the_identities_before_it(
     assert got[:2] == [{"path": specs[0]["file_path"]}, {"path": specs[1]["file_path"]}]
     assert all("no answer" in identity["error"] for identity in got[2:])
     # Never reached, so no verdict on the Image: a Rule's failed-hold skips
-    # it and the next sweep queues it again (CodeRabbit 4615955365).
+    # it and the next sweep queues it again.
     from types import SimpleNamespace
 
     from services.rules import sweep
@@ -225,7 +225,7 @@ CUE = 'FILE "Game.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
 
 @pytest.mark.asyncio
 async def test_a_track_replaced_after_queueing_is_refused(e2e_env):
-    """CodeRabbit 4614956755: the tracks (and split parts) the converter opens
+    """the tracks (and split parts) the converter opens
     itself are captured with the Source and checked again when it runs."""
     from app.models import ConversionMode, DuplicateAction, JobCreateRequest, JobStatus
     from app.routes import convert as convert_routes
@@ -252,7 +252,7 @@ async def test_a_track_replaced_after_queueing_is_refused(e2e_env):
 async def test_a_sheet_swapped_out_of_the_volume_is_never_read(
     e2e_env, tmp_path_factory, monkeypatch,
 ):
-    """CodeRabbit 4614956778 / 4614956871: a queued sheet whose folder now
+    """A queued sheet whose folder now
     leads out of the Volumes isn't parsed for tracks to lock before the
     identity check refuses it; nothing outside is read."""
     from services import job_manager as jm  # the module the route queues with
@@ -280,7 +280,7 @@ async def test_a_sheet_swapped_out_of_the_volume_is_never_read(
         return real_plan(path, *args, **kwargs)
 
     monkeypatch.setattr(jm, "build_delete_plan", spying_plan)
-    # The companion read too (CodeRabbit 4615955508).
+    # The companion read too.
     import utils.delete_plan as delete_plan
 
     real_tracks = delete_plan.sheet_track_paths
@@ -300,7 +300,7 @@ async def test_a_sheet_swapped_out_of_the_volume_is_never_read(
 
 @pytest.mark.asyncio
 async def test_a_refused_submission_captures_again_when_retried(tmp_volume, tmp_path, monkeypatch):
-    """CodeRabbit 4614956744: identities are captured into the attempt's own
+    """identities are captured into the attempt's own
     copies, never written back into the caller's specs."""
     from app.models import ConversionMode
     from app.services.job_manager import QueueBackpressureError, job_manager
@@ -322,7 +322,7 @@ async def test_a_refused_submission_captures_again_when_retried(tmp_volume, tmp_
 async def test_a_sheet_job_with_no_identity_never_reads_its_sheet(
     tmp_volume, tmp_path, monkeypatch,
 ):
-    """CodeRabbit 4615215842 / 4615217022: a CUE job with no usable identity
+    """A CUE job with no usable identity
     locks only its Source and is refused; its sheet is never parsed."""
     from models import ConversionJob, ConversionMode, JobStatus
     from services import job_manager as jm
@@ -357,7 +357,7 @@ async def test_a_sheet_job_with_no_identity_never_reads_its_sheet(
 
 
 def test_a_sheet_linked_across_volumes_keeps_its_companions(tmp_path, monkeypatch):
-    """codex 4615261287: each companion is captured and checked under its own
+    """each companion is captured and checked under its own
     Volume root. A sheet in one Volume linked from another names tracks beside
     the link, in the other Volume."""
     from utils.path_utils import queued_source_identity, queued_source_problem
@@ -385,7 +385,7 @@ def test_a_sheet_linked_across_volumes_keeps_its_companions(tmp_path, monkeypatc
 
 
 def test_companions_are_the_selected_modes_only(tmp_volume, tmp_path):
-    """codex 4615553372: the identity's companions come from the mode's own
+    """the identity's companions come from the mode's own
     tool (the shared ``source_companion_paths``), so a ``createhd`` on
     ``game_part1.wud`` captures no part 2 and a changed part 2 doesn't refuse
     it, while a Wii U job on the same file checks part 2."""
@@ -406,7 +406,7 @@ def test_companions_are_the_selected_modes_only(tmp_volume, tmp_path):
 
 
 def test_track_links_that_swap_targets_are_refused(tmp_volume, tmp_path):
-    """codex 4615553385: companions are compared reference by reference, in
+    """companions are compared reference by reference, in
     the sheet's order, so two track links swapping targets (the same files,
     read in another order) refuse the job."""
     from utils.path_utils import queued_source_identity, queued_source_problem
@@ -436,7 +436,7 @@ def test_track_links_that_swap_targets_are_refused(tmp_volume, tmp_path):
 
 
 def test_input_locks_come_from_the_captured_companions(tmp_volume, tmp_path, monkeypatch):
-    """CodeRabbit 4615955374: for an in-place job, the input locks are the
+    """for an in-place job, the input locks are the
     Source and the companions captured at queue time; nothing is read inside
     the unbounded lock wait."""
     from models import ConversionJob, ConversionMode, JobStatus
@@ -463,7 +463,7 @@ def test_input_locks_come_from_the_captured_companions(tmp_volume, tmp_path, mon
 
 
 def test_a_track_named_with_a_double_colon_is_a_literal_file(tmp_volume, tmp_path):
-    """CodeRabbit 4615955480: a companion is a literal path, never archive
+    """a companion is a literal path, never archive
     syntax, so a sheet naming `Track::01.bin` is captured as that file."""
     from utils.path_utils import queued_source_identity, queued_source_problem
 
@@ -477,7 +477,7 @@ def test_a_track_named_with_a_double_colon_is_a_literal_file(tmp_volume, tmp_pat
 
 
 def test_a_folder_named_with_a_double_colon_is_a_literal_folder(tmp_volume, tmp_path):
-    """CodeRabbit 4616898142: the resolved Source path is literal when its
+    """the resolved Source path is literal when its
     Volume root is chosen, so a folder named `a::b` is no archive."""
     from utils.path_utils import queued_source_identity, queued_source_problem
 
@@ -570,7 +570,7 @@ def test_the_active_job_inventory_uses_the_captured_companions(tmp_volume, tmp_p
 
 @pytest.mark.asyncio
 async def test_a_volume_root_that_doesnt_answer_is_no_verdict(tmp_volume, tmp_path, monkeypatch):
-    """CodeRabbit 4617787310: a Volume-root probe that times out is "couldn't
+    """a Volume-root probe that times out is "couldn't
     tell", never "outside the Volumes": at capture and at the job's own check
     the identity is marked unanswered, so a Rule's failed-hold skips the
     unchanged Source (``sweep._never_checked``)."""
@@ -598,7 +598,7 @@ async def test_a_volume_root_that_doesnt_answer_is_no_verdict(tmp_volume, tmp_pa
 def test_a_later_root_probe_that_doesnt_answer_is_no_verdict(
     tmp_volume, tmp_path, monkeypatch, silent_call,
 ):
-    """CodeRabbit 4617888601: the first containment probe answers, then the
+    """the first containment probe answers, then the
     Volume-root lookup for the Source (call 1) or its companion (call 2)
     doesn't. Capture marks the identity unanswered, never a plain refusal,
     so ``sweep._never_checked`` is True."""
@@ -675,7 +675,7 @@ def _timing_out_on(monkeypatch, name):
 
 @pytest.mark.asyncio
 async def test_a_companion_whose_stat_times_out_is_no_verdict(tmp_volume, tmp_path, monkeypatch):
-    """codex 4618766182: a companion's stat that times out (ETIMEDOUT, a
+    """a companion's stat that times out (ETIMEDOUT, a
     TimeoutError) is "couldn't tell", never "the companion changed": at
     capture and at the job's own check the identity is unanswered."""
     from types import SimpleNamespace
@@ -734,7 +734,7 @@ async def test_a_source_or_sheet_read_that_times_out_is_no_verdict(
 
 @pytest.mark.asyncio
 async def test_a_split_part_whose_stat_times_out_is_no_verdict(tmp_volume, tmp_path, monkeypatch):
-    """codex 4620404219: a split set's part 2 whose stat times out used to drop
+    """a split set's part 2 whose stat times out used to drop
     out of `os.path.isfile`'s answer, so the set looked one part long. The
     shared `path_present` counts it as unknown, and the identity ends
     unanswered at capture and at the job's own check."""

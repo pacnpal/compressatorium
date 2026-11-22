@@ -60,12 +60,12 @@ from services.disk import ensure_headroom
 from services.output_placement import OutputPlacement
 from services.stream_digest import hash_files
 from services.subprocess_runner import (
+    VerifyingRunnerService,
     ConversionCancelled,
     DeadlineExpired,
     ProbeCapacityExceeded,
     ReadCancelled,
     SubprocessRunner,
-    collect_verify,
     run_detached,
     run_detached_undoable,
     run_detached_within_stall_bound,
@@ -289,7 +289,7 @@ def _check_product(work_dir: str, produced: str, size: int) -> None:
         )
 
 
-class RarExtractService:
+class RarExtractService(VerifyingRunnerService):
     """``unar`` over a planned RAR set."""
 
     def __init__(self) -> None:
@@ -297,12 +297,6 @@ class RarExtractService:
         self._runner = SubprocessRunner(owner=_OWNER)
 
     plan = staticmethod(plan_set)
-
-    def active_pids(self) -> list[int]:
-        return self._runner.active_pids()
-
-    def abandoned_pids(self) -> list[int]:
-        return self._runner.abandoned_pids()
 
     def _build_command(self, first_volume: str, work_dir: str) -> list[str]:
         # -D: no containing folder of unar's own, so members land at their
@@ -443,14 +437,6 @@ class RarExtractService:
         yield {"progress": 100, "message": f"Extracted {member}"}
 
     # ----- checks -----------------------------------------------------------
-
-    async def verify(
-        self, path: str, *, cancel_event: asyncio.Event | None = None,
-    ) -> dict:
-        return await collect_verify(
-            self.verify_stream(path, cancel_event=cancel_event),
-            fallback_message="Verification failed",
-        )
 
     async def verify_stream(
         self, path: str, *, cancel_event: asyncio.Event | None = None,

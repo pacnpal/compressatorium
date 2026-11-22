@@ -1,6 +1,6 @@
 """An output Volume that stops answering after conversion fails the job (#352).
 
-Codex 4582518760: recording a new CHD's disc ID stats the output, bounded. If
+recording a new CHD's disc ID stats the output, bounded. If
 that stat does not answer, the output's storage has stopped answering, and
 every step after the hook reads it (sizing the output, verify, delete). So the
 hook lets ``DiscIdStorageAbandoned`` through and the job fails promptly with an

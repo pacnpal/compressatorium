@@ -1,4 +1,4 @@
-"""The console table saves one console at a time (#541, Codex 4653298940).
+"""The console table saves one console at a time (#541).
 
 ``PATCH .../rules`` merges the consoles it names into the stored Rules
 (``null`` removes one), so a table that saved before the Rules had loaded, or
@@ -84,7 +84,7 @@ async def test_romm_takes_a_patch_too() -> None:
 
 @pytest.mark.asyncio
 async def test_a_whole_map_save_waits_for_a_patch_under_way(tree: Path) -> None:
-    """CodeRabbit 4653612408: a PUT landing between a PATCH's read and its
+    """a PUT landing between a PATCH's read and its
     save would be undone by the PATCH's stale map. Both take one lock."""
     import asyncio
 

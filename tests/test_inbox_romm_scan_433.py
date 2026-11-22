@@ -259,7 +259,7 @@ async def test_a_token_without_tasks_run_is_reported_not_retried(vol, romm, sent
 
 @pytest.mark.asyncio
 async def test_an_output_whose_original_cant_be_archived_is_still_scanned(vol, romm):
-    """Codex 4608095510: the output counts as placed the moment it lands in
+    """the output counts as placed the moment it lands in
     the Library; a move to processed/ that fails keeps its Finding (and
     hold) but RomM is still asked to scan the output's Platform."""
     import os
@@ -348,7 +348,7 @@ async def test_a_pass_that_did_nothing_sends_nothing(vol, db, sent):
 
 @pytest.mark.asyncio
 async def test_a_stop_admits_nothing_more_and_lets_started_work_finish(vol, db):
-    """Codex 4607809613: once the stop predicate is true (run-rules got
+    """once the stop predicate is true (run-rules got
     SIGTERM), the poll admits no more files; what it started finishes."""
     from services import inbox
     from services.inbox import intake
@@ -404,7 +404,7 @@ async def test_a_poll_error_is_in_the_pass_summary_once(vol, db, sent):
 
 @pytest.mark.asyncio
 async def test_a_poll_that_raises_is_notified_once_per_change(vol, db, sent, monkeypatch):
-    """CodeRabbit 4608135791: a poll that raises goes through the same
+    """a poll that raises goes through the same
     last-error comparison as a listing error: the same exception on three
     ticks notifies once, and again only after a recovery."""
     from services.inbox import intake

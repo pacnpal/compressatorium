@@ -1,4 +1,4 @@
-"""Try them again releases only the failed holds (#541, CodeRabbit 4652729342).
+"""Try them again releases only the failed holds (#541).
 
 "Forget what's been converted" clears a console's converted history and its
 holds; "Try them again" must not, or a game already converted under a rename or

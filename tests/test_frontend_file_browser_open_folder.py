@@ -100,7 +100,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_opening_a_folder_link_on_files_pushes_no_history_entry(tmp_path):
-    """Codex 4651687776: Files consumes `#/files/<path>` by opening the folder.
+    """Files consumes `#/files/<path>` by opening the folder.
     Navigating again there pushed `#/files` on top, so Back looped between the
     two. Already on Files, the folder opens and the URL is left alone."""
     data = _run(tmp_path, """
@@ -127,7 +127,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_a_superseded_open_folder_does_not_win(tmp_path):
-    """CodeRabbit 4579059379: only the latest Open folder navigates.
+    """only the latest Open folder navigates.
 
     With no Volumes loaded yet, two Open folder actions each fetch the Volume
     list. The second fetch answers first and opens its folder; when the first

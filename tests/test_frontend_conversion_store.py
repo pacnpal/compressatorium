@@ -379,7 +379,7 @@ def test_an_abort_during_the_snapshot_never_queues_and_retires_the_metadata(tmp_
     }, data
 
 
-# CodeRabbit 4578050381: the snapshot can stay pending (a stalled RomM). The
+# the snapshot can stay pending (a stalled RomM). The
 # wait for it is abort-aware: closing the panel frees Convert at once, and the
 # rows the stalled snapshot records when it finally returns are retired on
 # their own, without touching a newer run's state.
@@ -734,7 +734,7 @@ def _run_in_browser(tmp_path: Path, scenario: str) -> dict:
 
 
 def test_a_default_saved_in_settings_applies_even_after_an_edit(tmp_path):
-    """Codex 4652247066: once the user picked codecs in the Convert panel, a
+    """once the user picked codecs in the Convert panel, a
     compression saved in Settings → Defaults still has to become the live one."""
     data = _run_in_browser(tmp_path, """
 const store = conversion;
@@ -746,7 +746,7 @@ process.stdout.write(JSON.stringify({ live: store.compressionFor('createcd').cod
 
 
 def test_a_debounced_preference_survives_leaving_the_page(tmp_path):
-    """Codex 4652247060: the debounce lives in the store, not in the Settings
+    """the debounce lives in the store, not in the Settings
     section, so leaving Settings can't drop it; and a flush sends it at once."""
     data = _run_in_browser(tmp_path, """
 const store = conversion;
@@ -767,7 +767,7 @@ process.stdout.write(JSON.stringify({ before, flushed, later: puts[puts.length -
 
 
 def test_a_save_sends_only_the_tools_changed_here(tmp_path):
-    """CodeRabbit 4652269814: the PUT replaces the whole object, so a save built
+    """the PUT replaces the whole object, so a save built
     from an old copy wiped a change another tab (or the CLI) saved meanwhile.
     A queued save reads the server's current copy when it runs and changes
     only the tools edited here; going back to a tool's default drops its key."""
@@ -816,7 +816,7 @@ process.stdout.write(JSON.stringify({ failed, toasted, after: store.compressionS
 
 
 def test_a_late_boot_read_never_overwrites_a_newer_local_change(tmp_path):
-    """Codex 4652391157: the boot read of the remembered compression answers
+    """the boot read of the remembered compression answers
     after Settings saved lzma. Its old answer must not replace the cache, the
     live choice, or what the pending save sends; nor after a Convert-panel edit."""
     data = _run_in_browser(tmp_path, """
@@ -870,7 +870,7 @@ process.stdout.write(JSON.stringify({ plan: store.deletePlan.items, olderResult 
 
 
 def test_a_compression_change_is_saved_before_the_plan_and_the_queue_read_it(tmp_path):
-    """Codex 4654246814: the Auto routes read the saved compression, so a
+    """the Auto routes read the saved compression, so a
     plan or a queue sent inside the save's debounce used the old one."""
     data = _run_in_browser(tmp_path, """
 const store = conversion;
@@ -888,7 +888,7 @@ process.stdout.write(JSON.stringify(order));
 
 
 def test_a_compression_that_did_not_save_queues_nothing(tmp_path):
-    """CodeRabbit 4654265219: the Auto route queues with the saved compression,
+    """the Auto route queues with the saved compression,
     so when the change can't be saved the run stops and says so; the choice
     is kept for Try again."""
     data = _run_in_browser(tmp_path, """
@@ -914,7 +914,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_a_run_aborted_while_the_compression_saves_queues_nothing(tmp_path):
-    """Codex 4654538689: the panel closes while the debounced save is sent;
+    """the panel closes while the debounced save is sent;
     the run stops there, and the queue request carries the run's signal."""
     data = _run_in_browser(tmp_path, """
 const store = conversion;
@@ -947,7 +947,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_the_target_names_its_format_for_a_format_or_a_mode(tmp_path):
-    """Codex 4654538693: RomM's summary counts only outputs of the format the
+    """RomM's summary counts only outputs of the format the
     panel would make, whether Convert to is a format or a mode."""
     data = _run(tmp_path, """
 const store = new ConversionStore();
@@ -962,7 +962,7 @@ process.stdout.write(JSON.stringify({ best, format, mode: store.targetExt }));
 
 
 def test_an_abort_while_the_queue_request_is_out_keeps_the_romm_rows(tmp_path):
-    """CodeRabbit 4654883872: once the queue request has gone out, the server
+    """once the queue request has gone out, the server
     may have made the jobs, so their RomM rows are kept (they age out on
     their own if not); an abort before it went out still retires them."""
     data = _run(tmp_path, """

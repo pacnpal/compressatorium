@@ -518,7 +518,7 @@ async def test_hasheous_unreachable_keeps_the_source(e2e, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# A DAT fetched over plain HTTP never vouches for a delete (Codex 4659176015)
+# A DAT fetched over plain HTTP never vouches for a delete
 # --------------------------------------------------------------------------- #
 
 _PSP = "Sony - PlayStation Portable (Redump)"
@@ -584,7 +584,7 @@ async def test_a_dat_over_https_or_imported_by_hand_still_vouches(e2e, transport
 
 @pytest.mark.asyncio
 async def test_a_redump_dat_with_no_recorded_transport_does_not_vouch(e2e):
-    """Codex 4659261220: a Redump DAT whose transport was never recorded may
+    """a Redump DAT whose transport was never recorded may
     have come over the plain-HTTP fallback, so it is not trusted either."""
     from services.dat_store import dat_store
 

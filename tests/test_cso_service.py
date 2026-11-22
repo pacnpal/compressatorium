@@ -280,8 +280,8 @@ async def test_verify_passes_on_zero_exit(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_verify_applies_priority_wrappers(tmp_path, monkeypatch):
     """`maxcso --crc` is as heavy as a convert, so it must honor nice/ionice:
-    spawned bare (a verdict never comes through an execvp wrapper,
-    CodeRabbit 4616898119), then given the maxcso priority by its pid."""
+    spawned bare (a verdict never comes through an execvp wrapper), then given
+    the maxcso priority by its pid."""
     cso_path = tmp_path / "game.cso"
     cso_path.write_bytes(b"data")
 

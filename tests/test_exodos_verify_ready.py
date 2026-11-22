@@ -67,7 +67,7 @@ def test_the_cli_checks_a_dosz_without_the_exodos_install(volume, capsys):
 
 
 
-# --- a check that could not read the file is no verdict (#354, codex 4582164683)
+# --- a check that could not read the file is no verdict (#354)
 
 
 def _unreadable(monkeypatch):

@@ -70,7 +70,7 @@ async def test_an_image_skipped_while_preparing_says_why_in_the_plan(route_env):
     assert all("ps2.iso" not in q["files"] for q in route_env["queued"])
 
 
-# --- Rollback waits for running jobs (Codex 4576827979) ----------------------
+# --- Rollback waits for running jobs ----------------------
 # cancel_job() returns True for a processing job once it has only set the
 # job's cancel event. A worker past its last cancellation check (paused in
 # post_convert, say) still completes with its output. The rollback must wait

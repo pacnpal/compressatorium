@@ -37,7 +37,7 @@ process.stdout.write(JSON.stringify({ first, after: findings.duplicateRuns }));
 
 
 def test_a_finished_duplicate_run_lists_the_findings_again(tmp_path):
-    """CodeRabbit review 5925361964: the open Findings view lists again when a
+    """The open Findings view lists again when a
     find-duplicates run ends, not only when it is reopened."""
     data = _run(tmp_path, """
 __answers.listFindings = { findings: [], dismissed: 0 };
@@ -60,7 +60,7 @@ process.stdout.write(JSON.stringify({ first, same, fresh, cleared, loads: loads(
 
 
 def test_a_duplicate_group_is_named_by_its_first_copy(tmp_path):
-    """CodeRabbit review 5926373207: labels and toasts name a group by a file
+    """Labels and toasts name a group by a file
     and a count, never by its ``raw:<sha1>`` key."""
     data = _run(tmp_path, """
 const group = (n) => ({
