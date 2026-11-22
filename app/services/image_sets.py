@@ -243,6 +243,11 @@ def volume_links(
 
 
 def _under(path: str, top: str) -> bool:
+    """Whether *path* is *top* or below it, case folded on both sides as
+    :func:`_is_track` folds: on a case-insensitive share a link's target and a
+    file's real path may differ in case. Folding only widens the match, so it
+    can add a folder to read, never drop one: it fails closed."""
+    path, top = path.casefold(), top.casefold()
     return path == top or path.startswith(top.rstrip(os.sep) + os.sep)
 
 

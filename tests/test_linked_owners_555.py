@@ -210,3 +210,97 @@ async def test_a_slow_folder_that_keeps_listing_is_never_cut_off(vol, monkeypatc
     links_of = await files_routes.volume_links_of([str(vol / "big" / "Game 0.iso")])
 
     assert list(links_of.values()) == [[]], links_of
+
+
+# --- CodeRabbit round on af823ac8 ---------------------------------------------
+
+@pytest.mark.asyncio
+async def test_one_stalled_volume_keeps_its_files_and_the_rest_still_go(tmp_path, monkeypatch):
+    """CodeRabbit 4658850274: a link walk that stops answering keeps that
+    Volume's files, with why; a healthy Volume's files are still deleted."""
+    import threading
+
+    from routes import volume_guard
+    from services import image_sets
+
+    from config import settings
+
+    async def noop(*_a, **_k):
+        return None
+
+    for store in (files_routes.verification_store, files_routes.chd_metadata_store):
+        monkeypatch.setattr(store, "clear", noop)
+    fast, slow = tmp_path / "fast", tmp_path / "slow"
+    loose = _write(fast / "Loose.iso")
+    stuck = _write(slow / "Stuck.iso")
+    monkeypatch.setattr(settings, "chd_volumes", f"{fast},{slow}")
+    monkeypatch.setattr(settings, "data_mount_root", str(tmp_path))
+    monkeypatch.setattr(volume_guard, "WALK_STALL_SECONDS", 0.3)
+    release = threading.Event()
+    real = image_sets.volume_links
+
+    def links(root, *, progress=None):
+        if os.path.basename(os.path.normpath(root)) == "slow":
+            release.wait(5)
+        return real(root, progress=progress)
+
+    monkeypatch.setattr(image_sets, "volume_links", links)
+    try:
+        response = await files_routes.delete_files_batch(
+            _delete_ok(), files_routes.BulkDeleteRequest(paths=[str(loose), str(stuck)]),
+        )
+    finally:
+        release.set()
+
+    by_path = {r["path"]: r for r in response["results"]}
+    assert by_path[str(loose)]["success"] is True, by_path
+    assert by_path[str(stuck)]["success"] is False, by_path
+    assert "kept" in by_path[str(stuck)]["error"]
+    assert not loose.exists() and stuck.exists()
+
+
+def test_a_link_reaches_a_file_whatever_case_the_share_spells_it_in():
+    """CodeRabbit 4658850285: on a case-insensitive share a link's target and
+    the file's real path may differ in case; the link still reaches it. Folding
+    only widens which folders are read, so it never drops an owner."""
+    from services import image_sets
+
+    links = [("/vol/other/link", "/vol/tracks")]
+
+    assert image_sets._reaching_folders("/vol/Tracks/Shared.bin", links) == [
+        "/vol/Tracks", "/vol/other",
+    ]
+    assert image_sets._reaching_folders("/vol/tracks/Shared.bin", links) == [
+        "/vol/tracks", "/vol/other",
+    ]
+
+
+def test_a_delete_plan_whose_link_walk_stalls_keeps_the_track(vol, monkeypatch):
+    """CodeRabbit 4658850290: the plan's link walk is stall-bounded; one that
+    stops answering makes the owners unknown, so the plan keeps the track
+    instead of hanging the job."""
+    import threading
+    import time
+
+    from routes import volume_guard
+    from services import image_sets
+    from utils.delete_plan import build_delete_plan
+
+    _write(vol / "psx" / "Game.bin")
+    cue = _write(vol / "psx" / "Game.cue", b'FILE "Game.bin" BINARY\n  TRACK 01 MODE1/2352\n')
+    monkeypatch.setattr(volume_guard, "WALK_STALL_SECONDS", 0.3)
+    release = threading.Event()
+
+    def stuck(_root, *, progress=None):
+        release.wait(5)
+        return []
+
+    monkeypatch.setattr(image_sets, "volume_links", stuck)
+    started = time.monotonic()
+    try:
+        plan = build_delete_plan(str(cue), confine_to_volumes=True)
+    finally:
+        release.set()
+
+    assert time.monotonic() - started < 3
+    assert any("stopped responding" in error for error in plan["errors"]), plan

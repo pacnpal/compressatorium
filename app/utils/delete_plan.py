@@ -330,9 +330,18 @@ def _other_owner(
     cache = links_of if links_of is not None else {}
     try:
         if stop not in cache:
+            # The walk covers the whole Volume, so it is stall-bounded like the
+            # routes' (#555): a mount that stops answering leaves the owners
+            # unknown and the file kept, rather than holding the job.
+            from routes import volume_guard
+            from services.subprocess_runner import Stalled, run_blocking_within_stall_bound
+
             try:
-                cache[stop] = image_sets.volume_links(stop)
-            except image_sets.SheetOwnerUnknown as exc:
+                cache[stop] = run_blocking_within_stall_bound(
+                    image_sets.volume_links, stop, what="Finding the links in a Volume",
+                    stall=volume_guard.WALK_STALL_SECONDS,
+                )
+            except (image_sets.SheetOwnerUnknown, Stalled) as exc:
                 cache[stop] = str(exc)
         links = cache[stop]
         if isinstance(links, str):

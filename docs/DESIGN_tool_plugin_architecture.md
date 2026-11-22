@@ -1538,7 +1538,13 @@ spelling through any link counts. The walk fails closed: a folder it can't
 list, or a link to a folder outside the Volume (which may lead back in, and is
 never walked), makes ownership unknown and the file is kept. The routes walk
 each Volume once per request, stall-bounded (`files.volume_links_of`), and
-`build_delete_plan` once per plan.
+`build_delete_plan` once per plan, stall-bounded too from its worker thread
+(`subprocess_runner.run_blocking_within_stall_bound`). The walk reports every
+entry as it is read, so a big folder that keeps answering is never cut off. A
+walk that stalls leaves the owners unknown and the file kept: in a batch, only
+that Volume's files are kept, and the other Volumes' files still go. Link
+targets are compared with case folded (`_under`, as `_is_track` folds), which
+can only add a folder to read.
 
 **Every RAR header read is bounded and detached.** `archive_members` reads a
 RAR header in one way only, `_bounded_header_read`: the listing

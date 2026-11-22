@@ -1233,10 +1233,16 @@ def _volumes_of(paths: list[str]) -> list[str]:
     return list(dict.fromkeys(str(b) for b in found if b is not None))
 
 
-async def volume_links_of(paths: list[str]) -> dict[str, list[tuple[str, str]] | str]:
+async def volume_links_of(
+    paths: list[str], *, keep_going: bool = False,
+) -> dict[str, list[tuple[str, str]] | str]:
     """Each Volume of *paths*: its links (``image_sets.volume_links``), or why
     they can't be told. One stall-bounded walk per Volume per request (#555),
-    so a sheet that reaches a file through a link in another folder owns it."""
+    so a sheet that reaches a file through a link in another folder owns it.
+
+    A walk that stops answering is a 503, for one file's route. With
+    *keep_going* (a batch) it is recorded for that Volume instead, so its
+    files are kept with the reason and the other Volumes' still go."""
     out: dict[str, list[tuple[str, str]] | str] = {}
     for volume in await off_loop_bounded(_volumes_of, paths):
         try:
@@ -1245,6 +1251,10 @@ async def volume_links_of(paths: list[str]) -> dict[str, list[tuple[str, str]] |
             )
         except image_sets.SheetOwnerUnknown as exc:
             out[volume] = str(exc)
+        except HTTPException as exc:
+            if not keep_going or exc.status_code != 503:
+                raise
+            out[volume] = f"the links in {volume} could not be listed ({exc.detail})"
     return out
 
 
@@ -1321,7 +1331,7 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
         lambda paths: [removed_path(p) for p in paths], contained,
     ), strict=True))
     companions_of: dict[str, list[str]] = {}
-    links_of = await volume_links_of(contained)
+    links_of = await volume_links_of(contained, keep_going=True)
     owners_cache: dict[str, tuple[dict[str, str] | None, str | None]] = {}
     members_cache: dict[str, tuple[list[str] | None, str | None]] = {}
     deleted: set[str] = set()
