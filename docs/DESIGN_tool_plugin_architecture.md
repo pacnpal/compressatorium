@@ -4163,11 +4163,17 @@ declares a different delete proof on the mode contract:
   when it is on, and otherwise it is a miss whose `keep_reason` names those
   DATs and says they came over plain HTTP. Only the delete proof sets them
   aside: matching, the Library's badges and the Inbox's naming use them as
-  any other DAT. A NULL transport (a DAT imported before 0028) reads as
-  before: 0028 marks the DATs the Redump sync's cache (`redump_sync`) names
-  as `http`, since redump.org serves no HTTPS and they can only have come
-  over the fallback, and leaves the rest, hand imports and the HTTPS-only
-  MAME Redump sync, unset.
+  any other DAT. Existing rows fail closed (Codex 4659261220): no existing
+  row can prove it came over HTTPS, and the `redump_sync` cache is no complete
+  history (a partly failed sync imports DATs it never records). 0028 marks
+  `http` every existing DAT whose family is Redump (whoever imported it), every
+  one imported on or after `FALLBACK_POSSIBLE_FROM` (a day before the fallback
+  was written; an unreadable import time counts too), whatever its header,
+  since a swapped DAT could claim any name, and every one the cache names.
+  Only an older non-Redump DAT stays NULL and vouches as before.
+  `recognized._may_vouch` also refuses a NULL Redump match, whatever wrote it.
+  A Redump DAT imported by hand before the upgrade vouches again once it is
+  imported again.
 - `JobManager._delete_check` returns a `_DeleteCheck`: the check passed, plus a
   `fail_reason` (a failed Round-trip: the job fails, as before) or a
   `keep_reason` (not Recognized: the output is Intact and placed, its record
@@ -10598,7 +10604,12 @@ Redump sync (`POST /dat/redump/sync`) and the CLI (`dat import`, `dat sync`):
   is allowed for redump.org only, and each DAT it imports records the
   transport used (`_fetch`'s `transport`, `dats.transport`; a fetch that
   doesn't say counts as `http`), so a DAT fetched over plain HTTP never
-  vouches for a delete (the Recognized proof, §3.3.12). One system at a time with
+  vouches for a delete (the Recognized proof, §3.3.12). A system whose DAT
+  isn't recorded as `https` is asked unconditionally (a 304 can't show its
+  bytes were genuine); when the answer comes over HTTPS byte-identical to the
+  stored download, `dat_store.upgrade_to_https` marks that system's `http`
+  rows `https` without re-importing (Codex 4659261223). It never touches an
+  `https`, `manual` or NULL row, so nothing is ever downgraded. One system at a time with
   `REQUEST_GAP_SECONDS` between requests, at most one sync at once. The cache
   (preference `redump_sync`) skips a system synced within `FRESH_FOR` whose
   DATs are still installed, sends `If-None-Match`/`If-Modified-Since` when it

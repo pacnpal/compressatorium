@@ -61,6 +61,17 @@ def _kept(why: str = "", *, timed_out: bool = False) -> RecognizedOutcome:
     return RecognizedOutcome(passed=False, message=message, timed_out=timed_out)
 
 
+def _may_vouch(match: dict) -> bool:
+    """Whether a DAT match may prove a delete: never one that came over plain
+    HTTP, nor a Redump DAT whose transport was never recorded, which may have
+    come over the fallback (Codex 4659261220; migration 0028 marks those
+    ``http`` already, this holds whatever wrote the row)."""
+    transport = match.get("transport")
+    if transport == PLAIN_HTTP:
+        return False
+    return transport is not None or match.get("family") != "Redump"
+
+
 def _local_hit(sha1: str, path: str) -> tuple[dict | None, list[str]]:
     """The top-ranked local DAT record for *sha1* that may vouch for a delete,
     or None, and the names of the DATs set aside because they came over plain
@@ -69,7 +80,7 @@ def _local_hit(sha1: str, path: str) -> tuple[dict | None, list[str]]:
     if not record:
         return None, []
     matches = record.get("matches") or [record]
-    trusted = [m for m in matches if m.get("transport") != PLAIN_HTTP]
+    trusted = [m for m in matches if _may_vouch(m)]
     untrusted = sorted({m.get("dat_name") or "?" for m in matches if m not in trusted})
     if not trusted:
         return None, untrusted
@@ -83,9 +94,9 @@ def _local_hit(sha1: str, path: str) -> tuple[dict | None, list[str]]:
 
 
 def _over_http(names: list[str]) -> str:
-    """Why a match only plain-HTTP DATs make keeps the Source."""
-    return (f"only {', '.join(names)} knows it, and that came over plain HTTP, "
-            "so it can't vouch for a delete")
+    """Why a match only untrusted DATs make keeps the Source."""
+    return (f"only {', '.join(names)} knows it, and that came or may have come "
+            "over plain HTTP, so it can't vouch for a delete")
 
 
 async def recognize(

@@ -4,11 +4,22 @@ Each DAT records how it arrived: "https", "http" or "manual" (Codex
 4659176015 on #557). A DAT that came over plain HTTP never vouches for a
 delete (services.recognized).
 
-Existing rows: a DAT the Redump sync imported (its id is in the
-``redump_sync`` preference) can only have come over #557's plain-HTTP
-fallback, since redump.org serves no HTTPS, so it is marked "http". Every
-other DAT was imported by hand or by the HTTPS-only MAME Redump sync; it is
-left NULL, which reads as before.
+Existing rows fail closed (Codex 4659261220): no existing row can prove it
+came over HTTPS, and the ``redump_sync`` cache is not a complete history (a
+partly failed sync imports DATs it never records). A row is marked "http"
+when it could have come over #557's plain-HTTP fallback:
+
+* its family is Redump (its header names Redump or redump.org), whoever
+  imported it: a Redump DAT imported by hand loses its delete proof until it
+  is imported again;
+* it was imported on or after :data:`FALLBACK_POSSIBLE_FROM` (or its import
+  time can't be read), whatever its header says: a DAT swapped on the way
+  could claim any name;
+* the sync cache names it.
+
+Only an older, non-Redump DAT is left NULL, which reads as before: it was
+imported by hand or by the HTTPS-only MAME Redump sync before the fallback
+existed.
 
 Revision ID: 0028
 Revises: 0027
@@ -19,6 +30,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from datetime import datetime, timezone
 
 import sqlalchemy as sa
 from alembic import op
@@ -27,6 +39,23 @@ revision: str = '0028'
 down_revision: str | Sequence[str] | None = '0027'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+
+# A day before #557's fallback was first written (2026-11-22T15:23Z), so a
+# clock that runs a little slow can't place a fallback import before it.
+FALLBACK_POSSIBLE_FROM = datetime(2026, 11, 21, tzinfo=timezone.utc)
+
+
+def _could_be_plain_http(imported_at: str | None) -> bool:
+    """Whether a DAT imported at *imported_at* could have come over the
+    fallback: on or after :data:`FALLBACK_POSSIBLE_FROM`, or unreadable."""
+    try:
+        when = datetime.fromisoformat((imported_at or "").replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when >= FALLBACK_POSSIBLE_FROM
 
 
 def _synced_dat_ids(bind) -> set[str]:
@@ -57,13 +86,19 @@ def upgrade() -> None:
     # Tolerate a pre-created column (create_all-then-stamp path), as 0024 does.
     if 'transport' not in {col['name'] for col in inspector.get_columns('dats')}:
         op.add_column('dats', sa.Column('transport', sa.String(), nullable=True))
-    synced = sorted(_synced_dat_ids(bind))
-    if synced:
+    synced = _synced_dat_ids(bind)
+    rows = bind.execute(
+        sa.text("SELECT id, family, imported_at FROM dats WHERE transport IS NULL"),
+    ).all()
+    suspect = sorted(
+        dat_id for dat_id, family, imported_at in rows
+        if family == 'Redump' or dat_id in synced or _could_be_plain_http(imported_at)
+    )
+    if suspect:
         bind.execute(
-            sa.text("UPDATE dats SET transport = 'http' "
-                    "WHERE transport IS NULL AND id IN :ids")
+            sa.text("UPDATE dats SET transport = 'http' WHERE id IN :ids")
             .bindparams(sa.bindparam('ids', expanding=True)),
-            {'ids': synced},
+            {'ids': suspect},
         )
 
 

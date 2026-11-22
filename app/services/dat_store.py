@@ -484,6 +484,24 @@ class DATStore:
             session.commit()
         return True, dropped
 
+    def _upgrade_to_https_sync(self, dat_ids: list[str]) -> int:
+        with self._session() as session:
+            result = session.execute(
+                _db.DAT.__table__.update()
+                .where(_db.DAT.id.in_(dat_ids), _db.DAT.transport == PLAIN_HTTP)
+                .values(transport=HTTPS)
+            )
+            session.commit()
+            return result.rowcount or 0
+
+    async def upgrade_to_https(self, dat_ids: list[str]) -> int:
+        """Mark the plain-HTTP DATs among *dat_ids* as fetched over HTTPS, once
+        the same bytes came again over HTTPS (Codex 4659261223). Never touches
+        an ``https``, ``manual`` or unrecorded row. Returns how many changed."""
+        if not dat_ids:
+            return 0
+        return await run_in_threadpool(self._upgrade_to_https_sync, list(dat_ids))
+
     async def delete_dat(self, dat_id: str, *, invalidated: set[str] | None = None) -> bool:
         """Delete one DAT. *invalidated* works as in :meth:`import_dat`: it
         receives the paths whose cached matches cited the DAT."""

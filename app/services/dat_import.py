@@ -418,12 +418,20 @@ async def _sync_redump(platforms, *, force: bool, rematch: bool) -> dict:
             if asked:
                 await asyncio.sleep(REQUEST_GAP_SECONDS)
             asked = True
+            # A DAT that didn't come over HTTPS is asked for unconditionally:
+            # a 304 can't show its bytes were genuine, a full answer can.
+            trusted = entry.get("transport") == "https"
             try:
                 path, meta = await run_in_threadpool(
-                    _fetch, system, entry if present else {}, work,
+                    _fetch, system, entry if present and trusted else {}, work,
                 )
                 digest = await run_in_threadpool(_sha256, path) if path else None
                 if digest is None or (present and digest == entry.get("sha256")):
+                    if digest is not None and meta.get("transport") == "https" and not trusted:
+                        # The same bytes over HTTPS prove the earlier plain-HTTP
+                        # download genuine (Codex 4659261223); never the reverse.
+                        await _store().upgrade_to_https(entry["dat_ids"])
+                        entry.update({k: v for k, v in meta.items() if v is not None})
                     entry["synced_at"] = _now().isoformat()
                     cache[system] = entry
                     results.append({"system": system, "status": "up_to_date"})

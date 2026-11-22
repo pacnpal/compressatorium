@@ -572,10 +572,12 @@ def test_0027_adds_the_inboxes_table(fresh_db_path: str):
 
 def test_0028_records_how_each_dat_arrived(fresh_db_path: str):
     """0028, on #431's 0027 (Codex 4659176015 on #557): each DAT records how
-    it arrived. A DAT the Redump sync imported before this can only have come
-    over #557's plain-HTTP fallback (redump.org serves no HTTPS), so it is
-    marked ``http`` and can't vouch for a delete. Every other DAT was imported
-    by hand or by the HTTPS-only MAME Redump sync: left unset, read as before.
+    it arrived. An existing DAT that could have come over #557's plain-HTTP
+    fallback is marked ``http`` and can't vouch for a delete (Codex 4659261220:
+    the sync cache is not a complete history, since a partly failed sync never
+    records its DATs). That is any DAT imported once #557's code could exist
+    (or whose import time can't be read), any Redump DAT, and any DAT the
+    cache names. Only an older, non-Redump DAT is left unset, read as before.
     """
     import json
 
@@ -590,8 +592,18 @@ def test_0028_records_how_each_dat_arrived(fresh_db_path: str):
     with engine.begin() as conn:
         conn.exec_driver_sql(
             "INSERT INTO dats (id, name, description, version, imported_at, file_count, "
-            "family) VALUES ('sync', 'Sony - PlayStation', '', '1', 't', 1, 'Redump'), "
-            "('hand', 'Nintendo - Game Boy', '', '1', 't', 1, 'No-Intro')",
+            "family) VALUES "
+            # Named by the sync cache.
+            "('sync', 'Sony - PlayStation', '', '1', '2026-01-01T00:00:00Z', 1, 'other'), "
+            # A Redump DAT the cache doesn't name (a partly failed sync).
+            "('partial', 'Sega - Saturn', '', '1', '2026-01-01T00:00:00Z', 1, 'Redump'), "
+            # Imported once #557's fallback could have run, whatever its header.
+            "('recent', 'Forged', '', '1', '2026-11-22T16:00:00.000000Z', 1, 'other'), "
+            # An import time that can't be read.
+            "('odd', 'Odd', '', '1', 't', 1, 'other'), "
+            # An older hand import of a non-Redump DAT.
+            "('hand', 'Nintendo - Game Boy', '', '1', '2026-11-20T12:00:00.000000Z', 1, "
+            "'No-Intro')",
         )
         cache = {"psx": {"dat_ids": ["sync", "gone"]}, "gc": {"etag": "x"}, "bad": "x"}
         conn.exec_driver_sql(
@@ -605,7 +617,10 @@ def test_0028_records_how_each_dat_arrived(fresh_db_path: str):
     with engine.begin() as conn:
         assert conn.exec_driver_sql(
             "SELECT id, transport FROM dats ORDER BY id",
-        ).all() == [("hand", None), ("sync", "http")]
+        ).all() == [
+            ("hand", None), ("odd", "http"), ("partial", "http"),
+            ("recent", "http"), ("sync", "http"),
+        ]
     assert _current_rev(engine) == "0028"
 
 

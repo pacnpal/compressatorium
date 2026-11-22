@@ -547,29 +547,56 @@ async def test_a_dat_fetched_over_plain_http_does_not_vouch_for_a_delete(e2e):
     assert row["source_deleted"] is False
 
 
+def _forget_transports() -> None:
+    """Every DAT as one imported before 0028 recorded how it arrived."""
+    from services import db as _db
+
+    with _db.get_session() as session:
+        session.execute(_db.DAT.__table__.update().values(transport=None))
+        session.commit()
+
+
+_NO_INTRO = "Sony - PlayStation Portable (No-Intro)"
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("transport", ["https", "manual", None])
-async def test_a_dat_over_https_or_imported_by_hand_still_vouches(e2e, transport):
-    """The same match over HTTPS, a hand import, and a DAT recorded before
-    the transport was (None) prove the output as before."""
+@pytest.mark.parametrize(("transport", "name"), [
+    ("https", _PSP), ("manual", _PSP), (None, _NO_INTRO),
+])
+async def test_a_dat_over_https_or_imported_by_hand_still_vouches(e2e, transport, name):
+    """The same match over HTTPS, a hand import, and a non-Redump DAT
+    recorded before the transport was (None) prove the output as before."""
     from services.dat_store import dat_store
 
     src, sha1 = _pbp(e2e["lib"])
     kwargs = {} if transport is None else {"transport": transport}
-    await dat_store.import_dat(_dat(_PSP, sha1), **kwargs)
+    await dat_store.import_dat(_dat(name, sha1), **kwargs)
     if transport is None:
-        from services import db as _db
-
-        with _db.get_session() as session:
-            session.execute(_db.DAT.__table__.update().values(transport=None))
-            session.commit()
+        _forget_transports()
 
     job = await _run(src, "pbp_to_iso", delete_on_verify=True)
 
     assert job.status.value == "completed", job.error_message
     assert not src.exists()
     assert job.check_passed == "recognized"
-    assert job.check_dat == _PSP
+    assert job.check_dat == name
+
+
+@pytest.mark.asyncio
+async def test_a_redump_dat_with_no_recorded_transport_does_not_vouch(e2e):
+    """Codex 4659261220: a Redump DAT whose transport was never recorded may
+    have come over the plain-HTTP fallback, so it is not trusted either."""
+    from services.dat_store import dat_store
+
+    src, sha1 = _pbp(e2e["lib"])
+    await dat_store.import_dat(_dat(_PSP, sha1))
+    _forget_transports()
+
+    job = await _run(src, "pbp_to_iso", delete_on_verify=True)
+
+    assert src.exists()
+    assert job.check_passed == "intact"
+    assert "plain HTTP" in job.warning
 
 
 @pytest.mark.asyncio
