@@ -42,3 +42,12 @@ def test_a_long_drive_path_never_squeezes_the_drive_name():
     css = _read("ui/FolderPicker.svelte").split("<style>", 1)[1]
     assert ".name { flex-shrink: 0;" in css
     assert ".row > :global(svg) { flex-shrink: 0; }" in css
+
+
+def test_the_delete_plan_count_reads_inside_its_sentence():
+    """#573: a wrapping flex row put the count badge on a line of its own and
+    started the sentence below it in lower case."""
+    css = _read("modals/DeletePlanModal.svelte").split("<style>", 1)[1]
+    lead = css[css.index(".dp-lead {"):]
+    lead = lead[:lead.index("}")]
+    assert "display: flex" not in lead
