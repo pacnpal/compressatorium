@@ -381,6 +381,22 @@ class FileBrowserStore {
   }
 
   /**
+   * Files opening (#571): pick the first Volume when nothing is open yet,
+   * however the Volume list got loaded. Other views fetch the list for their
+   * own use without picking one, so "is the list empty" can't stand for "is
+   * this the start". A folder already open, or one a `#/files/<path>` link is
+   * opening, is left as it is.
+   */
+  async startFiles() {
+    if (this.volumes.length === 0) {
+      await this.loadVolumes();
+      return;
+    }
+    if (this.selectedVolume || this.currentPath || ui.filesPath) return;
+    await this.selectVolume(this.volumes[0]);
+  }
+
+  /**
    * Load the Volume list only: no Volume is selected and nothing is listed.
    * True when it loaded.
    */
