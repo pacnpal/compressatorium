@@ -387,7 +387,9 @@
   Volume list until reloaded, and a Volume that was gone answered *Access
   denied: path outside configured volumes*. When the connection comes back
   the tab now reads the Volumes, the version and which converters are ready
-  again; a Volume that's gone gives way to the first one left.
+  again; a Volume that's gone gives way to the first one left (with none
+  left, its search and selection go too). Back as another version (an
+  upgrade), the tab reloads, since the page itself is new.
 - **The browser tab names the page** (#578): *Activity · Compressatorium*,
   not *Compressatorium* everywhere, so tabs, Back and history tell pages
   apart.

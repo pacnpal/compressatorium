@@ -402,16 +402,27 @@ class FileBrowserStore {
   /**
    * The Volume list again, after the backend came back (#569): a restart can
    * mount other Volumes. A Volume still there stays as it is, folder and all;
-   * one that's gone gives way to the first one left.
+   * one that's gone gives way to the first one left, or, with none left,
+   * to nothing: its search results, selection and archive go with it, so
+   * nothing from it can still be converted. A tab that never listed the
+   * Volumes is left alone, so Files still loads and picks one when opened.
    */
   async refreshVolumes() {
+    if (this.volumes.length === 0 && !this.selectedVolume) return;
     if (!(await this.fetchVolumes())) return;
     const open = this.selectedVolume?.path;
     if (!open || this.volumes.some((v) => v.path === open)) return;
+    if (this.volumes.length > 0) {
+      await this.selectVolume(this.volumes[0]);
+      return;
+    }
+    // What selectVolume clears, with no Volume to open instead.
+    this.exitSearch();
+    this.clearSelection();
+    this.currentArchivePath = null;
     this.selectedVolume = null;
     this.currentPath = null;
     this.entries = [];
-    if (this.volumes.length > 0) await this.selectVolume(this.volumes[0]);
   }
 
   /**

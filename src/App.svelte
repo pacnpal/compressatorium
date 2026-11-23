@@ -131,11 +131,19 @@
   let loadTools = () => {};
 
   // Back after the jobs feed dropped (#569): a restart behind it can bring
-  // another version, other converters and other Volumes.
+  // another version, other converters and other Volumes. Another version is
+  // an upgrade, whose page and tool definitions this tab doesn't have (the
+  // tool registry isn't reactive), so the page reloads. The same version
+  // only reads again which converters are ready and which Volumes exist.
   $effect(() => {
     if (ui.reconnects === 0) return;
-    untrack(() => {
-      ui.loadVersion();
+    untrack(async () => {
+      const before = ui.appVersion;
+      await ui.loadVersion();
+      if (before && ui.appVersion && ui.appVersion !== before) {
+        location.reload();
+        return;
+      }
       loadTools();
       fileBrowser.refreshVolumes();
     });

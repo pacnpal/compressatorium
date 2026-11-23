@@ -83,9 +83,58 @@ process.stdout.write(JSON.stringify({
 def test_app_reads_the_version_tools_and_volumes_again_on_a_reconnect():
     app = (_SRC / "App.svelte").read_text(encoding="utf-8")
     effect = app[app.index("ui.reconnects"):]
-    effect = effect[:effect.index("});")]
+    effect = effect[:effect.index("\n  });")]
     for call in ("ui.loadVersion()", "loadTools()", "fileBrowser.refreshVolumes()"):
         assert call in effect, call
+    # Codex on #586: the tool registry isn't reactive, so a backend that came
+    # back as another version (an upgrade: other tools, another page) reloads
+    # the page instead of patching a registry nothing re-reads.
+    assert "location.reload()" in effect
+    assert effect.index("ui.loadVersion()") < effect.index("location.reload()")
+    assert effect.index("location.reload()") < effect.index("loadTools()")
+
+
+def test_a_tab_that_never_listed_volumes_leaves_the_start_to_files(tmp_path):
+    """Codex on #586: a tab opened on Settings that reconnects before Files
+    was visited filled the list with nothing picked, so Files (which loads
+    and picks only while the list is empty) stayed blank."""
+    data = _run_browser(tmp_path, """
+let calls = 0;
+const real = api.getVolumes;
+api.getVolumes = async () => { calls += 1; return real(); };
+await within(fileBrowser.refreshVolumes(), 300);
+const after = { calls, volumes: fileBrowser.volumes.length };
+await within(fileBrowser.loadVolumes(), 300);
+process.stdout.write(JSON.stringify({ ...after,
+  volume: fileBrowser.selectedVolume?.path ?? null }));
+""")
+    assert data == {"calls": 0, "volumes": 0, "volume": "/first"}, data
+
+
+def test_no_volume_left_drops_the_search_selection_and_archive(tmp_path):
+    """Codex on #586: with every Volume gone during an Everywhere search, the
+    results and the selection survived, so Convert could still send paths
+    from a Volume that's no longer mounted."""
+    data = _run_browser(tmp_path, """
+await fileBrowser.fetchVolumes();
+await within(fileBrowser.selectVolume(fileBrowser.volumes[1]), 300);
+fileBrowser.searchMode = true;
+fileBrowser.searchResults = { files: [{ name: 'x.iso', path: '/target/x.iso' }], archives: [] };
+fileBrowser.currentArchivePath = '/target/a.zip';
+fileBrowser.selectedFiles.set('/target/x.iso', { path: '/target/x.iso' });
+api.getVolumes = async () => [];
+await within(fileBrowser.refreshVolumes(), 300);
+process.stdout.write(JSON.stringify({
+  volume: fileBrowser.selectedVolume, path: fileBrowser.currentPath,
+  searchMode: fileBrowser.searchMode, results: fileBrowser.searchResults,
+  archive: fileBrowser.currentArchivePath, selected: fileBrowser.selectedFiles.size,
+  entries: fileBrowser.entries.length,
+}));
+""")
+    assert data == {
+        "volume": None, "path": None, "searchMode": False, "results": None,
+        "archive": None, "selected": 0, "entries": 0,
+    }, data
 
 
 def test_the_browser_tab_names_the_page():
