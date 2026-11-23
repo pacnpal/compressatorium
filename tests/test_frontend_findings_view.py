@@ -407,7 +407,8 @@ def test_the_mapping_dialog_is_mounted_once_and_offers_clearing():
 def test_a_folder_row_offers_set_platform():
     menu = _ROW_MENU.read_text(encoding="utf-8")
     assert "findings.openMapping(" in menu
-    assert "Set Platform" in menu
+    # Named as its dialog is (#576).
+    assert "Set console…" in menu
 
 
 def test_nothing_in_the_findings_ui_deletes_or_moves_a_file_unasked():
