@@ -24,6 +24,7 @@
   import FolderPen from '@lucide/svelte/icons/folder-pen';
   import Bandage from '@lucide/svelte/icons/bandage';
   import { canPatch } from '$lib/util/patchDialog.js';
+  import { infoUnavailable } from '$lib/util/fileInfo.js';
 
   /** @type {{ entry: any }} */
   let { entry } = $props();
@@ -219,7 +220,7 @@
         onSelect={handleInfo}
       >
         <Info size={14} aria-hidden="true" />
-        <span>Info</span>
+        <span>{canGetInfo ? 'Info' : `Info (${infoUnavailable(entry, { inArchive })})`}</span>
       </DropdownMenu.Item>
       <DropdownMenu.Item
         class="row-actions-item"
