@@ -60,6 +60,12 @@ CHECKED_FILES = [
     "activity/RunningList.svelte",
     "activity/HistoryList.svelte",
     "modals/MappingModal.svelte",
+    # #576: pieces the restructure's files use but didn't list.
+    "panels/VolumeList.svelte",
+    "panels/RowActionsMenu.svelte",
+    "modals/DatRenameModal.svelte",
+    "modals/BulkVerifyModal.svelte",
+    "modals/PatchModal.svelte",
 ]
 
 OLD_WORDS = re.compile(
@@ -84,3 +90,12 @@ def test_the_markup_uses_plain_words(rel):
 def test_the_guard_catches_an_old_word():
     assert OLD_WORDS.search(_markup("<script>const Image = 1;</script><p>Pick a Platform</p>"))
     assert not OLD_WORDS.search(_markup("<script>const Image = 1;</script><FindingsView />"))
+
+
+def test_the_dat_rename_count_reads_inside_its_sentence():
+    """#576, as #573 for the delete-original confirmation: a wrapping flex
+    row put the count badge on a line of its own above the sentence."""
+    css = (_COMPONENTS / "modals/DatRenameModal.svelte").read_text(encoding="utf-8")
+    css = css.split("<style>", 1)[1]
+    lead = css[css.index(".dr-lead {"):]
+    assert "display: flex" not in lead[:lead.index("}")]

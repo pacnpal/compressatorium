@@ -156,16 +156,16 @@
         </ul>
       {/if}
     {:else if !preview && !error}
-      <p class="dr-note"><Spinner /> Looking up each Image's DAT name…</p>
+      <p class="dr-note"><Spinner /> Looking up each game's DAT name…</p>
     {:else if preview}
       <p class="dr-lead">
         <Badge tone={renames.length ? 'info' : 'neutral'}>{renames.length}</Badge>
-        Image{renames.length === 1 ? '' : 's'} will be renamed to the name the top-ranked DAT gives
+        {renames.length === 1 ? 'game' : 'games'} will be renamed to the name the top-ranked DAT gives
         {renames.length === 1 ? 'it' : 'them'}, keeping each file's extension. Every playlist,
         gamelist and RomM ROM that points at one follows it.
       </p>
       {#if renames.length}
-        <ul class="dr-list" aria-label="Images to rename">
+        <ul class="dr-list" aria-label="Games to rename">
           {#each renames as item (item.path)}
             <li>
               <span class="dr-row">
@@ -199,7 +199,7 @@
       {#if skipped.length}
         <details class="dr-skipped">
           <summary>{skipped.length} skipped</summary>
-          <ul class="dr-list" aria-label="Images skipped">
+          <ul class="dr-list" aria-label="Games skipped">
             {#each skipped as item (item.path)}
               <li>
                 <code title={item.path}>{shortName(item.path)}</code>
@@ -221,14 +221,16 @@
         loading={starting}
         onclick={confirm}
       >
-        Rename {renames.length} Image{renames.length === 1 ? '' : 's'}
+        Rename {renames.length} {renames.length === 1 ? 'game' : 'games'}
       </Button>
     {/if}
   {/snippet}
 </BaseModal>
 
 <style>
-  .dr-lead { margin: 0; font-size: var(--text-sm); color: var(--text-1); display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+  /* One sentence with its count inline (#576, as #573). */
+  .dr-lead { margin: 0; font-size: var(--text-sm); color: var(--text-1); }
+  .dr-lead > :global(.badge) { margin-right: var(--space-1); }
   .dr-note { margin: 0; font-size: var(--text-xs); color: var(--text-2); }
   .dr-block { display: flex; gap: var(--space-2); background: var(--error-muted); color: var(--error); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); align-items: flex-start; }
   .dr-list { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow-y: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface-2); }

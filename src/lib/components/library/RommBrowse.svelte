@@ -15,7 +15,7 @@
   import { registry } from '$lib/tools/registry.js';
   import { convertTargets } from '$lib/tools/convertTargets.js';
   import { ui } from '$lib/stores/ui.svelte.js';
-  import { formatSize } from '$lib/api/format.js';
+  import { formatSize, plural } from '$lib/api/format.js';
   import FileList from '$lib/components/panels/FileList.svelte';
   import ConvertPanel from '$lib/components/panels/ConvertPanel.svelte';
   import Splitter from '$lib/components/ui/Splitter.svelte';
@@ -32,6 +32,7 @@
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+  import { rommProblem } from '$lib/util/rommState.js';
 
   let dragStartRight = 0;
 
@@ -267,7 +268,7 @@
   {:else if !romm.connected}
     <div class="notice error">
       <TriangleAlert size={16} />
-      <span>Couldn't reach RomM.{status?.error ? ` ${String(status.error).replace(/^[^:]*:\s*/, '')}` : ''}</span>
+      <span>{rommProblem(status)}</span>
       <Button size="sm" variant="secondary" onclick={() => romm.loadStatus()}>Try again</Button>
       <Button size="sm" variant="ghost" onclick={() => ui.navigate('libraries', { id: 'romm', tab: 'connection' })}>
         Check the connection
@@ -326,7 +327,7 @@
       {:else if summary.total > 0}
         <div class="summary" aria-live="polite">
           <span class="muted">
-            {summary.total} games. Progress isn't counted while new files go to another
+            {plural(summary.total, 'game', 'games')}. Progress isn't counted while new files go to another
             folder.
           </span>
         </div>
