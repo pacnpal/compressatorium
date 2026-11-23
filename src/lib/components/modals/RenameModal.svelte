@@ -96,6 +96,14 @@
     }
   }
 
+  // Focused on open (#568) with the name before its extension selected, so
+  // typing replaces the name and keeps `.cue`.
+  function selectStem(e) {
+    const input = e.currentTarget;
+    const dot = input.value.lastIndexOf('.');
+    input.setSelectionRange(0, dot > 0 ? dot : input.value.length);
+  }
+
   function handleKeydown(e) {
     if (e.key === 'Enter' && !busy) {
       e.preventDefault();
@@ -123,6 +131,8 @@
         autocomplete="off"
         spellcheck="false"
         aria-label="New file name"
+        data-autofocus
+        onfocus={selectStem}
       />
     </label>
   {/snippet}
