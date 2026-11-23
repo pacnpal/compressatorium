@@ -434,8 +434,16 @@ class FileBrowserStore {
     if (!(await this.fetchVolumes())) return;
     const open = this.selectedVolume?.path;
     if (!open) {
-      if (hadNone && this.volumes.length > 0 && !this.currentPath && !ui.filesPath) {
-        await this.selectVolume(this.volumes[0]);
+      if (hadNone && this.volumes.length > 0 && !this.currentPath) {
+        // A `#/files/<path>` link stays in the route after its Volume went,
+        // and FilesView opens it only when the route changes: open it again
+        // when its Volume is back, else the first Volume left.
+        const link = ui.filesPath;
+        const linked = link && this.volumes.some(
+          (v) => link === v.path || link.startsWith(`${v.path.replace(/\/+$/, '')}/`),
+        );
+        if (linked) await this.openFolder(link);
+        else await this.selectVolume(this.volumes[0]);
       }
       return;
     }

@@ -132,6 +132,35 @@ process.stdout.write(JSON.stringify({ gone,
     assert data == {"gone": 0, "volumes": ["/first", "/target"], "volume": "/first"}, data
 
 
+def test_a_folder_link_reopens_when_its_volume_comes_back(tmp_path):
+    """Codex on #586: Files opened through `#/files/<path>`, every Volume went,
+    then came back. `ui.filesPath` still held the link, so no Volume was
+    picked, and FilesView reopens the folder only when the route changes:
+    Files stayed blank. The link's folder opens again when its Volume is
+    back; a link whose Volume didn't return gives way to the first one."""
+    data = _run_browser(tmp_path, """
+const back = api.getVolumes;
+const run = async (link, returning) => {
+  __listed.length = 0;
+  api.getVolumes = back;
+  ui.filesPath = link;
+  await within(fileBrowser.openFolder(link), 300);
+  api.getVolumes = async () => [];
+  await within(fileBrowser.refreshVolumes(), 300);
+  api.getVolumes = async () => returning;
+  await within(fileBrowser.refreshVolumes(), 300);
+  return { volume: fileBrowser.selectedVolume?.path ?? null, path: fileBrowser.currentPath };
+};
+const kept = await run('/target/roms', [{ name: 'Target', path: '/target' }]);
+const moved = await run('/target/roms', [{ name: 'Other', path: '/other' }]);
+process.stdout.write(JSON.stringify({ kept, moved }));
+""")
+    assert data == {
+        "kept": {"volume": "/target", "path": "/target/roms"},
+        "moved": {"volume": "/other", "path": "/other"},
+    }, data
+
+
 def test_no_volume_left_drops_the_search_selection_and_archive(tmp_path):
     """Codex on #586: with every Volume gone during an Everywhere search, the
     results and the selection survived, so Convert could still send paths
