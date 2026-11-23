@@ -294,7 +294,8 @@
     const options = {
       verifyAfter: choice.checkAfter || choice.deleteOriginal,
       deleteOnVerify: choice.deleteOriginal,
-      containerOnly: choice.deleteOriginal && choice.quickCheck,
+      containerOnly: choice.deleteOriginal && choice.quickCheck
+        && defaults.values.allow_quick_check,
       split: choice.split,
       ...planned,
     };
@@ -396,6 +397,7 @@
       <ConvertPlan
         plan={shownPlan}
         planning={conversion.planning}
+        target={conversion.target}
         error={conversion.planError}
         onretry={() => conversion.requestPlan(paths, { delay: 0 })}
         onoverride={(list, slug) => conversion.setOverride(list, slug)}
@@ -433,6 +435,7 @@
       checkAfter={safety.checkAfter}
       deleteOriginal={safety.deleteOriginal}
       quickCheck={safety.quickCheck}
+      allowQuick={defaults.values.allow_quick_check}
       onchange={(next) => conversion.setSafety(next)}
       idPrefix="convert-safety"
     />
@@ -501,6 +504,7 @@
     <ConvertPlan
       plan={conversion.plan}
       planning={conversion.planning}
+      target={conversion.target}
       error={conversion.planError}
       onretry={() => conversion.requestPlan(paths, { delay: 0 })}
       onoverride={(list, slug) => conversion.setOverride(list, slug)}

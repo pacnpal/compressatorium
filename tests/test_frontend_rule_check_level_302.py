@@ -27,7 +27,11 @@ def test_the_check_level_sits_next_to_delete_original():
     assert "rule.check_level === CHECK_LEVEL.containerOnly" in src
     assert "check_level: v ? CHECK_LEVEL.containerOnly : CHECK_LEVEL.roundTrip" in src
     safety = _SAFETY.read_text(encoding="utf-8")
-    assert "showQuick: deleteOriginal && list.some((s) => s.supportsRoundTrip && !s.roundTripRequired)" in safety
+    # Offered only behind the Settings opt-out (#593).
+    assert re.search(
+        r"showQuick: allowQuick && deleteOriginal\s*&& list\.some\(\(s\) => "
+        r"s\.supportsRoundTrip && !s\.roundTripRequired\)", safety,
+    )
     # The delete column names the proof: the convert panel's helper
     # (deleteCheck.js), which also knows a Recognized mode (#423).
     table = _TABLE.read_text(encoding="utf-8")

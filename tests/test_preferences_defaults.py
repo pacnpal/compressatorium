@@ -27,6 +27,8 @@ async def test_nothing_stored_answers_the_safe_defaults(store) -> None:
         "verify_after": True,
         "delete_on_verify": False,
         "container_only": False,
+        "allow_quick_check": False,
+        "allow_unchecked_delete": False,
     }
 
 
@@ -34,7 +36,10 @@ async def test_nothing_stored_answers_the_safe_defaults(store) -> None:
 async def test_a_put_round_trips(store) -> None:
     prefs = preferences_routes.DefaultsPreferences(verify_after=True, delete_on_verify=True)
     saved = await preferences_routes.put_defaults_preferences(prefs)
-    assert saved == {"verify_after": True, "delete_on_verify": True, "container_only": False}
+    assert saved == {
+        "verify_after": True, "delete_on_verify": True, "container_only": False,
+        "allow_quick_check": False, "allow_unchecked_delete": False,
+    }
     assert await preferences_routes.get_defaults_preferences() == saved
     assert await store.get("defaults") == saved
 
@@ -46,6 +51,8 @@ async def test_a_partial_stored_row_is_filled_from_the_model(store) -> None:
         "verify_after": True,
         "delete_on_verify": True,
         "container_only": False,
+        "allow_quick_check": False,
+        "allow_unchecked_delete": False,
     }
 
 
@@ -65,6 +72,8 @@ async def test_a_stored_value_that_is_not_an_object_answers_the_safe_defaults(st
         "verify_after": True,
         "delete_on_verify": False,
         "container_only": False,
+        "allow_quick_check": False,
+        "allow_unchecked_delete": False,
     }
 
 

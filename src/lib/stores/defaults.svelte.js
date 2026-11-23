@@ -9,6 +9,10 @@ export const SAFE_DEFAULTS = Object.freeze({
   verify_after: true,
   delete_on_verify: false,
   container_only: false,
+  // The documented opt-outs (#593): off, the quick check isn't offered and a
+  // delete refuses an original whose new copy hasn't passed a check.
+  allow_quick_check: false,
+  allow_unchecked_delete: false,
 });
 
 class DefaultsStore {

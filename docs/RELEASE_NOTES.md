@@ -14,6 +14,12 @@
   - Activity's **Checked** is History's checked total, so the two agree.
     **Space saved** says which games it counts: "from 3 games", the ones
     whose original was deleted.
+- **Delete dialogs say what is safe** (#593).
+  - Bulk delete lists each file by name, with its folder underneath, cut from
+    the start so the end of the path shows. It also says how much space the
+    delete frees.
+  - Deleting a file whose new copy passed its check says so: "Its DOSZ copy
+    checked out (400 B), so the game stays in your library."
 - **Convert from the selection bar** (#589). Ticking games puts **Convert N
   games** beside Delete in the selection bar. It runs the same Convert as the
   panel, with the same plan and the same checks.
@@ -117,6 +123,27 @@
 
 ### Changed
 
+- **The weaker checks are opt-outs in Settings → Defaults** (#593), both off by
+  default.
+  - **Offer a quick check before deleting** puts **Quick check only** back in
+    Convert's options. While it is off, a delete always uses the full check,
+    and a quick check saved before this release is no longer used.
+  - **Allow deleting originals whose new copy isn't checked** brings back "I
+    understand and want to delete anyway". While it is off, both delete dialogs
+    refuse such an original and offer **Check the copies** instead.
+  - Verify-before-delete, never-overwrite, the drive limits and the ownership
+    refusals are unchanged.
+
+- **Plain words in Files** (#591).
+  - **A missing converter** is one line in the plan, such as "3 games need
+    CHDMAN to become CHD, which isn't installed", with **See Converters** to
+    open Settings → Converters. The exact reason is shown once, inside the
+    line.
+  - **Info** opens on a short card: the game (from a DAT or Hasheous match),
+    its console, format, whether it's already in its best format or what
+    Convert would make it, and its size, once. Yes and No replace true and
+    false. The tool's other details are under **More details**.
+  - **A greyed-out Info** says why, for example "Info (no reader for .zip)".
 - **Backend cleanup** (#543). The 3DS verify (`zstd -t`) now runs through the
   shared process runner like every other tool's check, so it gets the same
   process priority, bound and cancel handling. Dead code is gone, the tool

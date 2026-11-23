@@ -683,3 +683,9 @@ class DefaultsPreferences(BaseModel):
     verify_after: bool = True
     delete_on_verify: bool = False
     container_only: bool = False
+    # The documented opt-outs (#593), off unless asked for. Off, the interface
+    # never offers the quick (container-only) check before a delete, and a
+    # delete refuses an original whose new copy hasn't passed a check. They
+    # only gate what the interface offers; every server-side refusal stands.
+    allow_quick_check: bool = False
+    allow_unchecked_delete: bool = False
