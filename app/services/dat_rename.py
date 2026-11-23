@@ -62,6 +62,7 @@ from services.subprocess_runner import (
     run_detached_bounded,
     run_detached_within_stall_bound,
 )
+from services.task_sets import drain_tasks
 from services.tools import registry as tools
 from utils.path_utils import (
     lock_boundary_root,
@@ -642,8 +643,7 @@ async def start_run(items: list[dict]) -> dict:
 
 async def drain() -> None:
     """Wait for every running rename job (tests, shutdown)."""
-    while _tasks:
-        await asyncio.gather(*list(_tasks), return_exceptions=True)
+    await drain_tasks(_tasks)
 
 
 async def _run(job_id: str, items: list[dict]) -> None:

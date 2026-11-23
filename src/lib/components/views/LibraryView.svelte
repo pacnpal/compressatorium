@@ -25,6 +25,7 @@
   import Panel from '$lib/components/ui/Panel.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
+  import { rommWhere } from '$lib/util/rommState.js';
 
   const id = $derived(ui.libraryTarget);
   const isRomm = $derived(id === ROMM_LIBRARY_ID);
@@ -45,19 +46,9 @@
   );
   const name = $derived(isRomm ? 'RomM' : (library?.name ?? ''));
 
-  function host(url) {
-    try {
-      return new URL(url).host;
-    } catch {
-      return '';
-    }
-  }
-
   const where = $derived.by(() => {
-    if (isRomm) {
-      if (!romm.configured) return 'Not connected';
-      return `Connected to ${host(romm.settings?.url) || 'RomM'}`;
-    }
+    // Whether RomM answers, not only whether it is set up (#566).
+    if (isRomm) return rommWhere(romm.status, romm.settings?.url);
     return library?.root ? drivePath(library.root, fileBrowser.volumes) : '';
   });
 

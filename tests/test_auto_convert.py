@@ -408,7 +408,10 @@ async def test_auto_route_withdraws_earlier_groups_when_cancelled(route_env, mon
             raise asyncio.CancelledError
         job_id = f"job-{mode.value}"
         queued_ids.append(job_id)
-        return [type("Job", (), {"id": job_id, "filename": "x"})()]
+        return [type("Job", (), {
+            "id": job_id, "filename": "x", "file_path": job_specs[0]["file_path"],
+            "platform": None,
+        })()]
 
     async def fake_cancel(job_id):
         cancelled.append(job_id)
