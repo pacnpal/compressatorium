@@ -15,16 +15,22 @@
    * @property {(paths: string[], slug: string) => void} [onoverride]
    * @property {(paths: string[]) => string|null} [mapFolder] the Library folder to set, or null
    * @property {(folder: string) => void} [onmap]
+   * @property {string} [target] the Convert-to value the plan was made for
+   * @property {(value: string) => void} [onchoose] set Convert to: a skipped
+   *   line's one-click way in (#597)
    */
   import { onMount } from 'svelte';
   import { findings } from '$lib/stores/findings.svelte.js';
-  import { formatOfPath, targetLabel } from '$lib/tools/convertTargets.js';
+  import { ui } from '$lib/stores/ui.svelte.js';
+  import { formatOfPath, offeredInstead, targetLabel } from '$lib/tools/convertTargets.js';
+  import { guessConsole } from '$lib/util/consoleGuess.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
 
   /** @type {Props} */
   let {
     plan, planning = false, error = null, onretry, onoverride, mapFolder = () => null, onmap,
+    target = '', onchoose,
   } = $props();
 
   onMount(() => {
@@ -84,6 +90,22 @@
     (plan?.length ?? 0) > 0 && !(plan ?? []).some((row) => row.mode),
   );
 
+  // A skipped line's way in (#597): a mode Auto leaves alone that reads all
+  // of its games (a DOS zip's repack for RomM), by the registry, if it can run
+  // here and isn't already the choice.
+  const ready = $derived(ui.toolsKnown ? ui.visibleTools.map((t) => t.id) : null);
+  function instead(line) {
+    if (!onchoose) return [];
+    const entries = line.rows.map((r) => ({ path: r.file_path, type: 'file' }));
+    return offeredInstead(entries, ready).filter((o) => o.value !== target);
+  }
+
+  // Pick console's best guess: the folder's own console (#597).
+  function guessFor(line) {
+    const paths = line.rows.map((r) => r.file_path);
+    return guessConsole({ paths, plan: plan ?? [], platforms: findings.platforms });
+  }
+
   // The line whose console choice is open.
   let picking = $state(null);
 
@@ -141,17 +163,33 @@
               {/each}
             </ul>
           </details>
+          {#if line.kind === 'skip' || line.kind === 'pick'}
+            {@const ways = instead(line)}
+            {#if ways.length}
+              <div class="pick">
+                {#each ways as way (way.value)}
+                  <Button variant="secondary" size="sm" onclick={() => onchoose(way.value)}>
+                    Convert to {way.label}
+                  </Button>
+                {/each}
+              </div>
+            {/if}
+          {/if}
           {#if line.kind === 'pick' && onoverride}
             <div class="pick">
               <Button variant="secondary" size="sm" onclick={() => pick(line)}>
                 {line.rows.length === 1 ? 'Pick console' : `Pick console for all ${line.rows.length}`}
               </Button>
               {#if picking === line.key}
+                {@const guess = guessFor(line)}
                 <select
                   aria-label="Pick the console"
                   onchange={(e) => choose(line, e.currentTarget.value)}
                 >
                   <option value="">{line.rows.length === 1 ? 'This is a…' : 'These are all…'}</option>
+                  {#if guess}
+                    <option value={guess}>{names[guess] ?? guess} (best guess)</option>
+                  {/if}
                   {#each consoles as c (c.slug)}
                     <option value={c.slug}>{c.name}</option>
                   {/each}

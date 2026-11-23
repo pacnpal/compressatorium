@@ -212,11 +212,12 @@
 {/if}
 
 <style>
+  /* A tone, not a bordered box inside the panel around it (#597). */
   .picker {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    border: 1px solid var(--border-subtle);
+    border: none;
     border-radius: var(--radius-md);
     padding: var(--space-3);
     background: var(--surface-2);

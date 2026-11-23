@@ -133,6 +133,31 @@ export function convertTargets({
   return groups.filter((g) => g.options.length > 0);
 }
 
+// The kinds that make a new file of the game (not an unpack or a copy).
+const MAKES_NEW = new Set(['create', 'compress']);
+
+/**
+ * Modes Auto leaves alone that could still take every one of *entries*
+ * (#597): `[{ value, label }]`, for a skipped line's one-click "Convert to".
+ * By the registry's `autoTarget` flag alone (the eXoDOS repack is one), so
+ * no tool is named here. `ready`: the tool ids that can run here.
+ */
+export function offeredInstead(entries, ready = null) {
+  const readySet = ready ? new Set(ready) : null;
+  const list = (entries ?? []).filter(Boolean);
+  const out = [];
+  if (!list.length) return out;
+  for (const tool of registry.all()) {
+    if (readySet && !readySet.has(tool.id)) continue;
+    for (const spec of tool.modes ?? []) {
+      if (spec.autoTarget !== false || !MAKES_NEW.has(spec.kind)) continue;
+      if (!list.every((entry) => readsAny(spec, tool, [entry]))) continue;
+      out.push({ value: spec.mode, label: PLAIN_MODE_LABELS[spec.mode] ?? spec.label });
+    }
+  }
+  return out;
+}
+
 /**
  * The mode specs a Convert-to value names: a mode id is that mode, a format
  * (`.chd`) every Make-smaller mode that writes it, and '' (Best) none.

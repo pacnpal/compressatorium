@@ -16,7 +16,7 @@
 </script>
 
 <section class="volumes" aria-label="Drives">
-  <h3 class="header">Drives</h3>
+  <h2 class="header">Drives</h2>
   {#if loading && volumes.length === 0}
     <div class="state"><Loader class="spin" size={14} /> Loading…</div>
   {:else if error}
