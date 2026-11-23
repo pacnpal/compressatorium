@@ -6,6 +6,7 @@
   import { api } from '$lib/api/endpoints.js';
   import { formatSize } from '$lib/api/format.js';
   import { uncheckedCopies, deleteGate, splitPath, freedBytes } from '$lib/util/deleteSafety.js';
+  import { deleteOutcome } from '$lib/util/deleteOutcome.js';
   import { toast } from 'svelte-sonner';
   import BaseModal from './BaseModal.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -55,34 +56,20 @@
     busy = true;
     try {
       const result = await api.deleteBatch(paths);
-      // Backend (app/routes/files.py:delete_files_batch) returns
-      // { total, success, failed, results }. `deleted` doesn't exist,
-      // so falling back to paths.length on a partial-success would
-      // wrongly toast the request count as successes.
-      const success = typeof result?.success === 'number'
-        ? result.success
-        : paths.length - (result?.failed ?? 0);
-      const failed = result?.failed ?? 0;
+      // A kept file says why (a sheet or playlist still needs it, #563).
+      const { kind, title, description, removed } = deleteOutcome(result, paths);
       // Invalidate verification records for paths the backend reported
-      // as successfully removed. If `results` is missing (older shape),
-      // fall back to invalidating every requested path. The backend
-      // also prunes server-side; this mirror prevents a new file later
-      // created at the same path during this session from inheriting a
-      // stale OK badge.
-      const removed = Array.isArray(result?.results)
-        ? result.results.filter((r) => r?.success).map((r) => r.path)
-        : paths;
+      // as removed. The backend also prunes server-side; this mirror
+      // prevents a new file later created at the same path during this
+      // session from inheriting a stale OK badge.
       for (const p of removed) verification.forget(p);
       // Close + drop selection + report immediately so a downstream
       // refresh failure doesn't surface as "Failed to delete" after
       // the backend already removed the files.
       ui.bulkDeleteEntries = null;
       fileBrowser.clearSelection();
-      if (failed > 0) {
-        toast.warning(`Deleted ${success}; ${failed} failed`);
-      } else {
-        toast.success(`Deleted ${success} file${success === 1 ? '' : 's'}`);
-      }
+      if (kind === 'warning') toast.warning(title, { description, duration: 10000 });
+      else toast.success(title);
       try {
         await fileBrowser.refresh({ force: true });
       } catch (_e) {
