@@ -241,7 +241,7 @@
           onSelect={() => findings.openMapping(path, entry?.name)}
         >
           <FolderPen size={14} aria-hidden="true" />
-          <span>Set Platform…</span>
+          <span>Set console…</span>
         </DropdownMenu.Item>
       {/if}
       {#if patchable}

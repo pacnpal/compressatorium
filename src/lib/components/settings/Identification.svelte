@@ -21,6 +21,7 @@
   import ArrowUp from '@lucide/svelte/icons/arrow-up';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+  import { plural } from '$lib/api/format.js';
 
   // In ranked order (GET /api/dat/ranking): when two DATs match the same
   // file, the higher one names it.
@@ -269,7 +270,7 @@
             {/if}
           </div>
           <div class="dat-sub">
-            {#if dat.file_count != null}<span>{dat.file_count} games</span>{/if}
+            {#if dat.file_count != null}<span>{plural(dat.file_count, 'game', 'games')}</span>{/if}
             {#if importedOn(dat.imported_at)}<span>added {importedOn(dat.imported_at)}</span>{/if}
             {#if dat.version}<span>v{dat.version}</span>{/if}
           </div>

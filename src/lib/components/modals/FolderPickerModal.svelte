@@ -12,8 +12,8 @@
    * @property {string|null} [start]
    * @property {string} [confirmLabel]
    * @property {string[]} [disabledPaths]
-   * @property {string} [error] shown under the picker (the backend's detail)
-   * @property {import('svelte').Snippet} [extra] fields under the picker
+   * @property {string} [error] shown above the picker's buttons (the backend's detail)
+   * @property {import('svelte').Snippet} [extra] fields above the picker's buttons
    */
   import BaseModal from './BaseModal.svelte';
   import FolderPicker from '$lib/components/ui/FolderPicker.svelte';
@@ -27,20 +27,17 @@
 
 <BaseModal {open} {onClose} {title} size="md">
   {#snippet body()}
-    <div class="picker-body">
-      <FolderPicker {start} {onpick} onCancel={onClose} {confirmLabel} {disabledPaths} />
-      {#if extra}{@render extra()}{/if}
-      {#if error}<p class="error" role="alert">{error}</p>{/if}
-    </div>
+    <!-- The fields and the error line go above the picker's buttons (#568). -->
+    <FolderPicker {start} {onpick} onCancel={onClose} {confirmLabel} {disabledPaths}>
+      {#snippet fields()}
+        {#if extra}{@render extra()}{/if}
+        {#if error}<p class="error" role="alert">{error}</p>{/if}
+      {/snippet}
+    </FolderPicker>
   {/snippet}
 </BaseModal>
 
 <style>
-  .picker-body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-  }
   .error {
     margin: 0;
     padding: var(--space-2) var(--space-3);

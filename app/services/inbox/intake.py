@@ -143,6 +143,7 @@ from services.subprocess_runner import (
     run_detached_undoable,
     run_detached_within_stall_bound,
 )
+from services.task_sets import drain_tasks
 from services.tools import not_ready_message, registry
 from utils.delete_plan import sheet_reference_problems
 from utils.junk import is_junk_entry
@@ -599,8 +600,7 @@ def busy() -> bool:
 
 async def drain() -> None:
     """Wait for every copy intake started. For tests and shutdown."""
-    while _tasks:
-        await asyncio.gather(*list(_tasks), return_exceptions=True)
+    await drain_tasks(_tasks)
 
 
 async def _step(func, *args, **kwargs):
@@ -1701,6 +1701,7 @@ async def _recognize(
         message="Waiting to Recognize it",
     )
     _tag(job, inbox)
+    job.platform = flight.platform or None  # its console in History (#572)
     cancel = job_manager.get_cancel_event(job.id)
     outcome, why, result = "failed", "", None
     try:
@@ -1758,7 +1759,9 @@ async def _recognize(
         # that very file.
         name = os.path.basename(path)
         state.recognized[path] = (flight.fingerprint, flight.identities.get(name), result)
-        await job_manager.finish_external_job(job.id, success=True)
+        await job_manager.finish_external_job(
+            job.id, success=True, message="Checked against the game lists",
+        )
         await _take_on(inbox, state, path, flight.fingerprint)
         return
     if outcome == "changed":
@@ -2152,6 +2155,7 @@ async def _unpack(
         os.path.basename(path), ConversionMode.INBOX_UNPACK, message="Waiting to unpack it",
     )
     _tag(job, inbox)
+    job.platform = flight.platform or None  # its console in History (#572)
     cancel = job_manager.get_cancel_event(job.id)
     outcome, why, unpacked = "failed", "", None
     try:
@@ -2188,7 +2192,10 @@ async def _unpack(
                         f"Nothing was taken from it: {why}")
             await job_manager.finish_external_job(job.id, success=False, error_message=why)
             return
-        await job_manager.finish_external_job(job.id, success=True)
+        await job_manager.finish_external_job(
+            job.id, success=True,
+            message=f"Unpacked {len(images)} game{'' if len(images) == 1 else 's'}",
+        )
         if not revoked:
             await _take_unpacked(inbox, state, path)
         return
@@ -3302,6 +3309,9 @@ async def _copy(
         message=f"Waiting to copy into {folder}",
     )
     _tag(job, inbox)
+    # The Ledger files the copy under its console (#572), as a converted
+    # intake's job is.
+    job.platform = flight.platform
     cancel = job_manager.get_cancel_event(job.id)
     outcome, why, output = "failed", "", None
     try:
@@ -3331,7 +3341,10 @@ async def _copy(
         _tell_library(inbox, output)
         _note_placed(state, path, flight, output[0])
         await _finish(inbox, state, path, flight, output[0])
-        await job_manager.finish_external_job(job.id, success=True)
+        # What it did, not its last progress line (#572).
+        await job_manager.finish_external_job(
+            job.id, success=True, message=f"Copied into {folder}",
+        )
         return
     if outcome == "cancelled":
         if _cancelled_by_shutdown(job_manager.get_job(job.id) or job):

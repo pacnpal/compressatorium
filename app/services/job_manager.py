@@ -61,6 +61,7 @@ from services.subprocess_runner import (
     start_detached_eventually,
     start_detached_or_own_thread,
 )
+from services.task_sets import drain_tasks
 from services.tools import ModeKind, registry
 from services.verification_store import check_verdict, verification_store
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
@@ -1966,9 +1967,14 @@ class JobManager:
         success: bool,
         error_message: Optional[str] = None,
         event_extra: dict[str, object] | None = None,
+        message: Optional[str] = None,
     ) -> None:
         """Mark an externally-managed job as complete or failed, notify
         subscribers, and archive it.
+
+        *message* replaces the job's last progress line with what it did (a
+        watch folder's copy: "Copied into …", #572); a failure's line is its
+        error.
 
         *event_extra* rides on that terminal event: a check run's
         ``verification_paths`` (#305), the files whose check state it changed,
@@ -1988,6 +1994,8 @@ class JobManager:
         if not success:
             # The status line says why it stopped, not its last progress (#466).
             job.message = job.error_message or "Failed"
+        elif message is not None:
+            _set_status_message(job, message)
         # Clean up any spurious cancel state that may have been set by
         # cancel_all while the external task was still running.
         self._cancel_events.pop(job_id, None)
@@ -3177,12 +3185,9 @@ class JobManager:
                     await task
         self._dispatcher_task = None
         self._debug_task = None
-        while self._background_tasks:
-            snapshot = list(self._background_tasks)
-            await asyncio.gather(*snapshot, return_exceptions=True)
-            # Remove the finished tasks directly: their done callbacks need a
-            # loop turn, and awaiting finished tasks may not yield (#450).
-            self._background_tasks.difference_update(t for t in snapshot if t.done())
+        # Drops the finished tasks itself: awaiting finished tasks may not
+        # yield the loop turn their done callbacks need (#450, #579).
+        await drain_tasks(self._background_tasks)
         self._queue = asyncio.PriorityQueue()
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
         # A slot held on the old semaphore is not the new one's to give back.
