@@ -84,7 +84,7 @@
       <legend class="pt-text">Patch file</legend>
       <label class="pt-choice">
         <input type="radio" name="patch-source" value="volume" bind:group={source} />
-        <span>In a Volume</span>
+        <span>On a Drive</span>
       </label>
       <label class="pt-choice">
         <input type="radio" name="patch-source" value="upload" bind:group={source} />
