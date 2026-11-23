@@ -2,6 +2,7 @@
   import { onDestroy } from 'svelte';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { conversion } from '$lib/stores/conversion.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
   import { chdMetadata } from '$lib/stores/chdMetadata.svelte.js';
   import { datMatching } from '$lib/stores/datMatching.svelte.js';
@@ -30,6 +31,7 @@
   import ListMusic from '@lucide/svelte/icons/list-music';
   import { isDatMatchable } from '$lib/util/datMatchable.js';
   import FilePen from '@lucide/svelte/icons/file-pen';
+  import Play from '@lucide/svelte/icons/play';
 
   const entries = $derived(fileBrowser.visibleEntries);
   const pageCount = $derived(fileBrowser.pageCount);
@@ -114,6 +116,14 @@
   const selectAllLabel = $derived(
     `Select all ${selectableTotal}${selectAllExt} ${selectableTotal === 1 ? 'item' : 'items'} ${selectAllScope}`,
   );
+  // The Convert panel's own action, when one is on screen: the selection's
+  // primary action sits with the selection (#589).
+  const convertAction = $derived(conversion.convertAction);
+  const convertLabel = $derived.by(() => {
+    const n = convertAction?.count ?? 0;
+    if (convertAction?.busy) return 'Starting…';
+    return n ? `Convert ${n} ${n === 1 ? 'game' : 'games'}` : 'Convert';
+  });
   const autoRefresh = $derived(fileBrowser.autoRefresh);
   const jobsActive = $derived(jobs.hasActive);
 
@@ -429,6 +439,17 @@
   {#if selectedCount > 0}
     <div class="selection-bar" role="status">
       <span class="count-label">{selectedCount} selected</span>
+      {#if convertAction}
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={convertAction.disabled}
+          onclick={() => convertAction.run()}
+        >
+          {#snippet icon()}<Play size={12} aria-hidden="true" />{/snippet}
+          {convertLabel}
+        </Button>
+      {/if}
       {#if selectedHasVerifiable}
         <button type="button" class="bulk-action" onclick={openBulkVerify}>
           <ShieldCheck size={12} aria-hidden="true" /> Verify

@@ -505,9 +505,11 @@ class SubprocessRunner:
     # from a tool's progress goes through JobManager's
     # `_set_status_message(job, message)`: a conversion's progress updates
     # (and the `warning` copied from one), `update_external_job(message=...)`,
-    # `_set_job_message` and `finish_external_job_cancelled(message=...)`. A
-    # failed job's `message` is then set to its cleaned `error_message`, so it
-    # says why the job stopped instead of keeping its last progress text.
+    # `_set_job_message`, `finish_external_job_cancelled(message=...)` and a
+    # successful `finish_external_job(message=...)` (what the job did, such as
+    # a watch folder's "Copied into …", #572). A failed job's `message` is
+    # then set to its cleaned `error_message`, so it says why the job stopped
+    # instead of keeping its last progress text.
 
     async def reap(self, process, *, exit_timeout=_EXIT_GRACE) -> bool:
         """Bounded teardown for any spawned child. True if reaped, False if
