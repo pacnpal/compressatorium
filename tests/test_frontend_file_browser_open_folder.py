@@ -153,3 +153,58 @@ process.stdout.write(JSON.stringify({
     assert data["path"] == "/target/b", data
     assert data["listed"] == ["/target/b"], data
     assert data["navigated"] == ["files"], data
+
+
+# --------------------------------------------------------------------------- #
+# #571: Files picks the first Volume however the list got loaded
+# --------------------------------------------------------------------------- #
+
+def test_files_picks_the_first_volume_when_another_view_loaded_the_list(tmp_path):
+    """Libraries, Needs attention and watch folders fetch the Volume list for
+    their own use without picking one; Files opened after them showed "This
+    folder is empty." with nothing picked."""
+    data = _run(tmp_path, """
+await fileBrowser.fetchVolumes();
+const before = fileBrowser.selectedVolume;
+const outcome = await within(fileBrowser.startFiles(), 300);
+process.stdout.write(JSON.stringify({
+  before: before ?? null, outcome,
+  volume: fileBrowser.selectedVolume?.path ?? null, listed: __listed,
+}));
+""")
+    assert data["before"] is None, data
+    assert data["volume"] == "/first", data
+    assert data["listed"] == ["/first"], data
+
+
+def test_files_start_leaves_an_open_folder_and_a_folder_link_alone(tmp_path):
+    data = _run(tmp_path, """
+await fileBrowser.fetchVolumes();
+fileBrowser.currentPath = '/target/roms';
+await within(fileBrowser.startFiles(), 300);
+const kept = fileBrowser.currentPath;
+fileBrowser.currentPath = null;
+ui.filesPath = '/target/roms';
+await within(fileBrowser.startFiles(), 300);
+process.stdout.write(JSON.stringify({
+  kept, linked: fileBrowser.selectedVolume?.path ?? null, listed: __listed,
+}));
+""")
+    assert data == {"kept": "/target/roms", "linked": None, "listed": []}, data
+
+
+def test_files_start_with_no_list_yet_still_loads_and_picks(tmp_path):
+    data = _run(tmp_path, """
+await within(fileBrowser.startFiles(), 300);
+process.stdout.write(JSON.stringify({
+  volume: fileBrowser.selectedVolume?.path ?? null, listed: __listed,
+}));
+""")
+    assert data == {"volume": "/first", "listed": ["/first"]}, data
+
+
+def test_the_volume_list_starts_files():
+    src = (_STORE.parents[1] / "components" / "panels" / "VolumeList.svelte").read_text(
+        encoding="utf-8",
+    )
+    assert "fileBrowser.startFiles()" in src
