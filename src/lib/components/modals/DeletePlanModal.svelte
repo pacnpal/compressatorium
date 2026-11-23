@@ -196,7 +196,10 @@
 </BaseModal>
 
 <style>
-  .dp-lead { margin: 0; font-size: var(--text-sm); color: var(--text-1); display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+  /* One sentence with its count inline (#573): a wrapping flex row dropped
+     the whole sentence below the badge. */
+  .dp-lead { margin: 0; font-size: var(--text-sm); color: var(--text-1); }
+  .dp-lead > :global(.badge) { margin-right: var(--space-1); }
   .dp-block { display: flex; gap: var(--space-2); background: var(--error-muted); color: var(--error); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); align-items: flex-start; }
   .dp-block strong { font-weight: var(--weight-semibold); }
   .dp-block-list { margin: var(--space-1) 0 0; padding-left: var(--space-4); font-size: var(--text-xs); }
