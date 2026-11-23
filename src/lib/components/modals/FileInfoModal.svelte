@@ -1,7 +1,9 @@
 <script>
   import { ui } from '$lib/stores/ui.svelte.js';
   import { registry } from '$lib/tools/registry.js';
-  import { loadInfo, infoRows } from '$lib/util/fileInfo.js';
+  import { datMatching } from '$lib/stores/datMatching.svelte.js';
+  import { formatOfPath, likelyFormat } from '$lib/tools/convertTargets.js';
+  import { loadInfo, infoRows, infoCard } from '$lib/util/fileInfo.js';
   import BaseModal from './BaseModal.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -52,6 +54,19 @@
 
   function close() { ui.infoTarget = null; }
 
+  // The card's facts the listing knows (#591): the game a DAT or Hasheous
+  // matched, the file's format, and whether it is already in its best format,
+  // by the same rule as the row's "→ CHD" hint (any tool, installed or not).
+  const match = $derived(target?.path ? datMatching.matchFor(target.path) : null);
+  const format = $derived(target?.path ? formatOfPath(target.path) : null);
+  const best = $derived.by(() => {
+    if (!target || target.companion_of) return null;
+    const made = (target.outputs ?? []).find((o) => o?.exists && o.path);
+    if (made) return `No, its ${formatOfPath(made.path) ?? 'new'} copy is made`;
+    const next = likelyFormat(target, null);
+    return next ? `No, Convert makes it ${next}` : 'Yes';
+  });
+
 </script>
 
 <BaseModal
@@ -69,25 +84,37 @@
       {#await request}
         <div class="ci-loading"><Spinner size="md" /> Loading…</div>
       {:then { info, notes }}
-        <!-- Plain facts first; a tool's raw output sits behind Details. -->
-        {@const { rows, details } = infoRows(info, target?.path)}
-        {#if rows.length === 0 && details.length === 0}
+        <!-- A short card first; the tool's other facts and raw output sit
+             behind More details. -->
+        {@const card = infoCard({ info, match, format, best })}
+        {@const { rows, details } = infoRows(info, target?.path, { omit: card.used })}
+        {#if card.rows.length === 0 && rows.length === 0 && details.length === 0}
           <p class="ci-empty">No info returned.</p>
         {:else}
           {#each notes as note, i (i)}
             <p class="ci-note">{note}</p>
           {/each}
           <dl class="ci-list">
-            {#each rows as row (row.key)}
+            {#each card.rows as row (row.key)}
               <div class="ci-row">
                 <dt class="ci-key">{row.label}</dt>
                 <dd class="ci-val">{row.value}</dd>
               </div>
             {/each}
           </dl>
-          {#if details.length}
+          {#if rows.length || details.length}
             <details class="ci-details">
-              <summary>Details</summary>
+              <summary>More details</summary>
+              {#if rows.length}
+                <dl class="ci-list">
+                  {#each rows as row (row.key)}
+                    <div class="ci-row">
+                      <dt class="ci-key">{row.label}</dt>
+                      <dd class="ci-val">{row.value}</dd>
+                    </div>
+                  {/each}
+                </dl>
+              {/if}
               {#each details as row (row.key)}
                 <p class="ci-detail-label">{row.label}</p>
                 <pre class="ci-pre">{typeof row.value === 'string'
@@ -154,6 +181,7 @@
   }
   .ci-details { margin-top: var(--space-3); font-size: var(--text-sm); }
   .ci-details summary { cursor: pointer; color: var(--text-2); }
+  .ci-details > .ci-list { margin-top: var(--space-2); }
   .ci-detail-label { margin: var(--space-2) 0 var(--space-1); color: var(--text-2); }
   .ci-val {
     color: var(--text-1);

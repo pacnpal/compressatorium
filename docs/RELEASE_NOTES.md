@@ -124,6 +124,16 @@
   - Verify-before-delete, never-overwrite, the drive limits and the ownership
     refusals are unchanged.
 
+- **Plain words in Files** (#591).
+  - **A missing converter** is one line in the plan, such as "3 games need
+    CHDMAN to become CHD, which isn't installed", with **See Converters** to
+    open Settings → Converters. The exact reason is shown once, inside the
+    line.
+  - **Info** opens on a short card: the game (from a DAT or Hasheous match),
+    its console, format, whether it's already in its best format or what
+    Convert would make it, and its size, once. Yes and No replace true and
+    false. The tool's other details are under **More details**.
+  - **A greyed-out Info** says why, for example "Info (no reader for .zip)".
 - **Backend cleanup** (#543). The 3DS verify (`zstd -t`) now runs through the
   shared process runner like every other tool's check, so it gets the same
   process priority, bound and cancel handling. Dead code is gone, the tool
