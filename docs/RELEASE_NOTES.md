@@ -451,8 +451,8 @@
   options no longer leaves the emulator you picked showing beside the default
   codecs.
 - **History keeps the Status you picked**. Opening History from a link such as
-  "Failed" and then choosing another Status no longer brings "Failed" back on
-  a reload.
+  "Failed" and then choosing another Status writes that Status to the URL, so
+  a reload keeps it instead of bringing "Failed" back.
 - **The Library's "games need a console" banner skips ignored games**. A game
   ignored in Activity › Needs attention no longer counts toward it.
 - **An open tab catches up after the container restarts** (#569). Restarted

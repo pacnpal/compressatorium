@@ -30,14 +30,16 @@ def test_reset_clears_the_compatible_with_choice() -> None:
     assert "compatId = ''" in reset
 
 
-def test_a_status_picked_by_hand_leaves_the_url() -> None:
+def test_a_status_picked_by_hand_replaces_the_one_in_the_url() -> None:
     history = (SRC / "activity" / "HistoryList.svelte").read_text(encoding="utf-8")
     refilter = history[history.index("function refilter()"):]
     refilter = refilter[:refilter.index("\n  }\n")]
-    assert "forgetUrlStatus()" in refilter
-    forget = history[history.index("function forgetUrlStatus()"):]
+    assert "syncUrlStatus()" in refilter
+    forget = history[history.index("function syncUrlStatus()"):]
     forget = forget[:forget.index("\n  }\n")]
     assert "key !== 'status'" in forget
+    # The new pick is written back; only All leaves no `status`.
+    assert "status ? [['status', status]] : []" in forget
     # Not pushState/location.hash: those would re-run the route or add history.
     assert "history.replaceState" in forget
 

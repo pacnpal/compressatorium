@@ -128,21 +128,22 @@
     }
   }
 
-  // A Status picked here outranks the link's `?status=`: drop it, so a reload
-  // keeps the person's choice. replaceState fires no hashchange.
-  function forgetUrlStatus() {
+  // A Status picked here replaces the link's `?status=` (All drops it), so a
+  // reload keeps the person's choice. replaceState fires no hashchange.
+  function syncUrlStatus() {
     const [path, query = ''] = window.location.hash.split('?');
     const linked = new URLSearchParams(query).get('status');
     if (linked === null || linked === status) return;
-    const rest = new URLSearchParams(
-      [...new URLSearchParams(query)].filter(([key]) => key !== 'status'),
-    ).toString();
+    const rest = new URLSearchParams([
+      ...[...new URLSearchParams(query)].filter(([key]) => key !== 'status'),
+      ...(status ? [['status', status]] : []),
+    ]).toString();
     window.history.replaceState(window.history.state, '', `${path}${rest ? `?${rest}` : ''}`);
   }
 
   function refilter() {
     clearTimeout(searchTimer);
-    forgetUrlStatus();
+    syncUrlStatus();
     page = 1;
     load();
   }
