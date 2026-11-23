@@ -60,6 +60,7 @@ from services.subprocess_runner import (
     run_detached,
     run_detached_within_stall_bound,
 )
+from services.task_sets import drain_tasks
 from utils.path_utils import is_within_configured_volumes
 
 from config import settings
@@ -135,8 +136,7 @@ def start(library: Library) -> Any:
 
 async def drain() -> None:
     """Wait for every running find-duplicates run (tests, shutdown)."""
-    while _tasks:
-        await asyncio.gather(*list(_tasks), return_exceptions=True)
+    await drain_tasks(_tasks)
 
 
 # ----------------------------------------------------------------------

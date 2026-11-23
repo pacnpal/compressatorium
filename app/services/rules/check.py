@@ -48,6 +48,7 @@ from services.subprocess_runner import (
     stops_verify_batch,
     verify_exception_event,
 )
+from services.task_sets import drain_tasks
 from services.tools import registry
 from services.verification_store import cannot_check, verification_store
 from services.workload_limiter import workload_limiter
@@ -443,13 +444,14 @@ async def drain(should_stop: Callable[[], bool] | None = None) -> None:
     until they have ended. Each Image's own check stays bounded by its tool's
     verify bound, so the wait is too.
     """
+    if should_stop is None:
+        await drain_tasks(_tasks)
+        return
     cancelled = False
     while _tasks:
-        pending = list(_tasks)
-        if should_stop is None:
-            await asyncio.gather(*pending, return_exceptions=True)
-            continue
-        await asyncio.wait(pending, timeout=_STOP_POLL)
+        done, _pending = await asyncio.wait(list(_tasks), timeout=_STOP_POLL)
+        # Dropped here, not left to their done callbacks (#579, `drain_tasks`).
+        _tasks.difference_update(done)
         if not cancelled and should_stop():
             cancelled = True
             for job_id in list(_task_jobs.values()):
