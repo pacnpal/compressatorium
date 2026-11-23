@@ -443,6 +443,13 @@
   packs and Redump DATs you had imported or synced. It now replaces only the
   DATs it brings a new copy of (same name and family).
 
+- **A notification error stays readable when the URL repeats its words**
+  (#567). The destination URL is kept out of every error and log line, but
+  every piece of it was removed wherever it appeared, so a webhook at
+  `…/api/webhook/<id>` read *Could not reach the <redacted>: Connection
+  refused*. Only the text that came from elsewhere (the system's reason, a
+  server's header, Apprise's log line, a message from another transport) is
+  redacted now; the app's own wording isn't.
 - **A sweep queues nothing from a listing that adding or removing a Library
   made stale** (#518 follow-up). A sweep that listed a Platform
   before a Library was registered or removed inside it (or before RomM's
