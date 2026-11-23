@@ -387,6 +387,11 @@
 
 ### Fixed
 
+- **Inbox intake, checks, renames, patches and duplicate runs no longer hang
+  while finishing** (#579). Their wait for running work could spin forever at
+  full CPU when a task ended just as the wait woke up. That stopped
+  `run-rules` or a shutdown from finishing, as #450 did for the job queue.
+  Every one of these waits now uses one shared helper that can't spin.
 - **Delete keeps a file a sheet, playlist or set reaches through a link**
   (#555). A `.cue` in one folder can name a track in another through a folder
   link inside the Volume (`other/A.cue` naming `link/Shared.bin`). Deleting or
@@ -406,6 +411,11 @@
 - **Turning Hasheous on, then off quickly** no longer lets the first click
   finish after the second: it can't switch the screen back to on or test
   Hasheous once you've turned it off (#545 follow-up).
+- **Auto keeps the console you picked** (#564). Converting a game whose
+  console you chose with **Pick console** filed its History row under no
+  console (**Console —**), because the job was queued without it and couldn't
+  work it out again. Each job Auto queues now carries the console its plan
+  showed, as the command line's `--auto` and the Rules already did.
 - **Saving a format's compression in Settings** changes only that format on
   the server, so a change saved meanwhile from another tab is kept
   (#545 follow-up).
