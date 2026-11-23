@@ -1,6 +1,7 @@
 """The web UI's refreshes after #533.
 
-* The Ledger cards keep each good read when another of the three fails.
+* The Ledger cards keep each good read when another of the four fails (the
+  fourth, History's checked total, came with #595 and follows the same rules).
 * The file listing refreshes on a new finished job, keyed on job identity
   like the dashboard: at the history cap one finished job replaces another
   and the counts stay flat.
@@ -41,16 +42,46 @@ const api = {
   getLedgerRecent: async () => [{ id: 'r1' }],
   getLedgerSavings: async () => ({ saved: 7 }),
   getLedgerTotals: async () => { throw new Error('503'); },
+  getLedgerPage: async () => ({ items: [], total: 4 }),
 };
 """ + _plain(_STORES / "ledger.svelte.js") + """
 ledger.totals = { completed: 3 };
 await ledger._load();
 process.stdout.write(JSON.stringify({
   recent: ledger.recent, savings: ledger.savings, totals: ledger.totals,
+  checked: ledger.checkedTotal,
 }));
 """)
 
-    assert data == {"recent": [{"id": "r1"}], "savings": {"saved": 7}, "totals": {"completed": 3}}
+    assert data == {
+        "recent": [{"id": "r1"}], "savings": {"saved": 7}, "totals": {"completed": 3},
+        "checked": 4,
+    }
+
+
+def test_a_failed_checked_read_keeps_the_last_good_total_and_the_others(tmp_path):
+    """History's checked total (#595) is the fourth read: when it fails, the
+    count it showed stays and the other three still land."""
+    data = _node(tmp_path, """
+const api = {
+  getLedgerRecent: async () => [{ id: 'r1' }],
+  getLedgerSavings: async () => ({ saved: 7 }),
+  getLedgerTotals: async () => ({ jobs: { completed: 2 } }),
+  getLedgerPage: async () => { throw new Error('503'); },
+};
+""" + _plain(_STORES / "ledger.svelte.js") + """
+ledger.checkedTotal = 9;
+await ledger._load();
+process.stdout.write(JSON.stringify({
+  recent: ledger.recent, savings: ledger.savings, totals: ledger.totals,
+  checked: ledger.checkedTotal,
+}));
+""")
+
+    assert data == {
+        "recent": [{"id": "r1"}], "savings": {"saved": 7}, "totals": {"completed": 2},
+        "checked": 9,
+    }
 
 
 def test_a_late_ledger_read_never_overwrites_a_newer_one(tmp_path):
@@ -65,13 +96,21 @@ const api = {
   },
   getLedgerSavings: async () => null,
   getLedgerTotals: async () => ({ jobs: { completed: 1 } }),
+  // The checked total follows the same rule: the first read lands last.
+  getLedgerPage: async () => {
+    pages += 1;
+    const mine = pages;
+    await new Promise((r) => setTimeout(r, mine === 1 ? 30 : 0));
+    return { items: [], total: mine === 1 ? 11 : 22 };
+  },
 };
+let pages = 0;
 """ + _plain(_STORES / "ledger.svelte.js") + """
 await Promise.all([ledger._load(), ledger._load()]);
-process.stdout.write(JSON.stringify(ledger.recent));
+process.stdout.write(JSON.stringify({ recent: ledger.recent, checked: ledger.checkedTotal }));
 """)
 
-    assert data == [{"id": "r2"}]
+    assert data == {"recent": [{"id": "r2"}], "checked": 22}
 
 
 def test_finished_job_ids_change_when_one_replaces_another(tmp_path):
