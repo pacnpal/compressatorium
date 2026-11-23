@@ -10,13 +10,16 @@
   const loading = $derived(fileBrowser.volumesLoading);
   const error = $derived(fileBrowser.volumesError);
 
+  // Files is showing while this is mounted: the store keeps a Volume open
+  // for it then, and only then (#569).
   onMount(() => {
-    if (volumes.length === 0 && !loading) fileBrowser.loadVolumes();
+    fileBrowser.startFiles();
+    return () => fileBrowser.stopFiles();
   });
 </script>
 
-<section class="volumes" aria-label="Volumes">
-  <h3 class="header">Volumes</h3>
+<section class="volumes" aria-label="Drives">
+  <h3 class="header">Drives</h3>
   {#if loading && volumes.length === 0}
     <div class="state"><Loader class="spin" size={14} /> Loading…</div>
   {:else if error}

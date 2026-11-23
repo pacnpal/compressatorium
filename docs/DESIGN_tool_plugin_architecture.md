@@ -9086,6 +9086,32 @@ iteration ends. The response then sends its closing chunk and returns like
 any finished stream. The grace period is only a backstop for a generator that
 ignores cancellation. A new streaming route uses `event_stream` too.
 
+### 3.3.27 Waiting for a module's tasks (`services/task_sets.py`, #450, #579)
+
+A service that starts its work as tasks (an Inbox copy, unpack or move, a
+check, a rename, a patch, a duplicates run or delete) keeps them in a
+module-level `_tasks` set. Each task removes itself with
+`task.add_done_callback(_tasks.discard)`, and the service's `drain()` (tests,
+`run-rules`, shutdown) waits for the set to empty. The waiting goes through one
+helper, `drain_tasks(_tasks)`, never a hand-written `while _tasks: await
+gather(...)`.
+
+The hand-written loop can spin forever. A done callback only runs on a later
+loop turn, and since Python 3.12 awaiting `gather` over tasks that have all
+finished completes without yielding. Suppose a task ends in the same loop turn
+that resumes `drain()` but is scheduled ahead of it, as a task started by one
+being drained can. `drain()` then finds that finished task still in the set,
+and its gather returns at once. The loop never gets the turn that runs the
+callback, so `drain()` spins at full CPU and its own loop never runs again.
+Intake's `drain()` hung an Inbox test this way (#579), and `JobManager` hung
+the CLI's exit (#450). `drain_tasks` drops each finished task from the set
+itself, and collects their exceptions (`return_exceptions`). A loop that waits
+with `asyncio.wait` (check's `drain(should_stop)`) does yield, but drops what
+finished in the same way. A new service with a task set uses `drain_tasks`.
+`tests/test_drain_spin_579.py` builds that interleaving for every module's
+`drain()`, running each on its own loop in a thread with a deadline, because a
+spinning `drain()` can't be bounded by `asyncio.wait_for`.
+
 ### 3.4 `registry.py`
 
 ```python
