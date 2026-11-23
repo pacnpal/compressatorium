@@ -14,6 +14,15 @@
   - Activity's **Checked** is History's checked total, so the two agree.
     **Space saved** says which games it counts: "from 3 games", the ones
     whose original was deleted.
+- **Convert from the selection bar** (#589). Ticking games puts **Convert N
+  games** beside Delete in the selection bar. It runs the same Convert as the
+  panel, with the same plan and the same checks.
+- **Convert stays on screen** (#589). When Files stacks its panels, the Convert
+  panel sticks to the bottom of the screen while games are selected, and the
+  row you just ticked scrolls clear of it. On a 1440px laptop with the sidebar
+  open, the Drives run across the top and Convert sits beside the list; the
+  Convert panel narrows before the file table does, so three panels now start
+  at a narrower width too.
 
 - **RomM connects itself** (#532).
   - On first run, RomM's Settings looks for RomM at `http://romm:8080` and its
@@ -480,6 +489,13 @@
     row shows a tick on its output's badge instead.
   - Job toasts and job rows name the new file, not its full path.
 
+- **A watch folder's copy shows its console in History** (#572). A game a
+  watch folder took in as it is (no Rule to convert it) was filed under no
+  console, and its row still read *Copying into …* after it was done. It's
+  now filed under the console its folder, or **Place it**, gave it, and says
+  *Copied into …*. A watch folder's other jobs say what they did too
+  (*Unpacked 2 games*, *Checked against the game lists*), not *Unpacking it*
+  or *Recognizing it*.
 - muOS is no longer listed as reading `gamelist.xml`. It keeps its artwork in
   its own catalogue (`MUOS/info/catalogue`), by game name.
 

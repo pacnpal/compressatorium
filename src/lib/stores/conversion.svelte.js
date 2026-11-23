@@ -135,6 +135,12 @@ class ConversionStore {
   // The last Convert run's job ids (#595), for its result line in the panel.
   lastRun = $state(null);
 
+  // The Convert panel's own button, `{ count, disabled, busy, run }`, while a
+  // panel is on screen; null otherwise. The file list's selection bar offers
+  // the same action from it, so both buttons run one submit flow. Raw: `run`
+  // is the panel's function and the object is replaced, never edited.
+  convertAction = $state.raw(null);
+
   // Server-saved per-tool compression ({ [toolId]: "<wire value>" }), loaded
   // once on boot and PUT (debounced) on every change. The plan uses it, so a
   // change bumps `prefsVersion` and the panel plans again.
@@ -167,6 +173,11 @@ class ConversionStore {
   #planSeq = 0;
   // The modes the last delete plan covered, for the check it rests on.
   #deleteModes = [];
+
+  /** The Convert panel publishes its action here, and null when it goes. */
+  publishConvert(action) {
+    this.convertAction = action;
+  }
 
   // ─── The Convert-to value ─────────────────────────────────────────────
   /** The mode a mode-id target names, else null (a format or Best). */
