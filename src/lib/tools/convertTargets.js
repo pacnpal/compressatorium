@@ -152,7 +152,16 @@ export function offeredInstead(entries, ready = null) {
     for (const spec of tool.modes ?? []) {
       if (spec.autoTarget !== false || !MAKES_NEW.has(spec.kind)) continue;
       if (!list.every((entry) => readsAny(spec, tool, [entry]))) continue;
-      out.push({ value: spec.mode, label: PLAIN_MODE_LABELS[spec.mode] ?? spec.label });
+      // The value the Convert-to picker lists it by, so the choice survives
+      // the panel's check (#598): a Make-smaller mode by its format (`.zar`),
+      // any other by its mode id.
+      const byFormat = groupOf(spec) === 'Make smaller' && spec.outputExt;
+      const value = byFormat ? spec.outputExt : spec.mode;
+      if (out.some((o) => o.value === value)) continue;
+      const label = byFormat
+        ? formatLabel(spec.outputExt)
+        : (PLAIN_MODE_LABELS[spec.mode] ?? spec.label);
+      out.push({ value, label });
     }
   }
   return out;

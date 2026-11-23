@@ -194,13 +194,14 @@ process.stdout.write(JSON.stringify({
   cue: offeredInstead([{ type: 'file', path: '/data/psx/Game.cue' }]),
   unready: offeredInstead([{ type: 'file', path: '/data/dos/Game.zip' }], ['chdman']),
   autoOff: registry.all().flatMap((t) => t.modes)
-    .filter((m) => m.autoTarget === false).map((m) => m.mode),
+    .filter((m) => m.autoTarget === false).flatMap((m) => [m.mode, m.outputExt]),
 }));
 """)
     assert "exodos_repack" in out["autoOff"]
     zip_modes = [o["value"] for o in out["zip"]]
     assert "exodos_repack" in zip_modes
-    # Only modes Auto doesn't take: a CUE's own Auto target isn't "instead".
+    # Only what a mode Auto doesn't take makes (its id, or its format as the
+    # picker lists it, #598).
     assert all(o["value"] in out["autoOff"] for o in out["cue"])
     assert out["unready"] == []
     assert all(o["label"] for o in out["zip"])
@@ -269,3 +270,30 @@ def test_the_plan_offers_from_the_real_entries():
     assert "entryFor(" in body
     panel = _read("components/panels/ConvertPanel.svelte")
     assert panel.count("entries={selected}") == 2
+
+
+def test_an_offered_choice_survives_the_panels_validation(tmp_path):
+    """The offer's value must be one the Convert-to picker lists for the same
+    games, or ConvertPanel's check resets it to Best: a Make-smaller mode is
+    listed by its format (``.zar``), not its mode id."""
+    out = run_tools(tmp_path, ["convertTargets.js"], """
+const refined = registry.all().filter((t) => t.contentRefined).map((t) => t.id);
+const cases = [
+  [{ type: 'file', path: '/v/Game.iso', convertible_by: refined }],
+  [{ type: 'file', path: '/v/Game.iso' }],
+  [{ type: 'file', path: '/data/dos/Game (1993).zip' }],
+  [{ type: 'file', path: '/v/Game.cue' }],
+];
+const result = cases.map((entries) => {
+  const listed = convertTargets({ entries }).flatMap((g) => g.options.map((o) => o.value));
+  const offered = offeredInstead(entries).map((o) => o.value);
+  return { offered, missing: offered.filter((v) => !listed.includes(v)) };
+});
+process.stdout.write(JSON.stringify(result));
+""")
+    assert any(case["offered"] for case in out), out
+    for case in out:
+        assert case["missing"] == [], case
+    # The panel keeps a choice only while the picker lists it.
+    panel = _read("components/panels/ConvertPanel.svelte")
+    assert "!offered.includes(conversion.target)" in panel
