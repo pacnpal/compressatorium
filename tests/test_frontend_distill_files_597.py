@@ -217,8 +217,13 @@ def test_the_skip_line_offers_it_without_naming_a_tool():
     targets = _read("tools/convertTargets.js")
     offered = targets[targets.index("export function offeredInstead"):]
     offered = offered[:offered.index("\n}\n")]
-    assert re.search(r"autoTarget [!=]== false", offered)
-    assert "exodos" not in offered.lower()
+    # By the registry's flag alone: the picker marks such options `manual`
+    # (isManual reads autoTarget), and the offer takes those (#598).
+    assert "o.manual" in offered
+    manual = targets[targets.index("function isManual"):]
+    manual = manual[:manual.index("\n}\n")]
+    assert re.search(r"autoTarget === false", manual)
+    assert "exodos" not in offered.lower() and "exodos" not in manual.lower()
 
 
 # ── Nested boxes and headings ──────────────────────────────────────────────
@@ -297,3 +302,54 @@ process.stdout.write(JSON.stringify(result));
     # The panel keeps a choice only while the picker lists it.
     panel = _read("components/panels/ConvertPanel.svelte")
     assert "!offered.includes(conversion.target)" in panel
+
+
+def test_every_picker_value_is_one_auto_plan_can_resolve(tmp_path):
+    """The server resolves a format (``.zar``) only to Auto-eligible modes
+    (``platform_detect.format_candidates`` skips ``auto_target=False``) and a
+    mode id to itself. So the picker lists a format only when an Auto-eligible
+    mode writes it, and a mode only Auto leaves alone by its mode id; the
+    one-click offer draws from that same list (#598)."""
+    out = run_tools(tmp_path, ["convertTargets.js"], """
+const modes = registry.all().flatMap((t) => t.modes);
+const autoFormats = new Set(modes.filter((m) => m.autoTarget !== false && m.outputExt)
+  .map((m) => m.outputExt));
+const modeIds = new Set(modes.map((m) => m.mode));
+const refined = registry.all().filter((t) => t.contentRefined).map((t) => t.id);
+const sets = [
+  null,
+  [{ type: 'file', path: '/v/Game.iso', convertible_by: refined }],
+  [{ type: 'file', path: '/v/Game.iso' }],
+  [{ type: 'file', path: '/v/Game.cue' }],
+  [{ type: 'file', path: '/data/dos/Game (1993).zip' }],
+];
+const bad = [];
+for (const entries of sets) {
+  const values = convertTargets({ entries }).flatMap((g) => g.options.map((o) => o.value));
+  for (const v of values) {
+    if (!v) continue;
+    const ok = v.startsWith('.') ? autoFormats.has(v) : modeIds.has(v);
+    if (!ok) bad.push(v);
+  }
+}
+const zar = modes.find((m) => m.outputExt === '.zar');
+process.stdout.write(JSON.stringify({
+  bad,
+  zarMode: zar?.mode ?? null,
+  zarAuto: zar ? zar.autoTarget !== false : null,
+  claimedOffer: offeredInstead(sets[1]).map((o) => o.value),
+  claimedPicker: convertTargets({ entries: sets[1] }).flatMap((g) => g.options.map((o) => o.value)),
+}));
+""")
+    assert out["bad"] == [], out["bad"]
+    if out["zarMode"] and not out["zarAuto"]:
+        assert ".zar" not in out["claimedOffer"]
+        assert out["zarMode"] in out["claimedOffer"]
+        assert out["zarMode"] in out["claimedPicker"]
+
+
+def test_the_offer_draws_from_the_picker():
+    targets = _read("tools/convertTargets.js")
+    offered = targets[targets.index("export function offeredInstead"):]
+    offered = offered[:offered.index("\n}\n")]
+    assert "convertTargets(" in offered

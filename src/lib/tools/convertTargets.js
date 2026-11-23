@@ -76,6 +76,15 @@ function readsAny(spec, tool, entries) {
   });
 }
 
+// The kinds that make a new file of the game (not an unpack or a copy).
+const MAKES_NEW = new Set(['create', 'compress']);
+
+// A mode Auto leaves alone that still makes a new file of the game: what a
+// skipped line may offer in one click.
+function isManual(spec) {
+  return spec.autoTarget === false && MAKES_NEW.has(spec.kind);
+}
+
 /**
  * Groups for a "Convert to" select:
  * `[{ group, options: [{ value, label, hint? }] }]`, empty groups left out.
@@ -85,6 +94,13 @@ function readsAny(spec, tool, entries) {
  * - `ready`: the tool ids that can run here; others are left out.
  * - `perMode`: list each Make-smaller mode on its own (value = mode id)
  *   instead of one option per format (value = the format, `.chd`).
+ *
+ * Every value is one `/api/jobs/auto-plan` can resolve (#598). The server
+ * takes a format only to Auto-eligible modes (`format_candidates` skips
+ * `auto_target=False`) and a mode id to itself, so a format is listed only
+ * where an Auto-eligible mode writes it. A mode Auto leaves alone is listed
+ * by its mode id, and marked `manual: true` (the one-click offer's source),
+ * unless an Auto-eligible mode here already makes its format.
  */
 export function convertTargets({
   entries = null, modeIds = null, toolIds = null, ready = null, perMode = false,
@@ -100,15 +116,19 @@ export function convertTargets({
       if (modeIds && !modeIds.includes(spec.mode)) continue;
       if (entries && !readsAny(spec, tool, entries)) continue;
       const group = groupOf(spec);
+      const manual = isManual(spec);
       if (group !== 'Make smaller') {
         const option = {
           value: spec.mode, label: PLAIN_MODE_LABELS[spec.mode] ?? spec.label, hint: tool.label,
+          ...(manual ? { manual } : {}),
         };
         (group === 'Unpack' ? unpack : other).push(option);
         continue;
       }
       const format = spec.outputExt ? formatLabel(spec.outputExt) : PLAIN_MODE_LABELS[spec.mode];
-      const key = perMode || !spec.outputExt ? spec.mode : spec.outputExt;
+      // A format only for an Auto-eligible mode: the server resolves no other.
+      const byFormat = !perMode && spec.outputExt && spec.autoTarget !== false;
+      const key = byFormat ? spec.outputExt : spec.mode;
       const found = smaller.get(key);
       if (found) {
         if (!found.tools.includes(tool.label)) found.tools.push(tool.label);
@@ -117,15 +137,26 @@ export function convertTargets({
           value: key,
           label: perMode ? `${format ?? spec.label}: ${spec.label}` : (format ?? spec.label),
           tools: [tool.label],
+          ext: spec.outputExt,
+          manual,
         });
       }
+    }
+  }
+  // A mode Auto leaves alone whose format an Auto-eligible mode here already
+  // makes adds nothing the format option doesn't (createraw beside CHD).
+  if (!perMode) {
+    for (const [key, o] of [...smaller]) {
+      if (o.manual && o.ext && key !== o.ext && smaller.has(o.ext)) smaller.delete(key);
     }
   }
   const groups = [
     { group: 'Recommended', options: [{ ...BEST_FORMAT }] },
     {
       group: 'Make smaller',
-      options: [...smaller.values()].map(({ tools, ...o }) => ({ ...o, hint: tools.join(', ') })),
+      options: [...smaller.values()].map(({ tools, ext: _ext, manual, ...o }) => ({
+        ...o, hint: tools.join(', '), ...(manual ? { manual } : {}),
+      })),
     },
     { group: 'Unpack', options: unpack },
     { group: 'Other', options: other },
@@ -133,38 +164,23 @@ export function convertTargets({
   return groups.filter((g) => g.options.length > 0);
 }
 
-// The kinds that make a new file of the game (not an unpack or a copy).
-const MAKES_NEW = new Set(['create', 'compress']);
-
 /**
  * Modes Auto leaves alone that could still take every one of *entries*
  * (#597): `[{ value, label }]`, for a skipped line's one-click "Convert to".
- * By the registry's `autoTarget` flag alone (the eXoDOS repack is one), so
- * no tool is named here. `ready`: the tool ids that can run here.
+ * Drawn from the picker itself (`convertTargets`' `manual` options, #598), so
+ * an offer is always a value the picker lists and the server resolves. By the
+ * registry's `autoTarget` flag alone (the eXoDOS repack is one), so no tool is
+ * named here. `ready`: the tool ids that can run here.
  */
 export function offeredInstead(entries, ready = null) {
-  const readySet = ready ? new Set(ready) : null;
   const list = (entries ?? []).filter(Boolean);
-  const out = [];
-  if (!list.length) return out;
-  for (const tool of registry.all()) {
-    if (readySet && !readySet.has(tool.id)) continue;
-    for (const spec of tool.modes ?? []) {
-      if (spec.autoTarget !== false || !MAKES_NEW.has(spec.kind)) continue;
-      if (!list.every((entry) => readsAny(spec, tool, [entry]))) continue;
-      // The value the Convert-to picker lists it by, so the choice survives
-      // the panel's check (#598): a Make-smaller mode by its format (`.zar`),
-      // any other by its mode id.
-      const byFormat = groupOf(spec) === 'Make smaller' && spec.outputExt;
-      const value = byFormat ? spec.outputExt : spec.mode;
-      if (out.some((o) => o.value === value)) continue;
-      const label = byFormat
-        ? formatLabel(spec.outputExt)
-        : (PLAIN_MODE_LABELS[spec.mode] ?? spec.label);
-      out.push({ value, label });
-    }
-  }
-  return out;
+  if (!list.length) return [];
+  const manualFor = (entry) => convertTargets({ entries: [entry], ready })
+    .flatMap((g) => g.options).filter((o) => o.manual);
+  const [first, ...rest] = list.map(manualFor);
+  return first
+    .filter((o) => rest.every((opts) => opts.some((x) => x.value === o.value)))
+    .map(({ value, label }) => ({ value, label }));
 }
 
 /**
