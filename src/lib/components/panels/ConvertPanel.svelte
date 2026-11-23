@@ -385,6 +385,7 @@
       <ConvertPlan
         plan={shownPlan}
         planning={conversion.planning}
+        target={conversion.target}
         error={conversion.planError}
         onretry={() => conversion.requestPlan(paths, { delay: 0 })}
         onoverride={(list, slug) => conversion.setOverride(list, slug)}
@@ -486,6 +487,7 @@
     <ConvertPlan
       plan={conversion.plan}
       planning={conversion.planning}
+      target={conversion.target}
       error={conversion.planError}
       onretry={() => conversion.requestPlan(paths, { delay: 0 })}
       onoverride={(list, slug) => conversion.setOverride(list, slug)}

@@ -78,21 +78,95 @@ function isEmpty(v) {
     || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);
 }
 
+// A boolean reads as a word.
+function plain(value) {
+  if (value === true) return 'Yes';
+  if (value === false) return 'No';
+  return value;
+}
+
 /**
  * Split a tool's info into what the modal shows: `rows`, the plain facts with
  * readable labels, and `details`, a tool's raw output and nested data, kept
  * behind a fold. Empty fields are dropped, and so is any field that only
  * repeats the file's own *path* (the modal's heading names the file).
+ * Booleans read Yes/No. A field with a `<key>_display` twin shows once, as
+ * the readable twin under the plain key's label (#591). `omit` leaves out the
+ * keys the Info card already shows, with their twins.
  */
-export function infoRows(info, path = null) {
+export function infoRows(info, path = null, { omit = [] } = {}) {
   const rows = [];
   const details = [];
   if (!info || typeof info !== 'object') return { rows, details };
+  const skip = new Set(omit);
   for (const [key, value] of Object.entries(info)) {
-    if (isEmpty(value) || (path && value === path)) continue;
-    const row = { key, label: infoLabel(key), value };
-    const raw = /^raw(_|$)/i.test(key) || typeof value === 'object';
+    const twinOf = key.endsWith('_display') ? key.slice(0, -'_display'.length) : null;
+    const base = twinOf ?? key;
+    if (skip.has(base)) continue;
+    // The twin stands in for its plain key wherever that key is there too.
+    if (twinOf && !isEmpty(info[twinOf])) continue;
+    const twin = twinOf ? null : info[`${key}_display`];
+    const shown = isEmpty(twin) ? value : twin;
+    if (isEmpty(shown) || (path && shown === path)) continue;
+    const row = { key: base, label: infoLabel(base), value: plain(shown) };
+    const raw = /^raw(_|$)/i.test(key) || typeof shown === 'object';
     (raw ? details : rows).push(row);
   }
   return { rows, details };
+}
+
+// The info keys that name the game, and its console, richest first.
+const GAME_KEYS = ['title', 'game_title', 'game_name'];
+const CONSOLE_KEYS = ['platform', 'console'];
+
+function firstOf(info, keys) {
+  for (const key of keys) {
+    const value = info?.[key];
+    if (!isEmpty(value) && typeof value !== 'object') return { key, value };
+  }
+  return null;
+}
+
+/**
+ * The short card Info opens on (#591): the game, its console, its format,
+ * whether it is in its best format (`best`, a sentence the modal makes from
+ * the row and the registry, or null to leave it out), and its size, once.
+ * A DAT or Hasheous `match` names the game and console before the tool does.
+ * `used` lists the info keys the card took, for `infoRows`' `omit`.
+ */
+export function infoCard({ info = {}, match = null, format = null, best = null } = {}) {
+  const matched = match?.matched ? match : null;
+  const game = firstOf(info, GAME_KEYS);
+  const consoleName = firstOf(info, CONSOLE_KEYS);
+  const rows = [
+    cardRow('game', 'Game', matched?.game_name || game?.value),
+    cardRow('console', 'Console', matched?.platform || consoleName?.value),
+    // The reader's own format ("NKit v01 (GameCube)") before the file name's.
+    cardRow('format', 'Format', isEmpty(info?.format) ? format : info.format),
+    cardRow('best', 'In its best format', best),
+    cardRow('size', 'Size', cardSize(info)),
+  ].filter(Boolean);
+  const used = ['format', 'size', 'file', 'name', 'path', 'extension', 'type'];
+  if (game) used.push(game.key);
+  if (consoleName) used.push(consoleName.key);
+  return { rows, used };
+}
+
+// One card row, or null when there is nothing to say.
+function cardRow(key, label, value) {
+  return isEmpty(value) ? null : { key, label, value: plain(value) };
+}
+
+// The size once: the tool's readable twin, else the bytes made readable.
+function cardSize(info) {
+  if (!isEmpty(info?.size_display)) return info.size_display;
+  return typeof info?.size === 'number' ? formatSize(info.size) : info?.size;
+}
+
+/** Why Info is off for a row, for the menu item: "no reader for .dosz". */
+export function infoUnavailable(entry, { inArchive = false } = {}) {
+  if (inArchive) return 'not inside an archive';
+  if (entry?.type === 'directory') return 'not for folders';
+  const ext = entry?.extension || /\.[^./\\]+$/.exec(String(entry?.name ?? ''))?.[0];
+  return ext ? `no reader for ${ext.toLowerCase()}` : 'no reader for this file';
 }
