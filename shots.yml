@@ -135,6 +135,38 @@
   wait: 1800
   javascript: *js_files
 
+# --- A 1440x900 laptop with the sidebar open, games selected: Drives as a
+# strip across the top, Convert beside the list, and "Convert N games" in the
+# selection bar (#589).
+- url: http://127.0.0.1:8099/?s=files-laptop-light#/files
+  output: docs/screenshots/files-laptop-light.png
+  width: 1440
+  height: 900
+  wait: 1800
+  javascript: &js_files_laptop |
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await sleep(400);
+      const b = [...document.querySelectorAll('button.item')].find(x => x.textContent.trim() === 'PlayStation');
+      if (!b) throw new Error('PlayStation drive not found');
+      b.click();
+      await sleep(900);
+      const all = document.querySelector('thead input[type="checkbox"]');
+      if (all && !all.checked) all.click();
+      for (let i = 0; i < 60 && !document.querySelector('.convert-plan .lines'); i++) await sleep(150);
+      if (!document.querySelector('.selection-bar .btn.primary')) throw new Error('no Convert in the selection bar');
+      await sleep(300);
+    })()
+- url: http://127.0.0.1:8099/?s=files-laptop-dark#/files
+  output: docs/screenshots/files-laptop-dark.png
+  width: 1440
+  height: 900
+  wait: 1800
+  javascript: *js_files_laptop
+
 # --- Everything on the PlayStation drive selected: the plan, one line per
 # console and format, before anything runs.
 - url: http://127.0.0.1:8099/?s=files-plan-light#/files

@@ -50,6 +50,9 @@
     flex-direction: column;
     gap: var(--space-2);
     min-width: 0;
+    /* Given a row of its own (stacked, or across the top beside Convert),
+       the Drives run as a wrapping strip instead of a tall list (#589). */
+    container: drives / inline-size;
   }
   .header {
     margin: 0 var(--space-2);
@@ -87,6 +90,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  @container drives (min-width: 400px) {
+    .list { flex-direction: row; flex-wrap: wrap; gap: var(--space-1); }
+    .item { width: auto; padding: var(--space-1) var(--space-3); }
   }
   .state {
     display: flex;

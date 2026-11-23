@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Convert from the selection bar** (#589). Ticking games puts **Convert N
+  games** beside Delete in the selection bar. It runs the same Convert as the
+  panel, with the same plan and the same checks.
+- **Convert stays on screen** (#589). When Files stacks its panels, the Convert
+  panel sticks to the bottom of the screen while games are selected, and the
+  row you just ticked scrolls clear of it. On a 1440px laptop with the sidebar
+  open, the Drives run across the top and Convert sits beside the list; the
+  Convert panel narrows before the file table does, so three panels now start
+  at a narrower width too.
+
 - **RomM connects itself** (#532).
   - On first run, RomM's Settings looks for RomM at `http://romm:8080` and its
     other usual addresses and offers **Found RomM at …: Use it**.
