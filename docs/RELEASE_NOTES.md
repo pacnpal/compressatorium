@@ -394,6 +394,12 @@
   and names the sheet, as it already did for a sheet beside the track. A link
   to a folder outside the Volume leaves ownership unknown, so the file is
   kept.
+- **Files shows the whole file table on a laptop** (#562). The Volumes | list
+  | Convert layout came in at a 1280px window, of which the sidebar takes 240,
+  so the list was left about 350px and showed only the game's name. It now
+  comes in when the page itself has room for all three panels and the whole
+  table; narrower, Convert sits under the list. RomM's Browse tab does the
+  same. The Size column's default fits `1023.99 MB` on one line.
 - **Settings → Game identification** says when it couldn't check which
   consoles Redump covers, with **Try again**, instead of claiming none of
   your Libraries has one (#545 follow-up).
