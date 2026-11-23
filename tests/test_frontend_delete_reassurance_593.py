@@ -247,3 +247,41 @@ def test_the_settings_document_both_opt_outs():
     assert "Allow deleting originals whose new copy isn't checked" in src
     # Turning the quick check off also drops a saved quick check.
     assert "container_only: false" in src
+
+
+# ── Review follow-ups (#594) ───────────────────────────────────────────────
+
+
+def test_a_file_is_never_its_own_copy(tmp_path):
+    """Dolphin lists an existing RVZ itself first among its outputs. Deleting
+    that RVZ must not be reassured by its own check, nor gated as its own
+    unchecked copy."""
+    out = _eval(tmp_path, _SAFETY, "uncheckedCopies, checkedCopy", """
+const self = { path: '/v/Game.rvz', outputs: [{ exists: true, path: '/v/Game.rvz' }] };
+const both = {
+  path: '/v/Game.rvz',
+  outputs: [{ exists: true, path: '/v/Game.rvz' }, { exists: true, path: '/v/Game.wia' }],
+};
+const checked = new Set(['/v/Game.rvz', '/v/Game.wia']);
+const isChecked = (p) => checked.has(p);
+process.stdout.write(JSON.stringify({
+  selfChecked: checkedCopy(self, isChecked),
+  selfUnchecked: uncheckedCopies([self], () => false),
+  other: checkedCopy(both, isChecked),
+}));
+""")
+    assert out["selfChecked"] is None
+    assert out["selfUnchecked"] == []
+    assert out["other"]["path"] == "/v/Game.wia"
+
+
+def test_single_delete_takes_its_copy_from_the_shared_rule():
+    src = _read("components/modals/DeleteModal.svelte")
+    assert "checkedCopy(target" in src
+
+
+def test_the_design_doc_describes_the_opt_outs():
+    doc = (_ROOT / "docs" / "DESIGN_tool_plugin_architecture.md").read_text(encoding="utf-8")
+    assert "allowQuick" in doc
+    assert "allow_quick_check" in doc and "allow_unchecked_delete" in doc
+    assert "src/lib/util/deleteSafety.js" in doc

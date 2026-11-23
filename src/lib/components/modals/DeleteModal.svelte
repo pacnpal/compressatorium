@@ -5,7 +5,9 @@
   import { defaults } from '$lib/stores/defaults.svelte.js';
   import { api } from '$lib/api/endpoints.js';
   import { formatOfPath } from '$lib/tools/convertTargets.js';
-  import { uncheckedCopies, deleteGate, checkedCopyLine } from '$lib/util/deleteSafety.js';
+  import {
+    uncheckedCopies, deleteGate, checkedCopy, checkedCopyLine,
+  } from '$lib/util/deleteSafety.js';
   import CircleCheck from '@lucide/svelte/icons/circle-check';
   import { toast } from 'svelte-sonner';
   import ConfirmModal from './ConfirmModal.svelte';
@@ -70,13 +72,13 @@
     }
     return null;
   }
-  const checkedCopy = $derived.by(() => {
-    const outs = target && Array.isArray(target.outputs) ? target.outputs : [];
-    const copy = outs.find((o) => o?.exists && o.path && verification.checkFor(o.path));
+  // Another file that passed its check, never the one being deleted (#594).
+  const keptCopy = $derived.by(() => {
+    const copy = target ? checkedCopy(target, (p) => !!verification.checkFor(p)) : null;
     if (!copy) return null;
     return { format: formatOfPath(copy.path), size: listedSize(fileBrowser.rows, copy.path) };
   });
-  const reassurance = $derived(confirmingRecursiveDir ? null : checkedCopyLine(checkedCopy));
+  const reassurance = $derived(confirmingRecursiveDir ? null : checkedCopyLine(keptCopy));
 
   function checkCopies() {
     const copies = unverifiedOutputs;

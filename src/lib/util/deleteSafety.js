@@ -8,6 +8,14 @@
 
 import { formatSize } from '../api/format.js';
 
+// An entry's existing copies: its outputs on disk, never the file itself. A
+// tool may list the source among its own output candidates (Dolphin does for
+// an existing RVZ), and a file is never its own replacement (#594).
+function copiesOf(entry) {
+  return (Array.isArray(entry?.outputs) ? entry.outputs : [])
+    .filter((o) => o?.exists && o.path && o.path !== entry.path);
+}
+
 /**
  * The originals among *entries* whose existing copy hasn't passed a check:
  * `[{ source, outputs: [path] }]`. `isChecked(path)` answers for one copy.
@@ -16,12 +24,18 @@ export function uncheckedCopies(entries, isChecked) {
   const out = [];
   for (const e of entries ?? []) {
     if (!e || typeof e !== 'object' || !e.path) continue;
-    const outputs = (Array.isArray(e.outputs) ? e.outputs : [])
-      .filter((o) => o?.exists && o.path && !isChecked(o.path))
-      .map((o) => o.path);
+    const outputs = copiesOf(e).filter((o) => !isChecked(o.path)).map((o) => o.path);
     if (outputs.length) out.push({ source: e.path, outputs });
   }
   return out;
+}
+
+/**
+ * The entry's copy that passed its check (another file, never the entry
+ * itself), or null: what lets single delete say the game stays.
+ */
+export function checkedCopy(entry, isChecked) {
+  return copiesOf(entry).find((o) => isChecked(o.path)) ?? null;
 }
 
 /**
