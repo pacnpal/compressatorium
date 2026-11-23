@@ -10,6 +10,7 @@ wrote) is still redacted whole.
 from __future__ import annotations
 
 import logging
+import threading
 
 import pytest
 from services import notifications
@@ -110,3 +111,34 @@ async def test_a_timed_out_test_answers_with_the_reason(client, failing):
     out = await client.test_draft("webhook", _HOOK)
 
     assert out["ok"] is False and out["error"].startswith("Timed out after ")
+
+
+@pytest.fixture
+def hanging(monkeypatch):
+    """A webhook that really outlives SEND_TIMEOUT_S, so the timeout is the
+    one ``_send_one`` raises, not a stand-in."""
+    gate = threading.Event()
+    monkeypatch.setitem(notifications.TRANSPORTS, "webhook", lambda url, event: gate.wait(5))
+    monkeypatch.setattr(notifications, "SEND_TIMEOUT_S", 0.05)
+    yield
+    gate.set()
+
+
+@pytest.mark.asyncio
+async def test_a_destination_that_times_out_answers_test_with_the_reason(client, hanging):
+    out = await client.test_draft("webhook", _HOOK)
+
+    assert out == {"ok": False, "error": "Timed out after 0.05s"}
+
+
+@pytest.mark.asyncio
+async def test_a_destination_that_times_out_logs_the_reason_in_the_background(
+        client, hanging, caplog):
+    status, _ = await client.add("webhook", _HOOK)
+    assert status == 200
+    caplog.set_level(logging.WARNING)
+
+    await notifications.deliver(notifications.Event("job_failed", "t", "b"))
+
+    assert "failed: Timed out after 0.05s" in caplog.text
+    assert "TOKEN123abc" not in caplog.text
