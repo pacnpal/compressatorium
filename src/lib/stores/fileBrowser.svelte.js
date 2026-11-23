@@ -110,6 +110,9 @@ class FileBrowserStore {
   volumes = $state([]);
   volumesLoading = $state(false);
   volumesError = $state(null);
+  // Whether the Volume list was ever read: an empty list after a reconnect
+  // (every Volume gone) is not a tab that never listed them (#569).
+  volumesLoaded = false;
   selectedVolume = $state(null);
   // Bumped by every Open folder (`openFolder`): only the latest navigates.
   #openFolderRequest = 0;
@@ -390,6 +393,7 @@ class FileBrowserStore {
     try {
       const data = await api.getVolumes();
       this.volumes = Array.isArray(data) ? data : [];
+      this.volumesLoaded = true;
       return true;
     } catch (e) {
       this.volumesError = e?.message ?? 'Failed to load volumes';
@@ -404,14 +408,22 @@ class FileBrowserStore {
    * mount other Volumes. A Volume still there stays as it is, folder and all;
    * one that's gone gives way to the first one left, or, with none left,
    * to nothing: its search results, selection and archive go with it, so
-   * nothing from it can still be converted. A tab that never listed the
+   * nothing from it can still be converted. When Volumes come back after
+   * none were left, the first one is opened. A tab that never listed the
    * Volumes is left alone, so Files still loads and picks one when opened.
    */
   async refreshVolumes() {
-    if (this.volumes.length === 0 && !this.selectedVolume) return;
+    if (!this.volumesLoaded) return;
+    const hadNone = this.volumes.length === 0;
     if (!(await this.fetchVolumes())) return;
     const open = this.selectedVolume?.path;
-    if (!open || this.volumes.some((v) => v.path === open)) return;
+    if (!open) {
+      if (hadNone && this.volumes.length > 0 && !this.currentPath && !ui.filesPath) {
+        await this.selectVolume(this.volumes[0]);
+      }
+      return;
+    }
+    if (this.volumes.some((v) => v.path === open)) return;
     if (this.volumes.length > 0) {
       await this.selectVolume(this.volumes[0]);
       return;

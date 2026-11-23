@@ -111,6 +111,27 @@ process.stdout.write(JSON.stringify({ ...after,
     assert data == {"calls": 0, "volumes": 0, "volume": "/first"}, data
 
 
+def test_volumes_that_come_back_after_none_are_listed_and_one_is_picked(tmp_path):
+    """Codex on #586: a reconnect left no Volumes, so the list was empty with
+    nothing picked; the next reconnect, with Volumes back, skipped the fetch
+    as if the tab had never listed them, and an open Files stayed on "No
+    volumes". Having listed them once is what counts, not the list's size."""
+    data = _run_browser(tmp_path, """
+await fileBrowser.fetchVolumes();
+await within(fileBrowser.selectVolume(fileBrowser.volumes[1]), 300);
+const back = api.getVolumes;
+api.getVolumes = async () => [];
+await within(fileBrowser.refreshVolumes(), 300);
+const gone = fileBrowser.volumes.length;
+api.getVolumes = back;
+await within(fileBrowser.refreshVolumes(), 300);
+process.stdout.write(JSON.stringify({ gone,
+  volumes: fileBrowser.volumes.map((v) => v.path),
+  volume: fileBrowser.selectedVolume?.path ?? null }));
+""")
+    assert data == {"gone": 0, "volumes": ["/first", "/target"], "volume": "/first"}, data
+
+
 def test_no_volume_left_drops_the_search_selection_and_archive(tmp_path):
     """Codex on #586: with every Volume gone during an Everywhere search, the
     results and the selection survived, so Convert could still send paths
