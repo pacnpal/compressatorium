@@ -37,28 +37,6 @@ process.stdout.write(JSON.stringify(seen));
     assert data == [0, 0, 1, 2], data
 
 
-def test_a_volume_that_is_gone_gives_way_to_the_first_one_left(tmp_path):
-    data = _run_browser(tmp_path, """
-await fileBrowser.fetchVolumes();
-await within(fileBrowser.selectVolume(fileBrowser.volumes[1]), 300);
-api.getVolumes = async () => [
-  { name: 'New', path: '/new' },
-  { name: 'Other', path: '/other' },
-];
-await within(fileBrowser.refreshVolumes(), 300);
-process.stdout.write(JSON.stringify({
-  volumes: fileBrowser.volumes.map((v) => v.path),
-  volume: fileBrowser.selectedVolume?.path ?? null,
-  path: fileBrowser.currentPath,
-  listed: __listed,
-}));
-""")
-    assert data == {
-        "volumes": ["/new", "/other"], "volume": "/new", "path": "/new",
-        "listed": ["/target", "/new"],
-    }, data
-
-
 def test_a_volume_still_there_is_kept_as_it_is(tmp_path):
     data = _run_browser(tmp_path, """
 await fileBrowser.fetchVolumes();
@@ -94,73 +72,6 @@ def test_app_reads_the_version_tools_and_volumes_again_on_a_reconnect():
     assert effect.index("location.reload()") < effect.index("loadTools()")
 
 
-def test_a_tab_that_never_listed_volumes_leaves_the_start_to_files(tmp_path):
-    """Codex on #586: a tab opened on Settings that reconnects before Files
-    was visited filled the list with nothing picked, so Files (which loads
-    and picks only while the list is empty) stayed blank."""
-    data = _run_browser(tmp_path, """
-let calls = 0;
-const real = api.getVolumes;
-api.getVolumes = async () => { calls += 1; return real(); };
-await within(fileBrowser.refreshVolumes(), 300);
-const after = { calls, volumes: fileBrowser.volumes.length };
-await within(fileBrowser.loadVolumes(), 300);
-process.stdout.write(JSON.stringify({ ...after,
-  volume: fileBrowser.selectedVolume?.path ?? null }));
-""")
-    assert data == {"calls": 0, "volumes": 0, "volume": "/first"}, data
-
-
-def test_volumes_that_come_back_after_none_are_listed_and_one_is_picked(tmp_path):
-    """Codex on #586: a reconnect left no Volumes, so the list was empty with
-    nothing picked; the next reconnect, with Volumes back, skipped the fetch
-    as if the tab had never listed them, and an open Files stayed on "No
-    volumes". Having listed them once is what counts, not the list's size."""
-    data = _run_browser(tmp_path, """
-await fileBrowser.fetchVolumes();
-await within(fileBrowser.selectVolume(fileBrowser.volumes[1]), 300);
-const back = api.getVolumes;
-api.getVolumes = async () => [];
-await within(fileBrowser.refreshVolumes(), 300);
-const gone = fileBrowser.volumes.length;
-api.getVolumes = back;
-await within(fileBrowser.refreshVolumes(), 300);
-process.stdout.write(JSON.stringify({ gone,
-  volumes: fileBrowser.volumes.map((v) => v.path),
-  volume: fileBrowser.selectedVolume?.path ?? null }));
-""")
-    assert data == {"gone": 0, "volumes": ["/first", "/target"], "volume": "/first"}, data
-
-
-def test_a_folder_link_reopens_when_its_volume_comes_back(tmp_path):
-    """Codex on #586: Files opened through `#/files/<path>`, every Volume went,
-    then came back. `ui.filesPath` still held the link, so no Volume was
-    picked, and FilesView reopens the folder only when the route changes:
-    Files stayed blank. The link's folder opens again when its Volume is
-    back; a link whose Volume didn't return gives way to the first one."""
-    data = _run_browser(tmp_path, """
-const back = api.getVolumes;
-const run = async (link, returning) => {
-  __listed.length = 0;
-  api.getVolumes = back;
-  ui.filesPath = link;
-  await within(fileBrowser.openFolder(link), 300);
-  api.getVolumes = async () => [];
-  await within(fileBrowser.refreshVolumes(), 300);
-  api.getVolumes = async () => returning;
-  await within(fileBrowser.refreshVolumes(), 300);
-  return { volume: fileBrowser.selectedVolume?.path ?? null, path: fileBrowser.currentPath };
-};
-const kept = await run('/target/roms', [{ name: 'Target', path: '/target' }]);
-const moved = await run('/target/roms', [{ name: 'Other', path: '/other' }]);
-process.stdout.write(JSON.stringify({ kept, moved }));
-""")
-    assert data == {
-        "kept": {"volume": "/target", "path": "/target/roms"},
-        "moved": {"volume": "/other", "path": "/other"},
-    }, data
-
-
 def test_no_volume_left_drops_the_search_selection_and_archive(tmp_path):
     """Codex on #586: with every Volume gone during an Everywhere search, the
     results and the selection survived, so Convert could still send paths
@@ -187,54 +98,15 @@ process.stdout.write(JSON.stringify({
     }, data
 
 
-def test_files_opened_while_a_reconnect_lists_the_volumes_still_opens_one(tmp_path):
-    """Codex on #586: a tab started on Libraries (list fetched, nothing
-    picked); a reconnect's refresh was on its way when Files opened, so
-    VolumeList skipped its start (the list was loading), and the refresh,
-    with Volumes before and after, picked nothing: Files stayed blank. Files'
-    start now waits for a list already on its way, then opens what it
-    should, through the same step a reconnect uses."""
-    data = _run_browser(tmp_path, """
-await fileBrowser.fetchVolumes();
-let answer;
-const real = api.getVolumes;
-api.getVolumes = () => new Promise((resolve) => { answer = () => real().then(resolve); });
-const refresh = fileBrowser.refreshVolumes();
-const start = fileBrowser.startFiles();
-answer();
-await within(Promise.all([refresh, start]), 300);
-process.stdout.write(JSON.stringify({
-  volume: fileBrowser.selectedVolume?.path ?? null, listed: __listed,
-}));
-""")
-    assert data == {"volume": "/first", "listed": ["/first"]}, data
-
-
-def test_files_waits_for_a_list_already_on_its_way(tmp_path):
-    """Opened while another view's first fetch is still out, Files waits for
-    it instead of asking again, then opens the first Volume."""
-    data = _run_browser(tmp_path, """
-let calls = 0;
-let answer;
-const real = api.getVolumes;
-api.getVolumes = () => { calls += 1;
-  return new Promise((resolve) => { answer = () => real().then(resolve); }); };
-const other = fileBrowser.fetchVolumes();
-const start = fileBrowser.startFiles();
-answer();
-await within(Promise.all([other, start]), 300);
-process.stdout.write(JSON.stringify({ calls,
-  volume: fileBrowser.selectedVolume?.path ?? null }));
-""")
-    assert data == {"calls": 1, "volume": "/first"}, data
-
-
 def test_files_starts_whether_or_not_the_list_is_loading():
+    """VolumeList starts Files on mount, loading or not, and says when it
+    leaves; every ordering is in test_frontend_files_selection_569.py."""
     volume_list = (_SRC / "lib" / "components" / "panels" / "VolumeList.svelte").read_text(
         encoding="utf-8",
     )
     on_mount = volume_list.split("onMount(() => {", 1)[1].split("});", 1)[0]
-    assert on_mount.strip() == "fileBrowser.startFiles();"
+    lines = [ln.strip() for ln in on_mount.strip().splitlines()]
+    assert lines == ["fileBrowser.startFiles();", "return () => fileBrowser.stopFiles();"]
 
 
 def test_the_browser_tab_names_the_page():
