@@ -378,6 +378,21 @@ def stored_of(library_id: str, kind: str) -> list[dict[str, Any]]:
         return [{"image_key": row.image_key, "cause": dict(row.cause or {})} for row in rows]
 
 
+def dismissed_of(library_id: str) -> set[tuple[str, str]]:
+    """*library_id*'s ignored Findings, ``(image_key, kind)``. Blocking.
+
+    Only a dismissal of the cause now stored counts, as :func:`list_findings`
+    tells it, so a Finding whose cause changed is shown (and counted) again.
+    """
+    with _session() as session:
+        rows = session.query(_db.FindingRecord).filter_by(library_id=library_id).all()
+        dismissed = _dismissed_keys(session)
+        return {
+            (row.image_key, row.kind) for row in rows
+            if (row.library_id, row.image_key, row.kind, row.fingerprint) in dismissed
+        }
+
+
 def forget_kind(library_id: str, kind: str) -> None:
     """Drop *library_id*'s Findings of *kind* and their dismissals. Blocking.
 

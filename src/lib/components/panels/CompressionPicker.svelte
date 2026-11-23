@@ -201,7 +201,7 @@
       <button
         type="button"
         class="reset-btn"
-        onclick={() => onchange(defaultCompression(mode))}
+        onclick={() => { compatId = ''; onchange(defaultCompression(mode)); }}
         disabled={atDefault}
         title={atDefault ? 'Already the default' : 'Go back to the default for this format'}
       >
