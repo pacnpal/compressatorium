@@ -9,6 +9,9 @@
   import { defaults, SAFE_DEFAULTS } from '$lib/stores/defaults.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { findings } from '$lib/stores/findings.svelte.js';
+  import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { runJobs, runResult } from '$lib/util/runResult.js';
+  import { jobToasts } from '$lib/stores/jobToasts.svelte.js';
   import { libraries } from '$lib/stores/libraries.svelte.js';
   import { romm } from '$lib/stores/romm.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
@@ -215,6 +218,14 @@
     if (deletePrompt) resolveDeletePlan(false);
   });
 
+  // What the last run did, once all of it has finished (#595): "3 games
+  // converted and checked · saved 2.1 GB". Null while it runs. A job pruned
+  // from the live list is read as it was kept when it finished (#596).
+  const lastRunLine = $derived.by(() => {
+    const found = runJobs(conversion.lastRun?.ids ?? [], jobs.jobs, jobToasts.records);
+    return runResult(found, { canDeleteSource: registry.canDeleteSource });
+  });
+
   const converting = $derived(conversion.converting);
   const convertCount = $derived(
     countGames(big && !plan ? paths : actionable.map((row) => row.file_path), playlists),
@@ -419,7 +430,11 @@
         {/snippet}
         {converting ? 'Starting…' : convertCount ? `Convert ${convertCount} ${convertCount === 1 ? 'game' : 'games'}` : 'Convert'}
       </Button>
-      <p class="muted small">Progress shows in Activity.</p>
+      {#if lastRunLine}
+        <p class="result" role="status">{lastRunLine}</p>
+      {:else}
+        <p class="muted small">Progress shows in Activity.</p>
+      {/if}
     </div>
   {/if}
 </section>
@@ -642,6 +657,11 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
+  }
+  .result {
+    margin: 0;
+    color: var(--success-text);
+    font-size: var(--text-sm);
   }
   :global(.panel .spin) { animation: spin 0.9s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }

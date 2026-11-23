@@ -60,6 +60,9 @@ let parseCompression = (_mode, wire) => ({ codecs: wire ? wire.split(',') : [], 
 let formatCompression = (_mode, value) => (value?.codecs ?? []).join(',') || null;
 let specsForTarget = () => [];
 const hashFor = (view, { tab } = {}) => `#/${view}/${tab ?? ''}`;
+// The run summary toast (#595): recorded, not shown.
+const trackedRuns = [];
+const jobToasts = { trackRun: (ids) => trackedRuns.push(ids) };
 const deleteCheckFor = () => 'round_tripped';
 const registry = {
   forTool: (id) => ({

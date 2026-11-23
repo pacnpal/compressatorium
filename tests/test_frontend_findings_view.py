@@ -562,7 +562,8 @@ def test_the_summary_strip_has_four_stats_each_a_link():
     for label in ("Needs you", "Running", "Space saved", "Checked"):
         assert f"label: '{label}'" in src, label
     assert "findings.openCount" in src and "ledger.savings" in src
-    assert "verification.statuses.size" in src and "?status=checked" in src
+    # Checked is History's own checked total (#595).
+    assert "ledger.checkedTotal" in src and "?status=checked" in src
     assert not (_SRC / "lib" / "components" / "dashboard").exists()
 
 

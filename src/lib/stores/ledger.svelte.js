@@ -17,6 +17,9 @@ class LedgerStore {
   savings = $state(null);
   // Finished jobs by status, all time: {completed, failed, cancelled}.
   totals = $state(null);
+  // How many History rows passed a check: History's own Checked total (#595),
+  // so Activity's count agrees with the list it links to.
+  checkedTotal = $state(null);
   _seq = 0;
   _timer = null;
 
@@ -24,15 +27,19 @@ class LedgerStore {
     const seq = ++this._seq;
     // Each read stands alone: one that fails keeps its card's last good value
     // (the next refresh retries) without dropping the others.
-    const [recent, savings, totals] = await Promise.allSettled([
+    const [recent, savings, totals, checked] = await Promise.allSettled([
       api.getLedgerRecent(5),
       api.getLedgerSavings(),
       api.getLedgerTotals(),
+      api.getLedgerPage({ checked: true, limit: 1 }),
     ]);
     if (seq !== this._seq) return;
     if (recent.status === 'fulfilled') this.recent = recent.value;
     if (savings.status === 'fulfilled') this.savings = savings.value;
     if (totals.status === 'fulfilled') this.totals = totals.value?.jobs ?? null;
+    if (checked.status === 'fulfilled' && typeof checked.value?.total === 'number') {
+      this.checkedTotal = checked.value.total;
+    }
   }
 
   refresh() {
