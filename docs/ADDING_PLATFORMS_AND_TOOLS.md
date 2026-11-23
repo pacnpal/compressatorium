@@ -393,7 +393,7 @@ the non-obvious rows is in §8 to §14.
 | 29 | `.github/workflows/codeql.yml` | Push/PR/weekly CodeQL. Its matrix is exactly two languages: `python` and `javascript-typescript`. (PRs also show an `Analyze (actions)` job — that one is configured in the repo's code-scanning settings, not in this file, so don't edit this matrix expecting to change it.) | Auto-covers new code |
 | 30 | `.github/workflows/docker-image.yml` | On release: hadolint, multi-arch build, Trivy scan, SBOM/attestation. | Dockerfile must pass hadolint; see §8/§10 |
 | 31 | `.github/workflows/label.yml` + `.github/labeler.yml` | PR auto-labeling by path. | Add a path glob if you want a label |
-| 31a | `.github/workflows/screenshots.yml` | **Take screenshots**: rebuilds the README/docs captures from `shots.yml` and commits them. | See §3.6 item 49 |
+| 31a | `.github/workflows/screenshots.yml` | **Take screenshots**: rebuilds the README/docs captures from `shots.yml` and commits them on `latest`. | See §3.6 item 49 |
 | 31b | `.github/workflows/stale.yml` | Marks stale issues/PRs. | Irrelevant |
 | 32 | `renovate.json` | Dependency bumps are handled by **Renovate**, not Dependabot — there is no `.github/dependabot.yml`. | Only if adding a new ecosystem |
 | 33 | `pyproject.toml` | pylint + ruff config (Codacy reads this). | Respect line-length 100, py310 |
@@ -1151,7 +1151,8 @@ guard tests are designed to tell you what you missed. In particular
 - Refresh the screenshots: a new tool changes the sidebar, and the images in
   `docs/screenshots/` are generated from `shots.yml` by shot-scraper, not
   captured by hand. Pushing runs the **Take screenshots** workflow, which
-  regenerates and commits them; see `docs/SCREENSHOTS.md` to run it locally.
+  regenerates them and, once merged to `latest`, commits them; see
+  `docs/SCREENSHOTS.md` to run it locally.
 - If you changed a shared seam (not just used it), update
   `docs/DESIGN_tool_plugin_architecture.md` **and this guide** — see §3.6 items
   47–48.
@@ -1513,7 +1514,7 @@ as root. No changes needed there.
 | *Codacy* — **not a workflow** | PR | Runs as a GitHub App check ("Codacy Static Code Analysis"): ruff, eslint, pylint, bandit, etc. New Python/JS must lint clean. Honors `pyproject.toml`, `.pylintrc`, `eslint.config.js`, `.codacy.yml`. Configured in the Codacy UI — there is no `.github/workflows/codacy.yml` to edit. |
 | `codeql.yml` | push, PR, weekly | CodeQL SAST. The matrix in this file is **python** and **javascript-typescript** only; the `Analyze (actions)` job you'll also see on PRs comes from the repo's code-scanning settings, not from here. New code is scanned automatically, no config change, but don't introduce flagged patterns (for example command injection, another reason for the no-`shell=True` rule). |
 | `label.yml` + `labeler.yml` | PR | Path-based auto-labels. Add a glob if you want your area labeled. |
-| `screenshots.yml` | push / manual | **Take screenshots**: rebuilds the README/docs captures from `shots.yml` and commits them. Relevant whenever your tool changes the UI. |
+| `screenshots.yml` | push / manual | **Take screenshots**: rebuilds the README/docs captures from `shots.yml` and commits them on `latest`. Relevant whenever your tool changes the UI. |
 | `stale.yml` | schedule | Marks stale issues/PRs. Irrelevant. |
 | *Renovate* (`renovate.json`) | schedule (Mondays) | Dependency PRs, via the Renovate app — **not** Dependabot; there is no `.github/dependabot.yml`. Adjust only if you introduce a new manifest. |
 

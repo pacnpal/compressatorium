@@ -23,15 +23,20 @@ This keeps them in sync with the current UI and its light/dark themes.
    shot-scraper over every surface in light and dark.
 4. Losslessly optimises the PNGs with [Oxipng](https://github.com/shssoichiro/oxipng)
    (`oxipng -o 4 -i 0 --strip safe`).
-5. Commits any changes under `docs/screenshots/`.
+5. On the default branch (`latest`) only, commits any changes under
+   `docs/screenshots/`.
 
 It runs on manual dispatch and on branch pushes that touch the UI (see the
 workflow's `paths:` list). Changes under `docs/screenshots/**` are deliberately
 not a trigger, so the commit the workflow makes cannot trigger itself. Tag
-pushes don't trigger it, and the commit job skips any run not on a branch (such
-as a manual dispatch from a tag): a tag checkout is a detached HEAD, so there is
-no branch to rebase onto and push the screenshot commit to — that run's
-screenshots stay available as the workflow's `screenshots` artifact instead.
+pushes don't trigger it.
+
+The commit job runs only on the default branch. A PR branch still runs the
+capture, which shows the shots render, and its PNGs stay available as the run's
+`screenshots` artifact, but nothing is committed to it. Committing on PR
+branches gave every open PR a screenshot commit that conflicted with `latest`
+after each merge (and a stacked PR one that conflicted with its base, #333).
+The images are regenerated once the change lands on `latest`.
 
 ## Running it locally
 
