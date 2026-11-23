@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-22T21:30:00-05:00",
+  "title": "Design System: Compressatorium",
+  "extensions": {
+    "colorMeta": {
+      "signal-blue": { "role": "primary", "displayName": "Signal Blue", "canonical": "#2563eb", "tonalRamp": ["#1e3a8a", "#1e40af", "#1d4ed8", "#2563eb", "#3b82f6", "#60a5fa", "#93c5fd", "#dbeafe"] },
+      "ink-slate": { "role": "neutral", "displayName": "Ink Slate", "canonical": "#0b1220", "tonalRamp": ["#0b1220", "#1e293b", "#334155", "#475569", "#64748b", "#94a3b8", "#cbd5e1", "#f1f5f9"] },
+      "bench-mist": { "role": "neutral", "displayName": "Bench Mist", "canonical": "#f6f7f9", "tonalRamp": ["#1f2a40", "#334155", "#64748b", "#94a3b8", "#cbd5e1", "#e2e8f0", "#eceef2", "#f6f7f9"] },
+      "verified-green": { "role": "status", "displayName": "Verified Green", "canonical": "#16a34a", "tonalRamp": ["#14532d", "#166534", "#15703a", "#16a34a", "#22c55e", "#4ade80", "#86efac", "#dcfce7"] },
+      "caution-amber": { "role": "status", "displayName": "Caution Amber", "canonical": "#d97706", "tonalRamp": ["#78350f", "#92400e", "#a14a08", "#d97706", "#f59e0b", "#fbbf24", "#fcd34d", "#fef3c7"] },
+      "fault-red": { "role": "status", "displayName": "Fault Red", "canonical": "#dc2626", "tonalRamp": ["#7f1d1d", "#991b1b", "#b91c1c", "#dc2626", "#ef4444", "#f87171", "#fca5a5", "#fee2e2"] },
+      "notice-sky": { "role": "status", "displayName": "Notice Sky", "canonical": "#0ea5e9", "tonalRamp": ["#0c4a6e", "#075985", "#0369a1", "#0284c7", "#0ea5e9", "#38bdf8", "#7dd3fc", "#e0f2fe"] }
+    },
+    "typographyMeta": {
+      "headline": { "displayName": "Headline", "purpose": "Page titles: Files, Libraries, Activity, Settings." },
+      "title": { "displayName": "Title", "purpose": "Section and dialog titles, the brand name." },
+      "body": { "displayName": "Body", "purpose": "Default for lists, tables, forms and messages." },
+      "body-small": { "displayName": "Body Small", "purpose": "Descriptions under controls, secondary row detail, small buttons." },
+      "label": { "displayName": "Label", "purpose": "Uppercase field labels and panel headings." },
+      "mono": { "displayName": "Mono", "purpose": "Paths, checksums, anything copied exactly." }
+    },
+    "shadows": [
+      { "name": "elev-1", "value": "0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 1px rgba(15, 23, 42, 0.04)", "purpose": "Rest: panels on the page, barely there." },
+      { "name": "elev-2", "value": "0 4px 12px rgba(15, 23, 42, 0.08), 0 2px 4px rgba(15, 23, 42, 0.04)", "purpose": "Raised: dropdowns, popovers, toasts." },
+      { "name": "elev-3", "value": "0 16px 32px rgba(15, 23, 42, 0.12), 0 4px 8px rgba(15, 23, 42, 0.06)", "purpose": "Overlay: dialogs and drawers over the dimmed page." },
+      { "name": "focus-ring", "value": "0 0 0 3px rgba(37, 99, 235, 0.4)", "purpose": "Keyboard focus on every focusable element." }
+    ],
+    "motion": [
+      { "name": "ease-out", "value": "cubic-bezier(0.2, 0.7, 0.2, 1)", "purpose": "Default easing for state changes." },
+      { "name": "dur-fast", "value": "120ms", "purpose": "Hover and color changes on controls." },
+      { "name": "dur-base", "value": "200ms", "purpose": "Sidebar collapse and panel changes." },
+      { "name": "dur-slow", "value": "320ms", "purpose": "Drawers and dialogs." },
+      { "name": "reduced-busy", "value": "opacity fade, 1.6s ease-in-out infinite", "purpose": "Busy indicators under prefers-reduced-motion: fade instead of spin." }
+    ],
+    "breakpoints": [
+      { "name": "phone", "value": "375px" },
+      { "name": "tablet", "value": "768px" },
+      { "name": "laptop", "value": "1280px" },
+      { "name": "container-max", "value": "1440px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one action that matters on a surface.",
+      "html": "<button class=\"ds-btn ds-btn-primary\">Convert</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; gap: var(--space-2, 8px); border-radius: var(--radius-md, 8px); font: 500 var(--text-base, 14px)/1 var(--font-sans, system-ui); padding: 8px 14px; border: 1px solid transparent; cursor: pointer; transition: background var(--dur-fast, 120ms) var(--ease-out, ease), transform var(--dur-fast, 120ms) var(--ease-out, ease); } .ds-btn:active { transform: translateY(1px); } .ds-btn:focus-visible { outline: none; box-shadow: var(--focus-ring, 0 0 0 3px rgba(37,99,235,.4)); } .ds-btn-primary { background: var(--accent, #2563eb); color: var(--accent-contrast, #fff); } .ds-btn-primary:hover { background: var(--accent-hover, #1d4ed8); }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Every other action beside the primary one.",
+      "html": "<button class=\"ds-btn2\">Options</button>",
+      "css": ".ds-btn2 { display: inline-flex; align-items: center; border-radius: var(--radius-md, 8px); font: 500 var(--text-base, 14px)/1 var(--font-sans, system-ui); padding: 8px 14px; background: var(--surface-2, #f6f7f9); color: var(--text-1, #0b1220); border: 1px solid var(--border-subtle, #e2e8f0); cursor: pointer; transition: background var(--dur-fast, 120ms) var(--ease-out, ease); } .ds-btn2:hover { background: var(--surface-3, #eceef2); border-color: var(--border-strong, #cbd5e1); } .ds-btn2:focus-visible { outline: none; box-shadow: var(--focus-ring, 0 0 0 3px rgba(37,99,235,.4)); }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Toolbar and row actions.",
+      "html": "<button class=\"ds-ghost\">Rename</button>",
+      "css": ".ds-ghost { border-radius: var(--radius-md, 8px); font: 500 var(--text-base, 14px)/1 var(--font-sans, system-ui); padding: 8px 14px; background: transparent; color: var(--text-2, #475569); border: 1px solid transparent; cursor: pointer; } .ds-ghost:hover { background: var(--surface-2, #f6f7f9); color: var(--text-1, #0b1220); } .ds-ghost:focus-visible { outline: none; box-shadow: var(--focus-ring, 0 0 0 3px rgba(37,99,235,.4)); }"
+    },
+    {
+      "name": "Select",
+      "kind": "input",
+      "refersTo": "select",
+      "description": "Labelled select with uppercase label above.",
+      "html": "<label class=\"ds-field\"><span class=\"ds-label\">Convert to</span><select class=\"ds-select\"><option>Best (Auto)</option><option>CHD</option></select></label>",
+      "css": ".ds-field { display: inline-flex; flex-direction: column; gap: var(--space-1, 4px); } .ds-label { font: 500 var(--text-xs, 12px) var(--font-sans, system-ui); color: var(--text-2, #475569); text-transform: uppercase; letter-spacing: .05em; } .ds-select { background: var(--surface-2, #f6f7f9); color: var(--text-1, #0b1220); border: 1px solid var(--border-subtle, #e2e8f0); border-radius: var(--radius-md, 8px); padding: 8px 12px; font: var(--text-base, 14px)/1 var(--font-sans, system-ui); } .ds-select:hover { border-color: var(--border-strong, #cbd5e1); } .ds-select:focus-visible { outline: none; border-color: var(--accent, #2563eb); box-shadow: var(--focus-ring, 0 0 0 3px rgba(37,99,235,.4)); }"
+    },
+    {
+      "name": "Sidebar Navigation",
+      "kind": "nav",
+      "refersTo": "nav-item",
+      "description": "The four places plus Help; active item on a blue wash.",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-nav-item ds-active\" href=\"#\">Files</a><a class=\"ds-nav-item\" href=\"#\">Libraries</a><a class=\"ds-nav-item\" href=\"#\">Activity</a><a class=\"ds-nav-item\" href=\"#\">Settings</a></nav>",
+      "css": ".ds-nav { display: flex; flex-direction: column; gap: 2px; width: 220px; } .ds-nav-item { display: block; padding: var(--space-2, 8px) var(--space-3, 12px); border-radius: var(--radius-md, 8px); color: var(--text-2, #475569); font: var(--text-base, 14px) var(--font-sans, system-ui); text-decoration: none; transition: background var(--dur-fast, 120ms) var(--ease-out, ease); } .ds-nav-item:hover { background: var(--surface-2, #f6f7f9); color: var(--text-1, #0b1220); } .ds-nav-item:focus-visible { outline: none; box-shadow: var(--focus-ring, 0 0 0 3px rgba(37,99,235,.4)); } .ds-active { background: var(--accent-muted, rgba(37,99,235,.08)); color: var(--accent, #2563eb); font-weight: 500; }"
+    },
+    {
+      "name": "Status Badges",
+      "kind": "chip",
+      "refersTo": "badge",
+      "description": "Format and result pills: hue at 16% behind same-hue text.",
+      "html": "<span class=\"ds-badge ds-verified\">Verified</span> <span class=\"ds-badge ds-cd\">CD</span> <span class=\"ds-badge ds-dat\">DAT match</span>",
+      "css": ".ds-badge { display: inline-flex; align-items: center; border-radius: var(--radius-full, 9999px); padding: 2px 8px; font: 600 var(--text-xs, 12px)/1.4 var(--font-sans, system-ui); } .ds-verified { background: color-mix(in srgb, var(--badge-verified, #16a34a) 16%, transparent); color: var(--badge-verified, #16a34a); } .ds-cd { background: color-mix(in srgb, var(--badge-cd, #0ea5e9) 16%, transparent); color: var(--badge-cd, #0ea5e9); } .ds-dat { background: color-mix(in srgb, var(--badge-dat-match, #7c3aed) 16%, transparent); color: var(--badge-dat-match, #7c3aed); }"
+    },
+    {
+      "name": "Panel",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "Resting container: hairline border, faint lift, uppercase heading.",
+      "html": "<section class=\"ds-panel\"><h3 class=\"ds-panel-title\">Running</h3><p class=\"ds-panel-body\">2 jobs converting.</p></section>",
+      "css": ".ds-panel { background: var(--surface-1, #fff); border: 1px solid var(--border-subtle, #e2e8f0); border-radius: var(--radius-lg, 12px); box-shadow: var(--elev-1, 0 1px 2px rgba(15,23,42,.06)); padding: var(--space-4, 16px); max-width: 320px; } .ds-panel-title { margin: 0 0 var(--space-3, 12px); font: 600 var(--text-base, 14px) var(--font-sans, system-ui); color: var(--text-1, #0b1220); text-transform: uppercase; letter-spacing: .05em; } .ds-panel-body { margin: 0; color: var(--text-2, #475569); font: var(--text-base, 14px)/1.5 var(--font-sans, system-ui); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Quiet Workbench",
+    "overview": "Compressatorium is a tidy bench in a home server room. The surfaces are calm slate neutrals, there is one blue for the action you can take, and color is otherwise kept for status. The games and the work on them are the subject; the chrome stays out of the way. The interface is calm and precise: information is dense but readable, spacing follows a strict 4px rhythm, and nothing raises its voice unless something actually needs attention.\n\nThe system is built entirely on CSS custom properties in src/styles/tokens.css. Light is the default and dark is a complete counterpart. System fonts keep it native on every machine it's opened from. Depth is mostly flat: tone steps and hairline borders do the separating, and shadow appears only on things that sit above the page.",
+    "keyCharacteristics": [
+      "Slate neutrals with a single Signal Blue for actions, selection and focus.",
+      "Status color (green, amber, red, sky) is meaningful. It is never decoration.",
+      "A strict 4px spacing scale and a compact 12–16px type range suited to tables and lists.",
+      "8px corners on controls and 12px on panels; pills only for badges.",
+      "Light and dark at full parity, both meeting WCAG 2.2 AA."
+    ],
+    "rules": [
+      { "name": "The One Voice Rule", "body": "Signal Blue means \"you can act here\". It is never used for decoration, headings or status, so a person can scan for blue and find their next action.", "section": "colors" },
+      { "name": "The Text-Variant Rule", "body": "On light surfaces, status text uses the -text variant, never the fill color. The fills are too light to read as text on white. In dark mode the fills are bright enough and double as text.", "section": "colors" },
+      { "name": "The Compact Range Rule", "body": "Working text lives between 12px and 16px. Larger sizes (20–30px) are only for page titles and empty-state headlines, never for emphasis inside a list.", "section": "typography" },
+      { "name": "The 4px Rhythm Rule", "body": "Every margin, gap and padding is a step on the spacing scale. A value off the scale is a bug.", "section": "layout" },
+      { "name": "The Lift-Only Rule", "body": "A shadow means \"this sits above the page\". Never add one for decoration or to make a flat element look like a button.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do take every color, size, radius, space and shadow from src/styles/tokens.css. No raw hex or pixel values in components.",
+      "Do keep Signal Blue for the one action that matters on a surface, and use secondary or ghost buttons for the rest.",
+      "Do use the -text status variants for status text on light surfaces, and check 4.5:1 in both themes.",
+      "Do show the keyboard focus ring on everything focusable.",
+      "Do keep busy indicators visible under reduced motion: they fade instead of moving (reduced-busy).",
+      "Do design light and dark together. A component isn't done until both pass."
+    ],
+    "donts": [
+      "Don't use Signal Blue or any status hue for decoration, headings or emphasis.",
+      "Don't add shadows to flat elements. Shadow means lifted, never decoration.",
+      "Don't step outside the 4px spacing scale or the 12–16px working type range.",
+      "Don't add gradients, decorative shapes, marquee motion or striped fills. None of these belong to this bench.",
+      "Don't use a destructive red button anywhere but the confirming step of a delete."
+    ]
+  }
+}

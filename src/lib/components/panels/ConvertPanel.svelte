@@ -207,6 +207,7 @@
   // A dialog still open is answered "no": its flag would otherwise stay set
   // and hold App's background refreshes after the panel is gone.
   onDestroy(() => {
+    conversion.publishConvert(null);
     submitAbort?.abort();
     submitAbort = null;
     conversion.cancelPlan();
@@ -235,6 +236,14 @@
       inFlight = false;
     }
   }
+
+  // The selection bar's "Convert N games" is this button: same count, same
+  // disabled state, same flow (#589).
+  $effect(() => {
+    conversion.publishConvert({
+      count: convertCount, disabled, busy: converting, run: convert,
+    });
+  });
 
   // Everything the run sends is read here, before the first await: what is
   // queued is what was planned, whatever changes while a dialog is open.
