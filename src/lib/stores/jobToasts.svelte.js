@@ -12,7 +12,9 @@
 import { toast } from 'svelte-sonner';
 import { registry } from '$lib/tools/registry.js';
 import { completionToast } from '$lib/util/jobToast.js';
-import { recordFinished, runJobs, runResult } from '$lib/util/runResult.js';
+import {
+  recordFinished, runJobs, runNeedsAttention, runResult,
+} from '$lib/util/runResult.js';
 import { jobName } from '$lib/api/format.js';
 import { EXTERNAL_MODE_LABELS, EXTERNAL_SCAN_MODES, TERMINAL_STATUSES } from './jobConstants.js';
 
@@ -93,8 +95,9 @@ class JobToastTracker {
       const line = runResult(found, options);
       if (!line) return true;
       if (run.toast) {
-        const failed = found.some((job) => job.status !== 'completed');
-        if (failed) toast.warning(line, { duration: 8000 });
+        // A failed, cancelled or warned job makes the summary a warning, as
+        // its own toast is.
+        if (runNeedsAttention(found)) toast.warning(line, { duration: 8000 });
         else toast.success(line, { duration: 6000 });
       }
       if (run !== this._latest) this._forget(run);

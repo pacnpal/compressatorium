@@ -41,6 +41,15 @@ export function jobKeptDelta(job) {
   return deletedOriginal(job) ? 0 : (delta(job) ?? 0);
 }
 
+function jobWarned(job) {
+  return !!job?.warning;
+}
+
+/** Whether a finished run's summary is a warning: a job failed, was cancelled or warned. */
+export function runNeedsAttention(jobs) {
+  return (jobs ?? []).some((job) => job && (job.status !== 'completed' || jobWarned(job)));
+}
+
 /** Whether the job's new file passed a check. */
 export function jobChecked(job) {
   return !!job?.check_passed && job.check_passed !== 'none';
@@ -104,11 +113,15 @@ export function runResult(jobs, { canDeleteSource = () => false } = {}) {
   const done = list.filter((job) => job.status === 'completed');
   const failed = list.filter((job) => job.status === 'failed').length;
   const cancelled = list.filter((job) => job.status === 'cancelled').length;
+  // Done, but less than asked (a repack that may not start): its own toast is
+  // a warning, so the run says so too (#596).
+  const warned = done.filter(jobWarned).length;
   const more = sum(done, (job) => jobStillToSave(job, canDeleteSource));
   const parts = [
     done.length ? convertedHead(done) : 'Nothing converted',
     savedPhrase(sum(done, jobSaved)),
     more > 0 ? `${formatSize(more)} more to save by deleting the originals` : null,
+    warned ? `${warned} with a warning` : null,
     failed ? `${failed} failed` : null,
     cancelled ? `${cancelled} cancelled` : null,
   ];

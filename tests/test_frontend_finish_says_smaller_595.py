@@ -247,3 +247,29 @@ def test_the_toasts_and_the_panel_read_the_kept_results():
     panel = _read("components/panels/ConvertPanel.svelte")
     assert "runJobs(" in panel and "jobToasts.records" in panel
     assert "found.length === ids.length" not in panel
+
+
+def test_a_warned_job_is_named_in_the_run_line(tmp_path):
+    """A job that finished with a warning (a repack that may not start) is a
+    warning in its own toast; the run's summary says so too (#596)."""
+    out = _eval(tmp_path, _RESULT, "runResult, runNeedsAttention", f"""
+const ok = {_job(id="a", check_passed="intact")};
+const warned = {_job(id="b", check_passed="intact", warning="May not start")};
+const failed = {_job(id="c", status="failed")};
+process.stdout.write(JSON.stringify({{
+  line: runResult([ok, warned]),
+  clean: runNeedsAttention([ok]),
+  warnedRun: runNeedsAttention([ok, warned]),
+  failedRun: runNeedsAttention([ok, failed]),
+}}));
+""")
+    assert out["line"] == "2 games converted and checked · 1 with a warning"
+    assert out["clean"] is False
+    assert out["warnedRun"] is True
+    assert out["failedRun"] is True
+
+
+def test_the_summary_toast_warns_for_a_warned_run():
+    toasts = _read("stores/jobToasts.svelte.js")
+    assert "runNeedsAttention(found)" in toasts
+    assert "job.status !== 'completed');" not in toasts
