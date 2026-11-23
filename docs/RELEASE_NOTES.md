@@ -469,6 +469,13 @@
     row shows a tick on its output's badge instead.
   - Job toasts and job rows name the new file, not its full path.
 
+- **A watch folder's copy shows its console in History** (#572). A game a
+  watch folder took in as it is (no Rule to convert it) was filed under no
+  console, and its row still read *Copying into …* after it was done. It's
+  now filed under the console its folder, or **Place it**, gave it, and says
+  *Copied into …*. A watch folder's other jobs say what they did too
+  (*Unpacked 2 games*, *Checked against the game lists*), not *Unpacking it*
+  or *Recognizing it*.
 - muOS is no longer listed as reading `gamelist.xml`. It keeps its artwork in
   its own catalogue (`MUOS/info/catalogue`), by game name.
 
