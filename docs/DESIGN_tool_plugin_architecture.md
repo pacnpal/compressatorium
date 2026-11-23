@@ -10408,14 +10408,36 @@ with no edit:
 - `src/lib/util/safetyOptions.js` (drawn by `SafetyOptions.svelte`) decides
   which safety choices a set of mode specs offers: check each new file, delete
   the original (only where `supportsDeleteOnVerify`; the rest are named as
-  kept, with `sourceKeptReason`), and the quick check (only where a Round-trip
-  runs and isn't required). Deleting forces the check on.
+  kept, with `sourceKeptReason`), and the quick check. `safetyControls(specs,
+  { deleteOriginal, allowQuick })` offers the quick check only when
+  `allowQuick` is on (the `allow_quick_check` opt-out below, #593), delete is
+  on, and a Round-trip runs and isn't required. Deleting forces the check on.
+  Every caller passes `allowQuick` from the defaults store; the Convert panel
+  also sends `containerOnly` only while it is on.
+- `src/lib/util/deleteSafety.js` is the delete dialogs' shared rule (#593):
+  `uncheckedCopies(entries, isChecked)` lists the originals whose existing
+  copy hasn't passed a check, `checkedCopy(entry, isChecked)` finds the copy
+  that has, and `deleteGate({ unchecked, allowUnchecked, acknowledged })`
+  answers `clear`, `refuse` (an unchecked copy and the opt-out off) or `ask`
+  (the opt-out on: the old acknowledgement decides). A copy is never the file
+  itself: a tool may list its source among its output candidates (Dolphin
+  does for an existing RVZ), so both skip an output whose path is the
+  entry's. `splitPath`, `freedBytes` and `checkedCopyLine` are the words the
+  dialogs show. Bulk and single delete both use it; refused, they offer to
+  check the copies instead.
 - `FolderPicker.svelte` / `FolderPickerModal.svelte` pick a folder by walking
   the Drives (`/api/volumes`, then `/api/files`), never through a typed path.
 - The defaults store (`src/lib/stores/defaults.svelte.js`, `GET`/`PUT
   /api/preferences/defaults`, model `DefaultsPreferences`) holds the safety
   choices new conversions and new console settings start with. Nothing stored
-  answers the safe defaults: check on, delete off, full check.
+  answers the safe defaults: check on, delete off, full check. It also holds
+  the two documented opt-outs (#593), both off by default:
+  `allow_quick_check` (offer Quick check only; turning it off also clears a
+  saved `container_only`, and a saved one is never seeded or sent while it is
+  off) and `allow_unchecked_delete` (let a delete ask instead of refuse when an
+  original's copy hasn't passed a check). They gate only what the interface
+  offers; every server-side refusal stands, and the API's explicit
+  `container_only` is unchanged.
 - Routes live in one pure file, `src/lib/router/routes.js`: `VIEWS`,
   `VIEW_TITLES`, `parseHash`, `hashFor` and `legacyRedirect`, which moves every
   old route (`#/workspace/<tool>`, `#/rules/<id>`, `#/findings`, …) to its new

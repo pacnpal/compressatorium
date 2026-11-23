@@ -13,14 +13,19 @@
    * @property {boolean} quickCheck
    * @property {(state: { checkAfter: boolean, deleteOriginal: boolean, quickCheck: boolean }) => void} onchange
    * @property {string} [idPrefix]
+   * @property {boolean} [allowQuick] the Settings opt-out that offers the
+   *   quick check (#593); off, it isn't offered
    */
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
   import { safetyControls, applySafety } from '$lib/util/safetyOptions.js';
 
   /** @type {Props} */
-  let { specs, checkAfter, deleteOriginal, quickCheck, onchange, idPrefix = 'safety' } = $props();
+  let {
+    specs, checkAfter, deleteOriginal, quickCheck, onchange, idPrefix = 'safety',
+    allowQuick = false,
+  } = $props();
 
-  const controls = $derived(safetyControls(specs, { deleteOriginal }));
+  const controls = $derived(safetyControls(specs, { deleteOriginal, allowQuick }));
 
   function change(patch) {
     onchange?.(applySafety({ checkAfter, deleteOriginal, quickCheck }, patch));

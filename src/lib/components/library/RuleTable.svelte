@@ -73,7 +73,7 @@
     if (isNew && patch.mode) {
       const spec = specOf(patch.mode);
       extra = newRuleSafety(spec, defaults.values);
-      if (extra.delete_on_verify && defaults.values.container_only
+      if (extra.delete_on_verify && defaults.values.container_only && defaults.values.allow_quick_check
         && spec?.supportsRoundTrip && !spec?.roundTripRequired) {
         extra.check_level = CHECK_LEVEL.containerOnly;
       }

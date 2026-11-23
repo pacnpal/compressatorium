@@ -113,5 +113,8 @@ await b;
 process.stdout.write(JSON.stringify({ inFlight, sent: calls[1].v, values: defaults.values }));
 """)
     assert got["inFlight"] == 1, got
-    assert got["sent"] == {"verify_after": True, "delete_on_verify": False, "container_only": True}
+    assert got["sent"] == {
+        "verify_after": True, "delete_on_verify": False, "container_only": True,
+        "allow_quick_check": False, "allow_unchecked_delete": False,
+    }
     assert got["values"]["container_only"] is True and got["values"]["delete_on_verify"] is False

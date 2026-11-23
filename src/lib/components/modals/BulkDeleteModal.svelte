@@ -2,7 +2,10 @@
   import { ui } from '$lib/stores/ui.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { verification } from '$lib/stores/verification.svelte.js';
+  import { defaults } from '$lib/stores/defaults.svelte.js';
   import { api } from '$lib/api/endpoints.js';
+  import { formatSize } from '$lib/api/format.js';
+  import { uncheckedCopies, deleteGate, splitPath, freedBytes } from '$lib/util/deleteSafety.js';
   import { deleteOutcome } from '$lib/util/deleteOutcome.js';
   import { toast } from 'svelte-sonner';
   import BaseModal from './BaseModal.svelte';
@@ -23,26 +26,25 @@
     if (open) acknowledged = false;
   });
 
-  // Sources with unverified replacement outputs. Each entry in the
-  // selection may carry an `outputs` array from /api/files, items
-  // with `exists: true` and a path NOT in verification.statuses are
-  // the risk surface for permanently removing the original before the
-  // new output has been confirmed correct.
-  const unverifiedReplacements = $derived.by(() => {
-    const out = [];
-    for (const e of entries) {
-      const path = typeof e === 'string' ? null : e?.path;
-      const outputs = typeof e === 'object' && Array.isArray(e?.outputs) ? e.outputs : [];
-      const risky = outputs.filter(
-        (o) => o?.exists && o.path && !verification.statuses.has(o.path),
-      );
-      if (path && risky.length > 0) {
-        out.push({ source: path, outputs: risky.map((o) => o.path) });
-      }
-    }
-    return out;
-  });
-  const needsAck = $derived(unverifiedReplacements.length > 0 && !acknowledged);
+  // Sources whose new copy exists but hasn't passed a check: the delete
+  // can't be sure about these. It refuses them unless the Settings opt-out
+  // is on, and then asks as it used to (#593).
+  const unverifiedReplacements = $derived(
+    uncheckedCopies(entries, (p) => verification.statuses.has(p)),
+  );
+  const gate = $derived(deleteGate({
+    unchecked: unverifiedReplacements.length,
+    allowUnchecked: defaults.values.allow_unchecked_delete,
+    acknowledged,
+  }));
+  const freed = $derived(freedBytes(entries));
+
+  // Refused: check the copies instead, so the delete can go ahead after.
+  function checkCopies() {
+    const copies = unverifiedReplacements.flatMap((r) => r.outputs);
+    ui.bulkDeleteEntries = null;
+    ui.bulkVerifyItems = copies;
+  }
 
   function close() {
     if (busy) return;
@@ -85,35 +87,48 @@
   {open}
   onClose={close}
   title="Delete {paths.length} file{paths.length === 1 ? '' : 's'}?"
-  description="Permanent, files are removed from disk and not recoverable. Output files queued for conversion are not affected."
+  description={`Permanent: the files are removed from disk and can't be recovered.${freed ? ` Frees ${formatSize(freed)}.` : ''}`}
   size="md"
 >
   {#snippet titleIcon()}<Trash2 size={18} aria-hidden="true" />{/snippet}
   {#snippet body()}
-    {#if unverifiedReplacements.length > 0}
+    {#if gate.state !== 'clear'}
+      {@const n = unverifiedReplacements.length}
       <div class="bd-warn" role="alert">
         <TriangleAlert size={14} aria-hidden="true" />
         <div>
-          <strong>{unverifiedReplacements.length} source file{unverifiedReplacements.length === 1 ? ' has' : 's have'} an output that has not passed a check.</strong>
-          Their replacement files have not been checked yet, so deleting the originals now risks losing data if a conversion was corrupted. Verify the outputs first, or acknowledge the risk to proceed.
+          <strong>
+            {n === 1 ? "1 original's new copy hasn't" : `${n} originals' new copies haven't`} passed a check.
+          </strong>
+          {#if gate.state === 'refuse'}
+            Nothing is deleted until {n === 1 ? 'it does' : 'they do'}, so a bad conversion can't cost you the game.
+          {:else}
+            Deleting {n === 1 ? 'it' : 'them'} now loses the game if a conversion went wrong.
+          {/if}
           <ul class="bd-warn-list">
             {#each unverifiedReplacements.slice(0, 6) as r (r.source)}
-              <li title={r.source}>{r.source}</li>
+              <li title={r.source}>{splitPath(r.source).name}</li>
             {/each}
-            {#if unverifiedReplacements.length > 6}
-              <li>…and {unverifiedReplacements.length - 6} more</li>
+            {#if n > 6}
+              <li>…and {n - 6} more</li>
             {/if}
           </ul>
-          <label class="bd-ack">
-            <input type="checkbox" bind:checked={acknowledged} />
-            <span>I understand and want to delete anyway.</span>
-          </label>
+          {#if gate.state === 'ask'}
+            <label class="bd-ack">
+              <input type="checkbox" bind:checked={acknowledged} />
+              <span>I understand and want to delete anyway.</span>
+            </label>
+          {/if}
         </div>
       </div>
     {/if}
     <ul class="bd-list">
       {#each paths.slice(0, 20) as p (p)}
-        <li class="bd-row" title={p}>{p}</li>
+        {@const { name, folder } = splitPath(p)}
+        <li class="bd-row" title={p}>
+          <span class="bd-name">{name}</span>
+          {#if folder}<span class="bd-folder"><bdi>{folder}</bdi></span>{/if}
+        </li>
       {/each}
       {#if paths.length > 20}
         <li class="bd-more">…and {paths.length - 20} more</li>
@@ -122,7 +137,10 @@
   {/snippet}
   {#snippet footer()}
     <Button variant="secondary" onclick={close} disabled={busy}>Keep</Button>
-    <Button variant="destructive" onclick={handleConfirm} disabled={busy || paths.length === 0 || needsAck} loading={busy}>
+    {#if gate.state === 'refuse'}
+      <Button variant="secondary" onclick={checkCopies} disabled={busy}>Check the copies</Button>
+    {/if}
+    <Button variant="destructive" onclick={handleConfirm} disabled={busy || paths.length === 0 || !gate.canDelete} loading={busy}>
       Delete {paths.length}
     </Button>
   {/snippet}
@@ -140,14 +158,27 @@
     background: var(--surface-2);
   }
   .bd-row {
-    padding: 4px var(--space-2);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--text-2);
+    display: flex;
+    flex-direction: column;
+    padding: var(--space-1) var(--space-2);
     border-bottom: 1px solid var(--border-subtle);
+    min-width: 0;
+  }
+  .bd-name {
+    font-size: var(--text-sm);
+    color: var(--text-1);
+    overflow-wrap: anywhere;
+  }
+  /* The folder, muted, cut from the start so the part nearest the file
+     stays. */
+  .bd-folder {
+    font-size: var(--text-xs);
+    color: var(--text-3);
     overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
+    text-overflow: ellipsis;
+    direction: rtl;
+    text-align: left;
   }
   .bd-row:last-child { border-bottom: none; }
   .bd-more {
