@@ -207,6 +207,15 @@ process.stdout.write(JSON.stringify({
     assert all(o["label"] for o in out["zip"])
 
 
+
+def _offer_source(targets):
+    """offeredInstead's body plus the per-entry helper it calls."""
+    offered = targets[targets.index("export function offeredInstead"):]
+    offered = offered[:offered.index("\n}\n")]
+    assert "manualOptions(" in offered
+    helper = targets[targets.index("function manualOptions"):]
+    return offered + helper[:helper.index("\n}\n")]
+
 def test_the_skip_line_offers_it_without_naming_a_tool():
     plan = _read("components/panels/ConvertPlan.svelte")
     assert "offeredInstead(" in plan
@@ -215,8 +224,7 @@ def test_the_skip_line_offers_it_without_naming_a_tool():
     panel = _read("components/panels/ConvertPanel.svelte")
     assert "onchoose={(value) => conversion.chooseTarget(value)}" in panel
     targets = _read("tools/convertTargets.js")
-    offered = targets[targets.index("export function offeredInstead"):]
-    offered = offered[:offered.index("\n}\n")]
+    offered = _offer_source(targets)
     # By the registry's flag alone: the picker marks such options `manual`
     # (isManual reads autoTarget), and the offer takes those (#598).
     assert "o.manual" in offered
@@ -350,6 +358,5 @@ process.stdout.write(JSON.stringify({
 
 def test_the_offer_draws_from_the_picker():
     targets = _read("tools/convertTargets.js")
-    offered = targets[targets.index("export function offeredInstead"):]
-    offered = offered[:offered.index("\n}\n")]
+    offered = _offer_source(targets)
     assert "convertTargets(" in offered
