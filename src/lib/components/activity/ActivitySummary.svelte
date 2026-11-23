@@ -2,7 +2,8 @@
   /**
    * Activity's summary strip: four numbers, each a link to the tab that
    * explains it. What needs you, what runs, the space saved so far and how
-   * many games passed a check.
+   * many games passed a check. Both of those last two come from History (the
+   * Ledger), so they agree with the list they link to (#595).
    */
   import { findings } from '$lib/stores/findings.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
@@ -14,7 +15,8 @@
 
   const running = $derived(jobs.runningList);
   const busy = $derived(running.filter((j) => j.status === 'processing').length);
-  const checked = $derived(verification.statuses.size);
+  const checked = $derived(ledger.checkedTotal ?? 0);
+  const savedFromGames = $derived(ledger.savings?.conversions ?? 0);
   const batch = $derived(verification.batchRun);
 
   // Where the space came from, as the old card split it: by console and by format.
@@ -46,6 +48,10 @@
     {
       label: 'Space saved',
       value: formatSize(ledger.savings?.saved_bytes ?? 0),
+      // Its scope: the games whose original was deleted.
+      unit: savedFromGames
+        ? `from ${savedFromGames === 1 ? '1 game' : `${savedFromGames} games`}`
+        : 'no originals deleted yet',
       href: hashFor('activity', { tab: 'history' }),
       note: savedFrom,
     },

@@ -4,6 +4,17 @@
 
 ### Added
 
+- **The finish says how much smaller** (#595).
+  - A finished conversion's toast says what it did, for example "→ Game.chd ·
+    checked · saved 2.1 MB", or "2.1 MB smaller, original kept".
+  - A run of several games ends with one line, such as "3 games converted and
+    checked · saved 2.1 MB", plus how much deleting kept originals would still
+    save. The Convert panel shows the same line for its last run.
+  - Archive rows show their size.
+  - Activity's **Checked** is History's checked total, so the two agree.
+    **Space saved** says which games it counts: "from 3 games", the ones
+    whose original was deleted.
+
 - **RomM connects itself** (#532).
   - On first run, RomM's Settings looks for RomM at `http://romm:8080` and its
     other usual addresses and offers **Found RomM at …: Use it**.

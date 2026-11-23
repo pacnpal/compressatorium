@@ -9,6 +9,8 @@
   import { defaults, SAFE_DEFAULTS } from '$lib/stores/defaults.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { findings } from '$lib/stores/findings.svelte.js';
+  import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { runResult } from '$lib/util/runResult.js';
   import { libraries } from '$lib/stores/libraries.svelte.js';
   import { romm } from '$lib/stores/romm.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
@@ -210,6 +212,15 @@
     if (deletePrompt) resolveDeletePlan(false);
   });
 
+  // What the last run did, once all of it has finished (#595): "3 games
+  // converted and checked · saved 2.1 GB". Null while it runs, or once one of
+  // its jobs is no longer listed.
+  const lastRunLine = $derived.by(() => {
+    const ids = conversion.lastRun?.ids ?? [];
+    const found = ids.map((id) => jobs.jobs.find((job) => job.id === id)).filter(Boolean);
+    return found.length && found.length === ids.length ? runResult(found) : null;
+  });
+
   const converting = $derived(conversion.converting);
   const convertCount = $derived(big && !plan ? paths.length : actionable.length);
   // From the first click until the submit settles (the plan dialog and the
@@ -398,7 +409,11 @@
         {/snippet}
         {converting ? 'Starting…' : convertCount ? `Convert ${convertCount} ${convertCount === 1 ? 'game' : 'games'}` : 'Convert'}
       </Button>
-      <p class="muted small">Progress shows in Activity.</p>
+      {#if lastRunLine}
+        <p class="result" role="status">{lastRunLine}</p>
+      {:else}
+        <p class="muted small">Progress shows in Activity.</p>
+      {/if}
     </div>
   {/if}
 </section>
@@ -617,6 +632,11 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
+  }
+  .result {
+    margin: 0;
+    color: var(--success-text);
+    font-size: var(--text-sm);
   }
   :global(.panel .spin) { animation: spin 0.9s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }

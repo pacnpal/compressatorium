@@ -12,6 +12,7 @@
 import { toast } from 'svelte-sonner';
 import { registry } from '$lib/tools/registry.js';
 import { completionToast } from '$lib/util/jobToast.js';
+import { runResult } from '$lib/util/runResult.js';
 import { EXTERNAL_SCAN_MODES, TERMINAL_STATUSES } from './jobConstants.js';
 
 function filenameOf(job) {
@@ -53,6 +54,37 @@ class JobToastTracker {
   // the same non-reactive escape jobs.svelte.js uses for its transient
   // id→state lookups, correct here and lint-clean.
   _active = Object.create(null);
+
+  // Convert runs waiting to be summed up (#595): `[{ ids }]`. Plain, for the
+  // same reason as _active.
+  _runs = [];
+
+  /**
+   * Sum up a Convert run in one toast once all its jobs have finished. A run
+   * of one game says it all in its own toast, so it isn't tracked.
+   * @param {string[]} ids
+   */
+  trackRun(ids) {
+    if (!Array.isArray(ids) || ids.length < 2) return;
+    this._runs.push({ ids: [...ids] });
+  }
+
+  _settleRuns(jobList) {
+    if (!this._runs.length) return;
+    const byId = Object.create(null);
+    for (const job of jobList) if (job?.id != null) byId[job.id] = job;
+    this._runs = this._runs.filter(({ ids }) => {
+      const found = ids.map((id) => byId[id]);
+      // A job no longer listed (cleared elsewhere): the run can't be summed.
+      if (found.some((job) => !job)) return false;
+      const line = runResult(found);
+      if (!line) return true;
+      const failed = found.some((job) => job.status !== 'completed');
+      if (failed) toast.warning(line, { duration: 8000 });
+      else toast.success(line, { duration: 6000 });
+      return false;
+    });
+  }
 
   /**
    * Reconcile the live toast set against the current jobs list.
@@ -101,6 +133,8 @@ class JobToastTracker {
       // (rec === undefined) are skipped so a page reload doesn't replay
       // "completed" toasts for old history.
     }
+
+    this._settleRuns(jobList);
 
     // A running job can vanish from the list without a terminal frame,
     // another tab clears it, or the backend prunes it. Dismiss its stale

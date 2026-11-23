@@ -12,6 +12,7 @@ import { formatCompression, parseCompression } from '$lib/tools/compression.js';
 import { specsForTarget } from '$lib/tools/convertTargets.js';
 import { hashFor } from '$lib/router/routes.js';
 import { jobs } from './jobs.svelte.js';
+import { jobToasts } from './jobToasts.svelte.js';
 import { deleteCheckFor } from '$lib/util/deleteCheck.js';
 
 const PREF_SAVE_DEBOUNCE_MS = 500;
@@ -131,6 +132,8 @@ class ConversionStore {
 
   deletePlan = $state(null);
   converting = $state(false);
+  // The last Convert run's job ids (#595), for its result line in the panel.
+  lastRun = $state(null);
 
   // Server-saved per-tool compression ({ [toolId]: "<wire value>" }), loaded
   // once on boot and PUT (debounced) on every change. The plan uses it, so a
@@ -600,6 +603,11 @@ class ConversionStore {
         }
         const createdJobs = Array.isArray(result?.jobs) ? result.jobs : [];
         jobs.adopt(createdJobs);
+        const ids = createdJobs.map((job) => job?.id).filter((id) => id != null);
+        if (ids.length) {
+          this.lastRun = { ids };
+          jobToasts.trackRun(ids);
+        }
         // Each game left out and why (a plan that changed, an output another
         // job holds), for the shared result toast (#520).
         return { result, createdJobs, skipped: result?.skipped ?? [] };

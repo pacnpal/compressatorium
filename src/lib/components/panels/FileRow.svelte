@@ -205,7 +205,7 @@
     </button>
     </div>
   </td>
-  <td class="size">{isFile || parts.length ? formatSize(entry?.size) : ''}</td>
+  <td class="size">{isFile || isArchive || parts.length ? formatSize(entry?.size) : ''}</td>
   <td class="ext">{registry.displayExtension(entry)}</td>
   <td class="badges">
     {#if mediaType === 'cd'}<Badge tone="cd">CD</Badge>{/if}
