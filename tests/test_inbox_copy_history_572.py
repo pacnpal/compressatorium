@@ -9,25 +9,29 @@ from __future__ import annotations
 
 import pytest
 
-from .test_inbox_431 import (  # noqa: F401
-    _db_fixture,
-    _drop,
-    _inbox,
-    _library,
-    _poll,
-    _vol,
-)
+from .test_inbox_431 import _db_fixture, _drop, _inbox, _library, _poll, _vol
+
+__all__ = ["_db_fixture", "_vol"]
 
 
-def _copies():
-    from models import ConversionMode
+@pytest.fixture(name="new_jobs")
+def _new_jobs():
+    """The jobs this test made: the job manager is shared across the suite, so
+    jobs left by earlier tests are set aside."""
     from services.inbox import intake
 
-    return [j for j in intake.job_manager.jobs.values() if j.mode == ConversionMode.INBOX_COPY]
+    before = set(intake.job_manager.jobs)
+    return lambda: [j for i, j in intake.job_manager.jobs.items() if i not in before]
+
+
+def _copies(new_jobs):
+    from models import ConversionMode
+
+    return [j for j in new_jobs() if j.mode == ConversionMode.INBOX_COPY]
 
 
 @pytest.mark.asyncio
-async def test_a_finished_copy_has_its_console_and_says_where_it_went(vol, db):
+async def test_a_finished_copy_has_its_console_and_says_where_it_went(vol, db, new_jobs):
     from models import JobStatus
 
     library = _library(vol)
@@ -37,7 +41,7 @@ async def test_a_finished_copy_has_its_console_and_says_where_it_went(vol, db):
     await _poll(box, now=0)
     await _poll(box, now=1)
 
-    [job] = _copies()
+    [job] = _copies(new_jobs)
     assert job.status == JobStatus.COMPLETED
     assert job.platform == "ps2"
     assert job.message == f"Copied into {vol / 'ROMs' / 'ps2'}"
@@ -45,11 +49,10 @@ async def test_a_finished_copy_has_its_console_and_says_where_it_went(vol, db):
 
 @pytest.mark.asyncio
 async def test_unpack_and_recognize_jobs_say_what_they_did_with_their_console(
-        vol, db, monkeypatch):
+        vol, db, new_jobs, monkeypatch):
     """The same for a watch folder's other jobs: an archive unpacked and its
     game checked against the game lists, both in a console's folder."""
     from models import ConversionMode, JobStatus
-    from services.inbox import intake
 
     from . import test_inbox_432 as inbox_432
 
@@ -64,7 +67,7 @@ async def test_unpack_and_recognize_jobs_say_what_they_did_with_their_console(
 
     await inbox_432._polls(box)
 
-    by_mode = {j.mode: j for j in intake.job_manager.jobs.values()}
+    by_mode = {j.mode: j for j in new_jobs()}
     unpack = by_mode[ConversionMode.INBOX_UNPACK]
     recognize = by_mode[ConversionMode.INBOX_RECOGNIZE]
     # An archive's own console isn't worked out (it isn't a game); what it
