@@ -87,3 +87,26 @@ def test_every_message_this_module_raises_names_its_foreign_parts():
     source = inspect.getsource(notifications)
     assert "raise NotificationError(" not in source
     assert not re.search(r"NotificationError\.said\(\s*f[\"']", source)
+
+
+def test_a_part_keeps_its_format_spec():
+    """Codex on #581: the parts were turned into strings before the template
+    was applied again, so ``{limit:g}`` raised ValueError on a str and a
+    timed-out Test answered 500. Each part is formatted with its spec first,
+    then redacted."""
+    err = notifications.NotificationError.said("Timed out after {limit:g}s", limit=10.0)
+    assert err.redacted(_HOOK) == "Timed out after 10s"
+    assert str(err) == "Timed out after 10s"
+    tagged = notifications.NotificationError.said("got {what!r}", what="TOKEN123abc")
+    assert "TOKEN123abc" not in tagged.redacted(_HOOK)
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_test_answers_with_the_reason(client, failing):
+    failing.fail_with = notifications.NotificationError.said(
+        "Timed out after {limit:g}s", limit=notifications.SEND_TIMEOUT_S,
+    )
+
+    out = await client.test_draft("webhook", _HOOK)
+
+    assert out["ok"] is False and out["error"].startswith("Timed out after ")

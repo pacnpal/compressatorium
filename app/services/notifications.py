@@ -34,6 +34,7 @@ import logging
 import os
 import re
 import socket
+import string
 import threading
 import uuid
 from collections import deque
@@ -131,12 +132,21 @@ class NotificationError(Exception):
         return err
 
     def redacted(self, url: str | None) -> str:
-        """The text with every piece of *url* that came from elsewhere removed."""
+        """The text with every piece of *url* that came from elsewhere removed.
+
+        Each part is formatted with its own spec and conversion first (a
+        ``{limit:g}`` needs the number), then redacted."""
         if self._template is None:
             return _redact(str(self), url)
-        return self._template.format(
-            **{key: _redact(str(value), url) for key, value in self._parts.items()},
-        )
+        out = []
+        for literal, name, spec, conversion in string.Formatter().parse(self._template):
+            out.append(literal)
+            if name is not None:
+                value = self._parts[name]
+                if conversion:
+                    value = {"r": repr, "s": str, "a": ascii}[conversion](value)
+                out.append(_redact(format(value, spec or ""), url))
+        return "".join(out)
 
 
 # ----------------------------------------------------------------------
