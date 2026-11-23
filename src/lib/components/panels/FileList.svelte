@@ -337,9 +337,11 @@
     fileBrowser.search(searchInput.trim());
   }
 
-  // This folder filters as you type; Everywhere lists the whole tree on Enter.
+  // This folder filters as you type. Everywhere lists the whole tree (on
+  // switching to it, or on Enter) and then filters that as you type (#574).
   function typed() {
     if (scope === 'folder') fileBrowser.search(searchInput.trim());
+    else fileBrowser.filterSearch(searchInput.trim());
   }
 
   function setScope(next) {
