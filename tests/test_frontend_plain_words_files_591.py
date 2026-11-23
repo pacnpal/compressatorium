@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.frontend_tools_harness import run_tools
 
 _ROOT = Path(__file__).resolve().parents[1]
 _LIB = _ROOT / "src" / "lib"
@@ -123,7 +126,8 @@ def test_the_plan_offers_see_converters_and_folds_the_reason():
     assert "See Converters" in plan
     assert "ui.navigate('settings', { tab: 'converters' })" in plan
     # The tool and its format come from the registry, not a hand-kept list.
-    assert "registry.all()" in plan
+    assert "missingFormat" in plan
+    assert "registry.all()" in _read("tools/convertTargets.js")
     # A missing line's fold names the files and says the reason once, not
     # once per game.
     missing = plan[plan.index("{#if line.kind === 'missing'}"):]
@@ -224,3 +228,74 @@ def test_the_row_menu_shows_the_reason_on_the_item():
     menu = _read("components/panels/RowActionsMenu.svelte")
     assert "infoUnavailable(" in menu
     assert "`Info (${" in menu
+
+
+# ── Review follow-ups ──────────────────────────────────────────────────────
+
+
+def _tools(tmp_path, body: str):
+    return run_tools(tmp_path, ["convertTargets.js"], body)
+
+
+def test_a_file_already_in_its_best_format_has_nothing_to_become(tmp_path):
+    """Auto skips an RVZ as "Already RVZ", though Dolphin can recompress it:
+    the row's hint and Info must not say Convert makes it RVZ."""
+    out = _tools(tmp_path, """
+process.stdout.write(JSON.stringify([
+  likelyFormat({ type: 'file', path: '/v/Game.rvz' }),
+  likelyFormat({ type: 'file', path: '/v/Game.iso' }),
+  likelyFormat({ type: 'file', path: '/v/Game.cue' }),
+]));
+""")
+    assert out[0] is None
+    assert out[1] is not None
+    assert out[2] == "CHD"
+
+
+def test_the_readers_own_format_wins_over_the_file_name(tmp_path):
+    out = _eval(tmp_path, _FILE_INFO, "infoCard", """
+process.stdout.write(JSON.stringify([
+  infoCard({ info: { format: 'NKit v01 (GameCube)' }, format: 'ISO' }).rows,
+  infoCard({ info: { format: '' }, format: 'ISO' }).rows,
+]));
+""")
+    assert out[0] == [{"key": "format", "label": "Format", "value": "NKit v01 (GameCube)"}]
+    assert out[1] == [{"key": "format", "label": "Format", "value": "ISO"}]
+
+
+def test_the_missing_line_names_the_format_the_user_picked(tmp_path):
+    out = _tools(tmp_path, """
+const dolphin = registry.forTool('dolphin').label;
+const chdman = registry.forTool('chdman').label;
+const iso = ['/v/Game.iso'];
+const wiaMode = registry.forTool('dolphin').modes.find((m) => m.outputExt === '.wia').mode;
+process.stdout.write(JSON.stringify({
+  best: missingFormat({ tool: dolphin, paths: iso, target: '' }),
+  wia: missingFormat({ tool: dolphin, paths: iso, target: '.wia' }),
+  wiaMode: missingFormat({ tool: dolphin, paths: iso, target: wiaMode }),
+  other: missingFormat({ tool: chdman, paths: iso, target: '.rvz' }),
+  unknown: missingFormat({ tool: 'Nobody', paths: iso, target: '' }),
+}));
+""")
+    assert out["best"] == "RVZ"
+    assert out["wia"] == "WIA"
+    assert out["wiaMode"] == "WIA"
+    # A target this converter doesn't make: say nothing rather than contradict.
+    assert out["other"] is None
+    assert out["unknown"] is None
+
+
+def test_the_plan_is_told_the_picked_target():
+    plan = _read("components/panels/ConvertPlan.svelte")
+    assert "missingFormat({" in plan
+    assert re.search(r"missingFormat\(\{[^}]*target", plan)
+    panel = _read("components/panels/ConvertPanel.svelte")
+    assert panel.count("target={conversion.target}") == 2
+
+
+def test_the_card_builds_rows_without_a_closure():
+    """Codacy (Biome) flags a row-adding arrow inside infoCard."""
+    src = _FILE_INFO.read_text(encoding="utf-8")
+    card = src[src.index("export function infoCard"):]
+    card = card[:card.index("\n}\n")]
+    assert "=>" not in card

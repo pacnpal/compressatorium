@@ -17,12 +17,12 @@
    * @property {(paths: string[], slug: string) => void} [onoverride]
    * @property {(paths: string[]) => string|null} [mapFolder] the Library folder to set, or null
    * @property {(folder: string) => void} [onmap]
+   * @property {string} [target] the Convert-to value the plan was made for
    */
   import { onMount } from 'svelte';
   import { findings } from '$lib/stores/findings.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
-  import { registry } from '$lib/tools/registry.js';
-  import { convertTargets, formatOfPath, targetLabel } from '$lib/tools/convertTargets.js';
+  import { formatOfPath, missingFormat, targetLabel } from '$lib/tools/convertTargets.js';
   import { skipLine, missingLabel } from '$lib/util/planLines.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -30,6 +30,7 @@
   /** @type {Props} */
   let {
     plan, planning = false, error = null, onretry, onoverride, mapFolder = () => null, onmap,
+    target = '',
   } = $props();
 
   onMount(() => {
@@ -49,16 +50,13 @@
     return n === 1 ? 'game' : 'games';
   }
 
-  // What a missing converter would make of these games: the first Make
-  // smaller format that tool writes from them, by the registry. Null when the
-  // tool or its format isn't known here.
-  function missingFormat(line) {
-    const tool = registry.all().find((t) => t.label === line.tool);
-    if (!tool) return null;
-    const entries = line.rows.map((r) => ({ path: r.file_path, type: 'file' }));
-    const smaller = convertTargets({ entries, toolIds: [tool.id] })
-      .find((g) => g.group === 'Make smaller');
-    return smaller?.options[0]?.label ?? null;
+  // What a missing converter would make of these games, by the registry:
+  // the Convert-to the user picked when that converter makes it, else its
+  // first Make-smaller format; left out when it can't be told.
+  function lineFormat(line) {
+    return missingFormat({
+      tool: line.tool, paths: line.rows.map((r) => r.file_path), target,
+    });
   }
 
   const lines = $derived.by(() => {
@@ -130,7 +128,7 @@
               {:else if line.kind === 'done'}
                 {line.label}
               {:else if line.kind === 'missing'}
-                {missingLabel(line.rows.length, line.tool, missingFormat(line), line.installed)}
+                {missingLabel(line.rows.length, line.tool, lineFormat(line), line.installed)}
               {:else}
                 {games(line.rows.length)} {line.label}
               {/if}

@@ -135,25 +135,32 @@ function firstOf(info, keys) {
  * `used` lists the info keys the card took, for `infoRows`' `omit`.
  */
 export function infoCard({ info = {}, match = null, format = null, best = null } = {}) {
-  const rows = [];
-  const used = ['format', 'size', 'file', 'name', 'path', 'extension', 'type'];
-  const add = (key, label, value) => {
-    if (!isEmpty(value)) rows.push({ key, label, value: plain(value) });
-  };
   const matched = match?.matched ? match : null;
   const game = firstOf(info, GAME_KEYS);
   const consoleName = firstOf(info, CONSOLE_KEYS);
+  const rows = [
+    cardRow('game', 'Game', matched?.game_name || game?.value),
+    cardRow('console', 'Console', matched?.platform || consoleName?.value),
+    // The reader's own format ("NKit v01 (GameCube)") before the file name's.
+    cardRow('format', 'Format', isEmpty(info?.format) ? format : info.format),
+    cardRow('best', 'In its best format', best),
+    cardRow('size', 'Size', cardSize(info)),
+  ].filter(Boolean);
+  const used = ['format', 'size', 'file', 'name', 'path', 'extension', 'type'];
   if (game) used.push(game.key);
   if (consoleName) used.push(consoleName.key);
-  add('game', 'Game', matched?.game_name || game?.value);
-  add('console', 'Console', matched?.platform || consoleName?.value);
-  add('format', 'Format', format ?? info?.format);
-  add('best', 'In its best format', best);
-  let size = info?.size;
-  if (!isEmpty(info?.size_display)) size = info.size_display;
-  else if (typeof size === 'number') size = formatSize(size);
-  add('size', 'Size', size);
   return { rows, used };
+}
+
+// One card row, or null when there is nothing to say.
+function cardRow(key, label, value) {
+  return isEmpty(value) ? null : { key, label, value: plain(value) };
+}
+
+// The size once: the tool's readable twin, else the bytes made readable.
+function cardSize(info) {
+  if (!isEmpty(info?.size_display)) return info.size_display;
+  return typeof info?.size === 'number' ? formatSize(info.size) : info?.size;
 }
 
 /** Why Info is off for a row, for the menu item: "no reader for .dosz". */
