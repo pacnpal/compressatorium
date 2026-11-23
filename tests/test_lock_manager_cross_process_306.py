@@ -505,6 +505,15 @@ async def test_locks_a_cancelled_job_takes_after_the_cancel_are_released(
             finished.set()
 
     monkeypatch.setattr(lock_manager, "acquire_input_lock", paused_acquire)
+    unlink = lock_manager._unlink_held
+
+    def slow_unlink(handle, lock_file_path):
+        # Releasing drops the handle from _input_handles before it lets go of
+        # the file, so the lock file is still held for a moment after.
+        time_module.sleep(0.2)
+        return unlink(handle, lock_file_path)
+
+    monkeypatch.setattr(lock_manager, "_unlink_held", slow_unlink)
     job = ConversionJob(
         id="raceinput", file_path=str(iso), filename=iso.name,
         mode=ConversionMode.DOLPHIN_RVZ, status=JobStatus.QUEUED,
@@ -520,11 +529,18 @@ async def test_locks_a_cancelled_job_takes_after_the_cancel_are_released(
             await task
         go.set()  # the thread now takes its lock, after the cancel
         assert finished.wait(5)
+        probe = _manager(tmp_path / "locks")
+
+        def held():
+            return bool(lock_manager._input_handles) or probe.check_file_status(str(iso))[1]
+
+        # Wait for the release to finish, not just to start: the other process
+        # must see the file free too.
         deadline = time_module.monotonic() + 2
-        while lock_manager._input_handles and time_module.monotonic() < deadline:
+        while held() and time_module.monotonic() < deadline:
             await asyncio.sleep(0.01)
         assert lock_manager._input_handles == {}
-        assert _manager(tmp_path / "locks").check_file_status(str(iso))[1] is False
+        assert probe.check_file_status(str(iso))[1] is False
         assert job.id not in job_manager._input_locks
     finally:
         go.set()
