@@ -9,9 +9,9 @@ const KEPT_FALLBACK = "this format can't be checked well enough";
 
 /**
  * @param {object[]} specs
- * @param {{ deleteOriginal: boolean }} state
+ * @param {{ deleteOriginal: boolean, allowQuick?: boolean }} state
  */
-export function safetyControls(specs, { deleteOriginal = false } = {}) {
+export function safetyControls(specs, { deleteOriginal = false, allowQuick = false } = {}) {
   const list = (specs ?? []).filter(Boolean);
   const canDelete = list.filter((s) => s.supportsDeleteOnVerify);
   const kept = list.filter((s) => !s.supportsDeleteOnVerify);
@@ -23,7 +23,10 @@ export function safetyControls(specs, { deleteOriginal = false } = {}) {
     kept: canDelete.length > 0 && kept.length > 0
       ? { games: keptGames, reason: kept.find((s) => s.sourceKeptReason)?.sourceKeptReason ?? KEPT_FALLBACK }
       : null,
-    showQuick: deleteOriginal && list.some((s) => s.supportsRoundTrip && !s.roundTripRequired),
+    // The quick check is a documented opt-out (Settings → Defaults, #593):
+    // offered only once it is turned on there.
+    showQuick: allowQuick && deleteOriginal
+      && list.some((s) => s.supportsRoundTrip && !s.roundTripRequired),
     // Deleting always checks first, so the check can't be turned off then.
     checkLocked: deleteOriginal,
   };

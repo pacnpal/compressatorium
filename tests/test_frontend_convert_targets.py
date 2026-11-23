@@ -138,9 +138,9 @@ const required = { supportsDeleteOnVerify: true, supportsRoundTrip: true, roundT
 const extract = { supportsDeleteOnVerify: false };
 process.stdout.write(JSON.stringify({
   chd_off: s.safetyControls([chd], { deleteOriginal: false }),
-  chd_on: s.safetyControls([chd], { deleteOriginal: true }),
+  chd_on: s.safetyControls([chd], { deleteOriginal: true, allowQuick: true }),
   mixed: s.safetyControls([chd, zar], { deleteOriginal: true }),
-  required: s.safetyControls([required], { deleteOriginal: true }),
+  required: s.safetyControls([required], { deleteOriginal: true, allowQuick: true }),
   extract: s.safetyControls([extract]),
   on: s.applySafety(
     { checkAfter: false, deleteOriginal: false, quickCheck: false }, { deleteOriginal: true },

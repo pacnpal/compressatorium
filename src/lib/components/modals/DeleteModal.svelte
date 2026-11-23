@@ -2,7 +2,13 @@
   import { ui } from '$lib/stores/ui.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { verification } from '$lib/stores/verification.svelte.js';
+  import { defaults } from '$lib/stores/defaults.svelte.js';
   import { api } from '$lib/api/endpoints.js';
+  import { formatOfPath } from '$lib/tools/convertTargets.js';
+  import {
+    uncheckedCopies, deleteGate, checkedCopy, checkedCopyLine,
+  } from '$lib/util/deleteSafety.js';
+  import CircleCheck from '@lucide/svelte/icons/circle-check';
   import { toast } from 'svelte-sonner';
   import ConfirmModal from './ConfirmModal.svelte';
   import Trash2 from '@lucide/svelte/icons/trash-2';
@@ -45,13 +51,40 @@
   // in verification.statuses, i.e. a generated product whose
   // correctness hasn't been confirmed. Deleting the source before the
   // output is verified is the risk we want to surface.
-  const unverifiedOutputs = $derived.by(() => {
-    const outs = target && Array.isArray(target.outputs) ? target.outputs : [];
-    return outs.filter(
-      (o) => o?.exists && o.path && !verification.statuses.has(o.path),
-    );
+  const unverifiedOutputs = $derived(
+    uncheckedCopies(target ? [target] : [], (p) => verification.statuses.has(p))
+      .flatMap((r) => r.outputs),
+  );
+  // Refused unless the Settings opt-out is on, then asked as before (#593).
+  const gate = $derived(deleteGate({
+    unchecked: unverifiedOutputs.length,
+    allowUnchecked: defaults.values.allow_unchecked_delete,
+    acknowledged,
+  }));
+
+  // A copy that passed its check: the game stays in the library, and the
+  // dialog says so (#593). Its size from the listing, when it is listed.
+  function listedSize(rows, path) {
+    for (const row of rows ?? []) {
+      if (row?.path === path) return row.size;
+      const found = listedSize(row?.parts, path);
+      if (found != null) return found;
+    }
+    return null;
+  }
+  // Another file that passed its check, never the one being deleted (#594).
+  const keptCopy = $derived.by(() => {
+    const copy = target ? checkedCopy(target, (p) => !!verification.checkFor(p)) : null;
+    if (!copy) return null;
+    return { format: formatOfPath(copy.path), size: listedSize(fileBrowser.rows, copy.path) };
   });
-  const needsAck = $derived(unverifiedOutputs.length > 0 && !acknowledged);
+  const reassurance = $derived(confirmingRecursiveDir ? null : checkedCopyLine(keptCopy));
+
+  function checkCopies() {
+    const copies = unverifiedOutputs;
+    ui.deleteTarget = null;
+    ui.bulkVerifyItems = copies;
+  }
 
   function close() {
     if (busy) return;
@@ -115,7 +148,7 @@
   cancelLabel="Keep"
   confirmVariant="destructive"
   {busy}
-  confirmDisabled={needsAck}
+  confirmDisabled={!gate.canDelete}
 >
   {#snippet titleIcon()}<Trash2 size={18} aria-hidden="true" />{/snippet}
   {#snippet body()}
@@ -129,23 +162,34 @@
         </div>
       </div>
     {/if}
-    {#if unverifiedOutputs.length > 0}
+    {#if reassurance}
+      <p class="dm-ok"><CircleCheck size={14} aria-hidden="true" /> {reassurance}</p>
+    {/if}
+    {#if gate.state !== 'clear'}
+      {@const n = unverifiedOutputs.length}
       <div class="dm-warn" role="alert">
         <TriangleAlert size={14} aria-hidden="true" />
         <div>
-          <strong>Unchecked output{unverifiedOutputs.length === 1 ? '' : 's'} present.</strong>
-          Deleting this source removes the original before the
-          replacement has been confirmed correct. Verify the output
-          first, or acknowledge the risk to proceed.
+          <strong>Its new {n === 1 ? "copy hasn't" : "copies haven't"} passed a check.</strong>
+          {#if gate.state === 'refuse'}
+            It isn't deleted until {n === 1 ? 'the copy does' : 'they do'}, so a bad conversion
+            can't cost you the game.
+          {:else}
+            Deleting it now loses the game if the conversion went wrong.
+          {/if}
           <ul class="dm-warn-list">
-            {#each unverifiedOutputs as o (o.path)}
-              <li title={o.path}>{o.tool_id ?? '?'}: {o.path}</li>
+            {#each unverifiedOutputs as p (p)}
+              <li title={p}>{p.split(/[\\/]/).pop()}</li>
             {/each}
           </ul>
-          <label class="dm-ack">
-            <input type="checkbox" bind:checked={acknowledged} />
-            <span>I understand and want to delete anyway.</span>
-          </label>
+          {#if gate.state === 'refuse'}
+            <button type="button" class="dm-check" onclick={checkCopies}>Check the copies</button>
+          {:else if gate.state === 'ask'}
+            <label class="dm-ack">
+              <input type="checkbox" bind:checked={acknowledged} />
+              <span>I understand and want to delete anyway.</span>
+            </label>
+          {/if}
         </div>
       </div>
     {/if}
@@ -170,6 +214,27 @@
     font-size: var(--text-xs);
     font-family: var(--font-mono);
   }
+  .dm-ok {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    margin: 0;
+    color: var(--success-text);
+    font-size: var(--text-sm);
+  }
+  .dm-ok :global(svg) { flex-shrink: 0; margin-top: 3px; }
+  .dm-check {
+    margin-top: var(--space-1);
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--accent);
+    font: inherit;
+    font-size: var(--text-sm);
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .dm-check:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   :global(.dm-ack) {
     display: inline-flex;
     align-items: center;
