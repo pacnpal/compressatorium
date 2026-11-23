@@ -13,18 +13,20 @@ import { toast } from 'svelte-sonner';
 import { registry } from '$lib/tools/registry.js';
 import { completionToast } from '$lib/util/jobToast.js';
 import { recordFinished, runJobs, runResult } from '$lib/util/runResult.js';
-import { EXTERNAL_SCAN_MODES, TERMINAL_STATUSES } from './jobConstants.js';
+import { jobName } from '$lib/api/format.js';
+import { EXTERNAL_MODE_LABELS, EXTERNAL_SCAN_MODES, TERMINAL_STATUSES } from './jobConstants.js';
 
+// Named the way its job row names it (#565).
 function filenameOf(job) {
-  return job?.file_path?.split(/[/\\]/).pop() ?? job?.file_path ?? 'Job';
+  return jobName(job, { external: !registry.specFor(job?.mode) }) || 'Job';
 }
 
 /** Short "Tool · Mode" subtitle, e.g. "CHDMAN · Create CD". */
 function descriptorOf(job) {
   const tool = registry.toolForMode(job?.mode);
   const spec = registry.specFor(job?.mode);
-  const parts = [tool?.label, spec?.label ?? job?.mode].filter(Boolean);
-  return parts.join(' · ');
+  const parts = [tool?.label, spec?.label ?? EXTERNAL_MODE_LABELS[job?.mode] ?? job?.mode];
+  return parts.filter(Boolean).join(' · ');
 }
 
 function runningDescription(job) {
