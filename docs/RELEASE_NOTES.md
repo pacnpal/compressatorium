@@ -123,6 +123,19 @@
 
 ### Changed
 
+- **Files counts games and offers what's there** (#597).
+  - "N games selected", the Convert button and the delete plan count games: a
+    disc set, or a playlist and its discs, is one game.
+  - The type filter lists only the extensions in the open folder.
+  - **Pick console** puts the folder's best guess first: the console the
+    folder is named for, or the one its other games were recognised as.
+  - A skipped line offers a format Auto doesn't pick by itself but that can
+    take those games, in one click. For example, DOS zips get **Convert to
+    eXoDOS game for RomM**. The choice comes from the tool list, not a
+    hand-kept one.
+  - No more boxes inside boxes: the file table, the Hasheous question and the
+    compression choices use a tone instead of a second border. The Drives
+    heading sits under Files in the page outline.
 - **The weaker checks are opt-outs in Settings → Defaults** (#593), both off by
   default.
   - **Offer a quick check before deleting** puts **Quick check only** back in

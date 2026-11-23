@@ -40,7 +40,8 @@
     align-items: flex-start;
     gap: var(--space-3);
     padding: var(--space-3);
-    border: 1px solid var(--accent);
+    /* A tone, not a second border inside the card (#597). */
+    background: var(--accent-muted);
     border-radius: var(--radius-md);
   }
   .text { display: flex; flex-direction: column; gap: 2px; flex: 1 1 280px; min-width: 0; }

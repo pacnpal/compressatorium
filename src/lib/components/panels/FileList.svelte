@@ -30,6 +30,7 @@
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import ListMusic from '@lucide/svelte/icons/list-music';
   import { isDatMatchable } from '$lib/util/datMatchable.js';
+  import { presentExts } from '$lib/util/presentExts.js';
   import FilePen from '@lucide/svelte/icons/file-pen';
   import Play from '@lucide/svelte/icons/play';
 
@@ -127,10 +128,12 @@
   const autoRefresh = $derived(fileBrowser.autoRefresh);
   const jobsActive = $derived(jobs.hasActive);
 
-  // Extension filter options come from the registry, every tool's
-  // source + verify extensions, deduped, in declaration order. Adding
-  // a new tool surfaces its inputs/outputs in this dropdown automatically.
-  const filterableExts = $derived(registry.allFilterableExts());
+  // Extension filter options: the registry's source + verify extensions that
+  // this folder actually has (#597), in declaration order. The filter in use
+  // stays listed so it can be seen and cleared.
+  const filterableExts = $derived(
+    presentExts(fileBrowser.rows, registry.allFilterableExts(), filter),
+  );
 
   // Selection bulk actions: "Verify selected" surfaces only when at
   // least one selected file has a verify-extension match in the
@@ -779,11 +782,11 @@
   .link-strong:hover { text-decoration: none; }
   .muted-inline { color: var(--text-3); font-size: var(--text-xs); }
 
+  /* Not a second box inside the card: the header row's tone sets the table
+     off (#597). */
   .table-wrap {
     overflow-x: auto;
-    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
-    background: var(--surface-1);
   }
   .table {
     width: 100%;

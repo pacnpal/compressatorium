@@ -16,6 +16,7 @@
   import { romm } from '$lib/stores/romm.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
   import { registry } from '$lib/tools/registry.js';
+  import { countGames } from '$lib/util/gameCount.js';
   import { convertTargets, formatOfPath, targetLabel } from '$lib/tools/convertTargets.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
@@ -34,6 +35,9 @@
   const selected = $derived(fileBrowser.convertibleSelection);
   const paths = $derived(selected.map((e) => e.path));
   const count = $derived(fileBrowser.selectedFiles.size);
+  // Games, not files (#597): a disc set, or a playlist and its discs, is one.
+  const playlists = $derived([...fileBrowser.selectedPlaylists.values()]);
+  const selectedGames = $derived(countGames([...fileBrowser.selectedFiles.keys()], playlists));
   const big = $derived(paths.length > PLAN_LIVE_LIMIT);
 
   // Formats a tool that can run here makes from what is selected; on a RomM
@@ -223,7 +227,9 @@
   });
 
   const converting = $derived(conversion.converting);
-  const convertCount = $derived(big && !plan ? paths.length : actionable.length);
+  const convertCount = $derived(
+    countGames(big && !plan ? paths : actionable.map((row) => row.file_path), playlists),
+  );
   // From the first click until the submit settles (the plan dialog and the
   // delete preview included): a second click never starts a second run.
   let inFlight = $state(false);
@@ -354,7 +360,9 @@
   <header class="head">
     <h2 id="convert-title">Convert</h2>
     <span class="count">
-      {count === 0 ? 'Nothing selected' : `${count} ${count === 1 ? 'game' : 'games'} selected`}
+      {count === 0
+        ? 'Nothing selected'
+        : `${selectedGames} ${selectedGames === 1 ? 'game' : 'games'} selected`}
     </span>
   </header>
 
@@ -403,6 +411,8 @@
         onoverride={(list, slug) => conversion.setOverride(list, slug)}
         {mapFolder}
         onmap={openMapping}
+        onchoose={(value) => conversion.chooseTarget(value)}
+        entries={selected}
       />
     {/if}
 
@@ -497,7 +507,7 @@
 <BaseModal
   open={!!planPrompt}
   onClose={() => resolvePlanPrompt(false)}
-  title={`Convert ${paths.length} games`}
+  title={`Convert ${countGames(paths, playlists)} games`}
   size="md"
 >
   {#snippet body()}
@@ -510,6 +520,8 @@
       onoverride={(list, slug) => conversion.setOverride(list, slug)}
       {mapFolder}
       onmap={openMapping}
+      onchoose={(value) => conversion.chooseTarget(value)}
+      entries={selected}
     />
     {#if conversion.plan?.some((row) => row.mode)}
       <!-- The options this plan offers (the 4 GB split for PS3 folders),

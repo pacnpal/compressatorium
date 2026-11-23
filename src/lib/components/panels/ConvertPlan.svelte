@@ -18,11 +18,16 @@
    * @property {(paths: string[]) => string|null} [mapFolder] the Library folder to set, or null
    * @property {(folder: string) => void} [onmap]
    * @property {string} [target] the Convert-to value the plan was made for
+   * @property {(value: string) => void} [onchoose] set Convert to: a skipped
+   *   line's one-click way in (#597)
+   * @property {object[]} [entries] the selected rows the plan was made from,
+   *   with their backend eligibility (`convertible_by`)
    */
   import { onMount } from 'svelte';
   import { findings } from '$lib/stores/findings.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
-  import { formatOfPath, missingFormat, targetLabel } from '$lib/tools/convertTargets.js';
+  import { formatOfPath, missingFormat, offeredInstead, targetLabel } from '$lib/tools/convertTargets.js';
+  import { guessConsole } from '$lib/util/consoleGuess.js';
   import { skipLine, missingLabel } from '$lib/util/planLines.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -30,7 +35,7 @@
   /** @type {Props} */
   let {
     plan, planning = false, error = null, onretry, onoverride, mapFolder = () => null, onmap,
-    target = '',
+    target = '', onchoose, entries = [],
   } = $props();
 
   onMount(() => {
@@ -85,6 +90,38 @@
   const nothing = $derived(
     (plan?.length ?? 0) > 0 && !(plan ?? []).some((row) => row.mode),
   );
+
+  // A skipped line's way in (#597): a mode Auto leaves alone that reads all
+  // of its games (a DOS zip's repack for RomM), by the registry, if it can run
+  // here and isn't already the choice.
+  const ready = $derived(ui.toolsKnown ? ui.visibleTools.map((t) => t.id) : null);
+  // Each plan row's own listing entry, with what the backend's probe claimed
+  // (`convertible_by`): a content-refined mode is offered only where it did
+  // (#598). Files folded under a row count too.
+  function indexEntries(list, map) {
+    for (const e of list ?? []) {
+      if (e?.path) map[e.path] = e;
+      indexEntries(e?.parts, map);
+    }
+    return map;
+  }
+  const byPath = $derived(indexEntries(entries, {}));
+  function entryFor(path) {
+    return byPath[path] ?? null;
+  }
+  function instead(line) {
+    if (!onchoose) return [];
+    const found = line.rows.map((r) => entryFor(r.file_path));
+    // A row whose entry isn't known can't be vouched for: offer nothing.
+    if (found.some((e) => !e)) return [];
+    return offeredInstead(found, ready).filter((o) => o.value !== target);
+  }
+
+  // Pick console's best guess: the folder's own console (#597).
+  function guessFor(line) {
+    const paths = line.rows.map((r) => r.file_path);
+    return guessConsole({ paths, plan: plan ?? [], platforms: findings.platforms });
+  }
 
   // The line whose console choice is open.
   let picking = $state(null);
@@ -150,6 +187,18 @@
               {/each}
             </ul>
           </details>
+          {#if line.kind === 'skip' || line.kind === 'pick'}
+            {@const ways = instead(line)}
+            {#if ways.length}
+              <div class="pick">
+                {#each ways as way (way.value)}
+                  <Button variant="secondary" size="sm" onclick={() => onchoose(way.value)}>
+                    Convert to {way.label}
+                  </Button>
+                {/each}
+              </div>
+            {/if}
+          {/if}
           {#if line.kind === 'missing'}
             <div class="pick">
               <Button
@@ -165,11 +214,15 @@
                 {line.rows.length === 1 ? 'Pick console' : `Pick console for all ${line.rows.length}`}
               </Button>
               {#if picking === line.key}
+                {@const guess = guessFor(line)}
                 <select
                   aria-label="Pick the console"
                   onchange={(e) => choose(line, e.currentTarget.value)}
                 >
                   <option value="">{line.rows.length === 1 ? 'This is a…' : 'These are all…'}</option>
+                  {#if guess}
+                    <option value={guess}>{names[guess] ?? guess} (best guess)</option>
+                  {/if}
                   {#each consoles as c (c.slug)}
                     <option value={c.slug}>{c.name}</option>
                   {/each}

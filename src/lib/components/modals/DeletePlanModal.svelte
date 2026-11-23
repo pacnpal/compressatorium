@@ -7,6 +7,7 @@
   //
   // Per-submit promise-resolver pattern: the Convert panel awaits onResolve.
 
+  import { countGames } from '$lib/util/gameCount.js';
   import { conversion } from '$lib/stores/conversion.svelte.js';
   import { summarizeMessages } from '$lib/util/messages.js';
   import BaseModal from './BaseModal.svelte';
@@ -21,6 +22,8 @@
   const plan = $derived(conversion.deletePlan);
   const items = $derived(Array.isArray(plan?.items) ? plan.items : []);
   const totalDelete = $derived(plan?.total_delete_count ?? 0);
+  // Games, as the Convert panel counts them (#597): a disc set is one.
+  const games = $derived(countGames(items.map((item) => item.source_path)));
   const blocked = $derived(!!plan?.blocked);
   // Referrers (.m3u playlists, gamelist.xml) the job rewrites before deleting
   // (#295, #386).
@@ -86,8 +89,8 @@
   {#snippet body()}
     <p class="dp-lead">
       <Badge tone={blocked ? 'error' : 'warning'}>{totalDelete}</Badge>
-      file{totalDelete === 1 ? '' : 's'} will be deleted across {items.length}
-      {items.length === 1 ? 'game' : 'games'}, but only after each new file
+      file{totalDelete === 1 ? '' : 's'} will be deleted across {games}
+      {games === 1 ? 'game' : 'games'}, but only after each new file
       {#if conversion.deleteCheck === 'round_tripped'}
         reads back as an exact copy of its original.
       {:else if conversion.deleteCheck === 'recognized'}
