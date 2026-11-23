@@ -11,7 +11,7 @@
   const error = $derived(fileBrowser.volumesError);
 
   onMount(() => {
-    if (!loading) fileBrowser.startFiles();
+    fileBrowser.startFiles();
   });
 </script>
 

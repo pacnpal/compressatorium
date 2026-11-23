@@ -187,6 +187,56 @@ process.stdout.write(JSON.stringify({
     }, data
 
 
+def test_files_opened_while_a_reconnect_lists_the_volumes_still_opens_one(tmp_path):
+    """Codex on #586: a tab started on Libraries (list fetched, nothing
+    picked); a reconnect's refresh was on its way when Files opened, so
+    VolumeList skipped its start (the list was loading), and the refresh,
+    with Volumes before and after, picked nothing: Files stayed blank. Files'
+    start now waits for a list already on its way, then opens what it
+    should, through the same step a reconnect uses."""
+    data = _run_browser(tmp_path, """
+await fileBrowser.fetchVolumes();
+let answer;
+const real = api.getVolumes;
+api.getVolumes = () => new Promise((resolve) => { answer = () => real().then(resolve); });
+const refresh = fileBrowser.refreshVolumes();
+const start = fileBrowser.startFiles();
+answer();
+await within(Promise.all([refresh, start]), 300);
+process.stdout.write(JSON.stringify({
+  volume: fileBrowser.selectedVolume?.path ?? null, listed: __listed,
+}));
+""")
+    assert data == {"volume": "/first", "listed": ["/first"]}, data
+
+
+def test_files_waits_for_a_list_already_on_its_way(tmp_path):
+    """Opened while another view's first fetch is still out, Files waits for
+    it instead of asking again, then opens the first Volume."""
+    data = _run_browser(tmp_path, """
+let calls = 0;
+let answer;
+const real = api.getVolumes;
+api.getVolumes = () => { calls += 1;
+  return new Promise((resolve) => { answer = () => real().then(resolve); }); };
+const other = fileBrowser.fetchVolumes();
+const start = fileBrowser.startFiles();
+answer();
+await within(Promise.all([other, start]), 300);
+process.stdout.write(JSON.stringify({ calls,
+  volume: fileBrowser.selectedVolume?.path ?? null }));
+""")
+    assert data == {"calls": 1, "volume": "/first"}, data
+
+
+def test_files_starts_whether_or_not_the_list_is_loading():
+    volume_list = (_SRC / "lib" / "components" / "panels" / "VolumeList.svelte").read_text(
+        encoding="utf-8",
+    )
+    on_mount = volume_list.split("onMount(() => {", 1)[1].split("});", 1)[0]
+    assert on_mount.strip() == "fileBrowser.startFiles();"
+
+
 def test_the_browser_tab_names_the_page():
     """#578: every page was titled "Compressatorium"."""
     app = (_SRC / "App.svelte").read_text(encoding="utf-8")

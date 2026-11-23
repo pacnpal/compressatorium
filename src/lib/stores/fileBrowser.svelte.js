@@ -116,6 +116,8 @@ class FileBrowserStore {
   selectedVolume = $state(null);
   // Bumped by every Open folder (`openFolder`): only the latest navigates.
   #openFolderRequest = 0;
+  // The Volume list fetch on its way, if any: Files' start waits for it.
+  #volumesFetch = null;
 
   // Navigation
   currentPath = $state(null);
@@ -391,19 +393,50 @@ class FileBrowserStore {
    * opening, is left as it is.
    */
   async startFiles() {
+    // A list already on its way (another view's fetch, a reconnect's
+    // refresh) is waited for, never asked for again (#569).
+    if (this.#volumesFetch) await this.#volumesFetch;
     if (this.volumes.length === 0) {
       await this.loadVolumes();
       return;
     }
-    if (this.selectedVolume || this.currentPath || ui.filesPath) return;
-    await this.selectVolume(this.volumes[0]);
+    // A link FilesView is opening is its own; a bare start opens one here.
+    if (ui.filesPath) return;
+    await this.#openStart();
+  }
+
+  /**
+   * What Files opens when nothing is open: the folder a `#/files/<path>`
+   * link names, when its Volume is listed, else the first Volume. The one
+   * place Files' start (`startFiles`) and a reconnect (`refreshVolumes`)
+   * decide it.
+   */
+  async #openStart() {
+    if (this.selectedVolume || this.currentPath || this.volumes.length === 0) return;
+    const link = ui.filesPath;
+    const linked = link && this.volumes.some(
+      (v) => link === v.path || link.startsWith(`${v.path.replace(/\/+$/, '')}/`),
+    );
+    if (linked) await this.openFolder(link);
+    else await this.selectVolume(this.volumes[0]);
   }
 
   /**
    * Load the Volume list only: no Volume is selected and nothing is listed.
-   * True when it loaded.
+   * True when it loaded. A fetch on its way is `#volumesFetch`, which Files'
+   * start waits for.
    */
   async fetchVolumes() {
+    const request = this.#fetchVolumesOnce();
+    this.#volumesFetch = request;
+    try {
+      return await request;
+    } finally {
+      if (this.#volumesFetch === request) this.#volumesFetch = null;
+    }
+  }
+
+  async #fetchVolumesOnce() {
     this.volumesLoading = true;
     this.volumesError = null;
     try {
@@ -434,17 +467,10 @@ class FileBrowserStore {
     if (!(await this.fetchVolumes())) return;
     const open = this.selectedVolume?.path;
     if (!open) {
-      if (hadNone && this.volumes.length > 0 && !this.currentPath) {
-        // A `#/files/<path>` link stays in the route after its Volume went,
-        // and FilesView opens it only when the route changes: open it again
-        // when its Volume is back, else the first Volume left.
-        const link = ui.filesPath;
-        const linked = link && this.volumes.some(
-          (v) => link === v.path || link.startsWith(`${v.path.replace(/\/+$/, '')}/`),
-        );
-        if (linked) await this.openFolder(link);
-        else await this.selectVolume(this.volumes[0]);
-      }
+      // Volumes back after none: what Files had open went with them. A
+      // `#/files/<path>` link stays in the route and FilesView opens it only
+      // when the route changes, so open it again here, or the first Volume.
+      if (hadNone) await this.#openStart();
       return;
     }
     if (this.volumes.some((v) => v.path === open)) return;
