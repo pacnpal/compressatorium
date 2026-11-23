@@ -754,11 +754,17 @@ class FolderLibrary(LibraryDefaults):
         scan = self.scan(refresh=refresh)
         by_platform = scan.by_platform()
         platform_folder = self.platform_folders() if by_platform else None
+        # A game ignored in Activity is not one the banner asks about.
+        ignored = findings.dismissed_of(self.id)
         unsorted = conflicted = 0
         for entry in scan.entries:
             if entry.detection.platform:
                 continue
-            if entry.detection.how == CONFLICT:
+            conflict = entry.detection.how == CONFLICT
+            kind = findings.PLATFORM_CONFLICT if conflict else findings.UNSORTED
+            if (entry.key, kind) in ignored:
+                continue
+            if conflict:
                 conflicted += 1
             else:
                 unsorted += 1

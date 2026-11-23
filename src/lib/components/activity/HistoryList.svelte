@@ -128,8 +128,20 @@
     }
   }
 
+  // A Status picked here outranks the link's `?status=`: drop it, so a reload
+  // keeps the person's choice. replaceState fires no hashchange.
+  function forgetUrlStatus() {
+    const [path, query = ''] = window.location.hash.split('?');
+    const params = new URLSearchParams(query);
+    if (!params.has('status') || params.get('status') === status) return;
+    params.delete('status');
+    const rest = params.toString();
+    window.history.replaceState(window.history.state, '', `${path}${rest ? `?${rest}` : ''}`);
+  }
+
   function refilter() {
     clearTimeout(searchTimer);
+    forgetUrlStatus();
     page = 1;
     load();
   }
