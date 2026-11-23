@@ -1,6 +1,6 @@
 <script>
-  import { onMount, tick } from 'svelte';
-  import { ui } from '$lib/stores/ui.svelte.js';
+  import { onMount, tick, untrack } from 'svelte';
+  import { ui, VIEW_TITLES } from '$lib/stores/ui.svelte.js';
   import { startRouter } from '$lib/router/hashRouter.js';
   import Sidebar from '$lib/components/layout/Sidebar.svelte';
   import MobileDrawer from '$lib/components/layout/MobileDrawer.svelte';
@@ -127,6 +127,28 @@
     toast.error('Something went wrong. Try again.', { duration: 6000 });
   }
 
+  // Set by onMount: (re)reads the tools from the backend.
+  let loadTools = () => {};
+
+  // Back after the jobs feed dropped (#569): a restart behind it can bring
+  // another version, other converters and other Volumes. Another version is
+  // an upgrade, whose page and tool definitions this tab doesn't have (the
+  // tool registry isn't reactive), so the page reloads. The same version
+  // only reads again which converters are ready and which Volumes exist.
+  $effect(() => {
+    if (ui.reconnects === 0) return;
+    untrack(async () => {
+      const before = ui.appVersion;
+      await ui.loadVersion();
+      if (before && ui.appVersion && ui.appVersion !== before) {
+        location.reload();
+        return;
+      }
+      loadTools();
+      fileBrowser.refreshVolumes();
+    });
+  });
+
   onMount(() => {
     ui.loadVersion();
     // The tools, their formats and modes come from the backend, and so does
@@ -136,7 +158,8 @@
     // so no older reply can land after a newer one. Nothing runs after unmount.
     let toolsRetry;
     let disposed = false;
-    const loadTools = (delay = 1000) => {
+    loadTools = (delay = 1000) => {
+      clearTimeout(toolsRetry);
       api.getTools()
         .then((t) => {
           if (disposed) return;
@@ -175,6 +198,11 @@
     };
   });
 </script>
+
+<!-- The browser tab names the page (#578). -->
+<svelte:head>
+  <title>{VIEW_TITLES[ui.activeView] ? `${VIEW_TITLES[ui.activeView]} · ` : ''}Compressatorium</title>
+</svelte:head>
 
 <!--
   mode-watcher manages the dark/light class on <html> + color-scheme. The
