@@ -37,7 +37,7 @@ def test_a_status_picked_by_hand_leaves_the_url() -> None:
     assert "forgetUrlStatus()" in refilter
     forget = history[history.index("function forgetUrlStatus()"):]
     forget = forget[:forget.index("\n  }\n")]
-    assert "params.delete('status')" in forget
+    assert "key !== 'status'" in forget
     # Not pushState/location.hash: those would re-run the route or add history.
     assert "history.replaceState" in forget
 

@@ -132,10 +132,11 @@
   // keeps the person's choice. replaceState fires no hashchange.
   function forgetUrlStatus() {
     const [path, query = ''] = window.location.hash.split('?');
-    const params = new URLSearchParams(query);
-    if (!params.has('status') || params.get('status') === status) return;
-    params.delete('status');
-    const rest = params.toString();
+    const linked = new URLSearchParams(query).get('status');
+    if (linked === null || linked === status) return;
+    const rest = new URLSearchParams(
+      [...new URLSearchParams(query)].filter(([key]) => key !== 'status'),
+    ).toString();
     window.history.replaceState(window.history.state, '', `${path}${rest ? `?${rest}` : ''}`);
   }
 
