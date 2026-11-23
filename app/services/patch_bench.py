@@ -84,6 +84,7 @@ from services.subprocess_runner import (
     run_detached_to_end,
     run_detached_within_stall_bound,
 )
+from services.task_sets import drain_tasks
 from services.tools import registry
 from sqlalchemy.exc import MultipleResultsFound
 from utils.junk import is_junk_path
@@ -386,8 +387,7 @@ async def start(
 
 async def drain() -> None:
     """Wait for every running patch job (tests, shutdown)."""
-    while _tasks:
-        await asyncio.gather(*list(_tasks), return_exceptions=True)
+    await drain_tasks(_tasks)
 
 
 # ----------------------------------------------------------------------

@@ -36,6 +36,7 @@ from services.platform_detect import canonical_slug
 from services.preferences_store import preferences_store
 from services.rules.library import LibraryUnreadable
 from services.subprocess_runner import run_detached
+from services.task_sets import drain_tasks
 from utils.path_utils import volume_containment
 
 from config import settings
@@ -63,8 +64,7 @@ def reset_for_tests() -> None:
 
 
 async def drain() -> None:
-    while _tasks:
-        await asyncio.gather(*list(_tasks), return_exceptions=True)
+    await drain_tasks(_tasks)
 
 
 # ---- the payload -----------------------------------------------------------

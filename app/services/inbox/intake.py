@@ -143,6 +143,7 @@ from services.subprocess_runner import (
     run_detached_undoable,
     run_detached_within_stall_bound,
 )
+from services.task_sets import drain_tasks
 from services.tools import not_ready_message, registry
 from utils.delete_plan import sheet_reference_problems
 from utils.junk import is_junk_entry
@@ -599,8 +600,7 @@ def busy() -> bool:
 
 async def drain() -> None:
     """Wait for every copy intake started. For tests and shutdown."""
-    while _tasks:
-        await asyncio.gather(*list(_tasks), return_exceptions=True)
+    await drain_tasks(_tasks)
 
 
 async def _step(func, *args, **kwargs):
