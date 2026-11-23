@@ -391,6 +391,7 @@
         {mapFolder}
         onmap={openMapping}
         onchoose={(value) => conversion.chooseTarget(value)}
+        entries={selected}
       />
     {/if}
 
@@ -494,6 +495,7 @@
       {mapFolder}
       onmap={openMapping}
       onchoose={(value) => conversion.chooseTarget(value)}
+      entries={selected}
     />
     {#if conversion.plan?.some((row) => row.mode)}
       <!-- The options this plan offers (the 4 GB split for PS3 folders),

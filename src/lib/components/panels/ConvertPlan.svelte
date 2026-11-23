@@ -18,6 +18,8 @@
    * @property {string} [target] the Convert-to value the plan was made for
    * @property {(value: string) => void} [onchoose] set Convert to: a skipped
    *   line's one-click way in (#597)
+   * @property {object[]} [entries] the selected rows the plan was made from,
+   *   with their backend eligibility (`convertible_by`)
    */
   import { onMount } from 'svelte';
   import { findings } from '$lib/stores/findings.svelte.js';
@@ -30,7 +32,7 @@
   /** @type {Props} */
   let {
     plan, planning = false, error = null, onretry, onoverride, mapFolder = () => null, onmap,
-    target = '', onchoose,
+    target = '', onchoose, entries = [],
   } = $props();
 
   onMount(() => {
@@ -94,10 +96,26 @@
   // of its games (a DOS zip's repack for RomM), by the registry, if it can run
   // here and isn't already the choice.
   const ready = $derived(ui.toolsKnown ? ui.visibleTools.map((t) => t.id) : null);
+  // Each plan row's own listing entry, with what the backend's probe claimed
+  // (`convertible_by`): a content-refined mode is offered only where it did
+  // (#598). Files folded under a row count too.
+  function indexEntries(list, map) {
+    for (const e of list ?? []) {
+      if (e?.path) map[e.path] = e;
+      indexEntries(e?.parts, map);
+    }
+    return map;
+  }
+  const byPath = $derived(indexEntries(entries, {}));
+  function entryFor(path) {
+    return byPath[path] ?? null;
+  }
   function instead(line) {
     if (!onchoose) return [];
-    const entries = line.rows.map((r) => ({ path: r.file_path, type: 'file' }));
-    return offeredInstead(entries, ready).filter((o) => o.value !== target);
+    const found = line.rows.map((r) => entryFor(r.file_path));
+    // A row whose entry isn't known can't be vouched for: offer nothing.
+    if (found.some((e) => !e)) return [];
+    return offeredInstead(found, ready).filter((o) => o.value !== target);
   }
 
   // Pick console's best guess: the folder's own console (#597).

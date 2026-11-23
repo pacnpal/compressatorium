@@ -236,3 +236,36 @@ def test_files_headings_go_h1_then_h2():
     vl = _read("components/panels/VolumeList.svelte")
     assert re.search(r"<h2 class=\"header\">", vl)
     assert "<h3" not in vl
+
+
+# ── Review follow-up (#598) ────────────────────────────────────────────────
+
+
+def test_no_offer_for_a_mode_the_backends_probe_did_not_claim(tmp_path):
+    """A content-refined mode (ZAR, Xbox) is offered only where the backend's
+    probe claimed the file (``convertible_by``). Entries rebuilt from a path
+    alone lose that, and so offered ZAR for a non-Xbox .iso."""
+    out = run_tools(tmp_path, ["convertTargets.js"], """
+const refined = registry.all().filter((t) => t.contentRefined);
+const refinedModes = refined.flatMap((t) => t.modes.map((m) => m.mode));
+const iso = { type: 'file', path: '/v/Game.iso' };
+process.stdout.write(JSON.stringify({
+  refinedModes,
+  unclaimed: offeredInstead([{ ...iso, convertible_by: ['chdman'] }]).map((o) => o.value),
+  claimed: offeredInstead([{ ...iso, convertible_by: refined.map((t) => t.id) }])
+    .map((o) => o.value),
+}));
+""")
+    assert out["refinedModes"], "the registry has a content-refined tool"
+    assert not set(out["unclaimed"]) & set(out["refinedModes"])
+
+
+def test_the_plan_offers_from_the_real_entries():
+    plan = _read("components/panels/ConvertPlan.svelte")
+    body = plan[plan.index("function instead(line)"):]
+    body = body[:body.index("\n  }\n")]
+    # The rows' own entries, with convertible_by, not a path and a type.
+    assert "type: 'file'" not in body
+    assert "entryFor(" in body
+    panel = _read("components/panels/ConvertPanel.svelte")
+    assert panel.count("entries={selected}") == 2
