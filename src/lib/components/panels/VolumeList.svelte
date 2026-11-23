@@ -10,8 +10,11 @@
   const loading = $derived(fileBrowser.volumesLoading);
   const error = $derived(fileBrowser.volumesError);
 
+  // Files is showing while this is mounted: the store keeps a Volume open
+  // for it then, and only then (#569).
   onMount(() => {
-    if (!loading) fileBrowser.startFiles();
+    fileBrowser.startFiles();
+    return () => fileBrowser.stopFiles();
   });
 </script>
 

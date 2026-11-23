@@ -2,7 +2,7 @@
 
 The Findings view's "Open folder" calls ``fileBrowser.openFolder(path)``. It
 must load the Volume list and go straight to the Volume and folder it was
-asked for. The normal Workspace start (``loadVolumes``) selects and lists the
+asked for. The normal Files start (``startFiles``) selects and lists the
 first Volume, as before. Asserted behaviourally by evaluating
 ``src/lib/stores/fileBrowser.svelte.js`` with Node, runes reduced and its
 sibling stores stubbed, as the other ``test_frontend_*`` store tests do.
@@ -115,12 +115,12 @@ process.stdout.write(JSON.stringify({
 
 def test_the_workspace_start_still_selects_and_lists_the_first_volume(tmp_path):
     data = _run(tmp_path, """
-const outcome = await within(fileBrowser.loadVolumes(), 300);
+const outcome = await within(fileBrowser.startFiles(), 300);
 process.stdout.write(JSON.stringify({
   outcome, volume: fileBrowser.selectedVolume?.path ?? null, listed: __listed,
 }));
 """)
-    # The first Volume's listing never answers, so loadVolumes waits on it.
+    # The first Volume's listing never answers, so the start waits on it.
     assert data["outcome"] == "timed out", data
     assert data["volume"] == "/first", data
     assert data["listed"] == ["/first"], data
@@ -177,7 +177,7 @@ process.stdout.write(JSON.stringify({
     assert data["listed"] == ["/first"], data
 
 
-def test_files_start_leaves_an_open_folder_and_a_folder_link_alone(tmp_path):
+def test_files_start_leaves_an_open_folder_alone_and_opens_a_link(tmp_path):
     data = _run(tmp_path, """
 await fileBrowser.fetchVolumes();
 fileBrowser.currentPath = '/target/roms';
@@ -190,7 +190,11 @@ process.stdout.write(JSON.stringify({
   kept, linked: fileBrowser.selectedVolume?.path ?? null, listed: __listed,
 }));
 """)
-    assert data == {"kept": "/target/roms", "linked": None, "listed": []}, data
+    # A link's folder opens when its Volume is listed (#569's one rule,
+    # tests/test_frontend_files_selection_569.py).
+    assert data == {
+        "kept": "/target/roms", "linked": "/target", "listed": ["/target/roms"],
+    }, data
 
 
 def test_files_start_with_no_list_yet_still_loads_and_picks(tmp_path):
