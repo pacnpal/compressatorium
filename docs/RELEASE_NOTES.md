@@ -382,6 +382,11 @@
 
 ### Fixed
 
+- **Inbox intake, checks, renames, patches and duplicate runs no longer hang
+  while finishing** (#579). Their wait for running work could spin forever at
+  full CPU when a task ended just as the wait woke up. That stopped
+  `run-rules` or a shutdown from finishing, as #450 did for the job queue.
+  Every one of these waits now uses one shared helper that can't spin.
 - **Delete keeps a file a sheet, playlist or set reaches through a link**
   (#555). A `.cue` in one folder can name a track in another through a folder
   link inside the Volume (`other/A.cue` naming `link/Shared.bin`). Deleting or
