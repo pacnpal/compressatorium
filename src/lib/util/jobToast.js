@@ -10,14 +10,17 @@
 // check, and the space saved, or how much smaller it is with the original kept.
 
 import { baseName, formatSize } from '../api/format.js';
-import { jobChecked, jobSaved, jobStillToSave } from './runResult.js';
+import { jobChecked, jobKeptDelta, jobSaved, savedPhrase } from './runResult.js';
 
-// "saved 2 MB", or "2 MB smaller, original kept"; null when sizes aren't known.
+// "saved 2 MB" or "1 MB larger" (signed, as the Ledger); with the original
+// kept, "2 MB smaller, original kept". Null when sizes aren't known.
 function sizeNote(job) {
-  const saved = jobSaved(job);
-  if (saved > 0) return `saved ${formatSize(saved)}`;
-  const more = jobStillToSave(job);
-  return more > 0 ? `${formatSize(more)} smaller, original kept` : null;
+  const saved = savedPhrase(jobSaved(job));
+  if (saved) return saved;
+  const kept = jobKeptDelta(job);
+  if (kept > 0) return `${formatSize(kept)} smaller, original kept`;
+  if (kept < 0) return `${formatSize(-kept)} larger, original kept`;
+  return null;
 }
 
 /**

@@ -12,7 +12,7 @@
 import { toast } from 'svelte-sonner';
 import { registry } from '$lib/tools/registry.js';
 import { completionToast } from '$lib/util/jobToast.js';
-import { runResult } from '$lib/util/runResult.js';
+import { recordFinished, runJobs, runResult } from '$lib/util/runResult.js';
 import { EXTERNAL_SCAN_MODES, TERMINAL_STATUSES } from './jobConstants.js';
 
 function filenameOf(job) {
@@ -55,33 +55,47 @@ class JobToastTracker {
   // id→state lookups, correct here and lint-clean.
   _active = Object.create(null);
 
-  // Convert runs waiting to be summed up (#595): `[{ ids }]`. Plain, for the
+  // Convert runs not yet summed up (#595): `[{ ids, toast }]`. Plain, for the
   // same reason as _active.
   _runs = [];
+  // Each tracked job as it finished (#596), so pruning the live job list (a
+  // batch bigger than its history) can't lose a run's result. Kept for the
+  // latest run, which the Convert panel shows, and dropped for older ones once
+  // they are summed up.
+  records = Object.create(null);
+  _latest = null;
 
   /**
-   * Sum up a Convert run in one toast once all its jobs have finished. A run
-   * of one game says it all in its own toast, so it isn't tracked.
+   * Follow a Convert run until all its jobs have finished. A run of two or
+   * more games is summed up in one toast; a run of one says it all in its own.
    * @param {string[]} ids
    */
   trackRun(ids) {
-    if (!Array.isArray(ids) || ids.length < 2) return;
-    this._runs.push({ ids: [...ids] });
+    if (!Array.isArray(ids) || !ids.length) return;
+    const run = { ids: [...ids], toast: ids.length >= 2 };
+    if (this._latest && !this._runs.includes(this._latest)) this._forget(this._latest);
+    this._latest = run;
+    this._runs.push(run);
+  }
+
+  _forget(run) {
+    for (const id of run.ids) delete this.records[id];
   }
 
   _settleRuns(jobList) {
     if (!this._runs.length) return;
-    const byId = Object.create(null);
-    for (const job of jobList) if (job?.id != null) byId[job.id] = job;
-    this._runs = this._runs.filter(({ ids }) => {
-      const found = ids.map((id) => byId[id]);
-      // A job no longer listed (cleared elsewhere): the run can't be summed.
-      if (found.some((job) => !job)) return false;
-      const line = runResult(found);
+    const options = { canDeleteSource: registry.canDeleteSource };
+    this._runs = this._runs.filter((run) => {
+      recordFinished(run.ids, jobList, this.records);
+      const found = runJobs(run.ids, jobList, this.records);
+      const line = runResult(found, options);
       if (!line) return true;
-      const failed = found.some((job) => job.status !== 'completed');
-      if (failed) toast.warning(line, { duration: 8000 });
-      else toast.success(line, { duration: 6000 });
+      if (run.toast) {
+        const failed = found.some((job) => job.status !== 'completed');
+        if (failed) toast.warning(line, { duration: 8000 });
+        else toast.success(line, { duration: 6000 });
+      }
+      if (run !== this._latest) this._forget(run);
       return false;
     });
   }

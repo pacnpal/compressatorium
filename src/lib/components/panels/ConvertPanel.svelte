@@ -10,7 +10,8 @@
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { findings } from '$lib/stores/findings.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
-  import { runResult } from '$lib/util/runResult.js';
+  import { runJobs, runResult } from '$lib/util/runResult.js';
+  import { jobToasts } from '$lib/stores/jobToasts.svelte.js';
   import { libraries } from '$lib/stores/libraries.svelte.js';
   import { romm } from '$lib/stores/romm.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
@@ -213,12 +214,11 @@
   });
 
   // What the last run did, once all of it has finished (#595): "3 games
-  // converted and checked · saved 2.1 GB". Null while it runs, or once one of
-  // its jobs is no longer listed.
+  // converted and checked · saved 2.1 GB". Null while it runs. A job pruned
+  // from the live list is read as it was kept when it finished (#596).
   const lastRunLine = $derived.by(() => {
-    const ids = conversion.lastRun?.ids ?? [];
-    const found = ids.map((id) => jobs.jobs.find((job) => job.id === id)).filter(Boolean);
-    return found.length && found.length === ids.length ? runResult(found) : null;
+    const found = runJobs(conversion.lastRun?.ids ?? [], jobs.jobs, jobToasts.records);
+    return runResult(found, { canDeleteSource: registry.canDeleteSource });
   });
 
   const converting = $derived(conversion.converting);

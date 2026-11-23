@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -61,7 +62,7 @@ def _eval(tmp_path, helper: Path, names: str, body: str):
 
 def _job(**kw) -> str:
     base = {
-        "id": "j", "status": "completed", "output_path": "/v/Game.chd",
+        "id": "j", "mode": "createcd", "status": "completed", "output_path": "/v/Game.chd",
         "input_bytes": 5 * MB, "output_size": 3 * MB, "deleted_paths": [],
         "check_passed": None,
     }
@@ -71,16 +72,18 @@ def _job(**kw) -> str:
 
 def test_saved_space_follows_the_ledger(tmp_path):
     out = _eval(tmp_path, _RESULT, "jobSaved, jobStillToSave", f"""
+const DELETES = () => true;
 const deleted = {_job(deleted_paths=["/v/Game.cue"])};
 const kept = {_job()};
 const failed = {_job(status="failed", deleted_paths=["/v/x"])};
 const unknown = {_job(input_bytes=None, deleted_paths=["/v/x"])};
 process.stdout.write(JSON.stringify([
   jobSaved(deleted), jobSaved(kept), jobSaved(failed), jobSaved(unknown),
-  jobStillToSave(deleted), jobStillToSave(kept),
+  jobStillToSave(deleted, DELETES), jobStillToSave(kept, DELETES), jobStillToSave(kept),
 ]));
 """)
-    assert out == [2 * MB, 0, 0, 0, 0, 2 * MB]
+    # Without a mode that may delete its original, nothing is left to save.
+    assert out == [2 * MB, 0, 0, 0, 0, 2 * MB, 0]
 
 
 def test_a_job_toast_says_checked_and_saved(tmp_path):
@@ -104,13 +107,14 @@ const b = {_job(id="b", deleted_paths=["/v/b"], check_passed="recognized")};
 const c = {_job(id="c", check_passed="intact")};
 const d = {_job(id="d", status="failed")};
 const e = {_job(id="e", status="processing")};
+const opts = {{ canDeleteSource: () => true }};
 process.stdout.write(JSON.stringify([
-  runResult([a]),
-  runResult([a, b]),
-  runResult([a, c]),
-  runResult([a, d]),
-  runResult([a, e]),
-  runResult([{_job(id="f")}]),
+  runResult([a], opts),
+  runResult([a, b], opts),
+  runResult([a, c], opts),
+  runResult([a, d], opts),
+  runResult([a, e], opts),
+  runResult([{_job(id="f")}], opts),
 ]));
 """)
     assert out[0] == "1 game converted and checked · saved 2 MB"
@@ -134,7 +138,7 @@ def test_the_store_remembers_the_last_run_and_the_toasts_sum_it_up():
     assert "trackRun(" in toasts
     assert "runResult(" in toasts
     # A run of one game says it in its own toast; a summary would repeat it.
-    assert "ids.length < 2" in toasts
+    assert "ids.length >= 2" in toasts
 
 
 def test_the_convert_panel_shows_the_last_runs_line():
@@ -159,3 +163,87 @@ def test_activity_counts_agree_with_history():
     store = _read("stores/ledger.svelte.js")
     assert "checkedTotal = $state(null)" in store
     assert "getLedgerPage({ checked: true, limit: 1 })" in store
+
+
+# ── Review follow-ups (#596) ───────────────────────────────────────────────
+
+
+def test_a_run_that_grew_is_not_called_saved(tmp_path):
+    """Signed deltas are totalled, as ledger.job_saved_bytes does: one game
+    2 MB smaller and one 3 MB larger is 1 MB larger, not "saved 2 MB"."""
+    out = _eval(tmp_path, _RESULT, "runResult, jobSaved", f"""
+const shrank = {_job(id="a", deleted_paths=["/v/a"], input_bytes=5 * MB, output_size=3 * MB)};
+const grew = {_job(id="b", deleted_paths=["/v/b"], input_bytes=3 * MB, output_size=6 * MB)};
+const even = {_job(id="c", deleted_paths=["/v/c"], input_bytes=3 * MB, output_size=3 * MB)};
+process.stdout.write(JSON.stringify([
+  jobSaved(grew),
+  runResult([shrank, grew]),
+  runResult([even]),
+]));
+""")
+    assert out[0] == -3 * MB
+    assert out[1] == "2 games converted · 1 MB larger"
+    assert out[2] == "1 game converted"
+
+
+def test_a_grown_job_toast_says_larger(tmp_path):
+    out = _eval(tmp_path, _TOAST, "completionToast", f"""
+process.stdout.write(JSON.stringify(completionToast(
+  {_job(deleted_paths=["/v/a"], input_bytes=3 * MB, output_size=6 * MB)},
+).description));
+""")
+    assert out == "→ Game.chd · 3 MB larger"
+
+
+def test_deleting_is_only_suggested_where_the_mode_allows_it(tmp_path):
+    out = _eval(tmp_path, _RESULT, "runResult", f"""
+const kept = {_job(id="x", mode="xiso_rewrite")};
+const deletes = (mode) => mode !== 'xiso_rewrite';
+process.stdout.write(JSON.stringify([
+  runResult([kept], {{ canDeleteSource: deletes }}),
+  runResult([kept]),
+]));
+""")
+    assert out == ["1 game converted", "1 game converted"]
+
+
+def test_whether_a_mode_deletes_comes_from_the_registry():
+    reg = _read("tools/registry.js")
+    assert re.search(r"canDeleteSource: \(mode\) =>[^\n]*supportsDeleteOnVerify", reg)
+    for rel in ("stores/jobToasts.svelte.js", "components/panels/ConvertPanel.svelte"):
+        src = _read(rel)
+        assert "canDeleteSource: registry.canDeleteSource" in src, rel
+        assert "xiso" not in src and "exodos" not in src.lower(), rel
+
+
+def test_a_finished_jobs_result_outlives_its_pruning(tmp_path):
+    """A batch bigger than the job history: early jobs are pruned while later
+    ones run. Their results are kept as they finish, so the run still ends
+    with its line."""
+    out = _eval(tmp_path, _RESULT, "recordFinished, runJobs, runResult", f"""
+const records = {{}};
+const ids = ['a', 'b'];
+const a = {_job(id="a", deleted_paths=["/v/a"])};
+const bRunning = {_job(id="b", status="processing")};
+const bDone = {_job(id="b", deleted_paths=["/v/b"])};
+recordFinished(ids, [a, bRunning], records);
+// 'a' is pruned from the list while 'b' still runs.
+const mid = runResult(runJobs(ids, [bRunning], records));
+recordFinished(ids, [bDone], records);
+const end = runResult(runJobs(ids, [bDone], records));
+// Pruned before it was ever seen finished: left out, never a block.
+const lost = runResult(runJobs(['gone', 'b'], [bDone], {{}}));
+process.stdout.write(JSON.stringify({{ mid, end, lost, kept: Object.keys(records).sort() }}));
+""")
+    assert out["mid"] is None
+    assert out["end"] == "2 games converted · saved 4 MB"
+    assert out["lost"] == "1 game converted · saved 2 MB"
+    assert out["kept"] == ["a", "b"]
+
+
+def test_the_toasts_and_the_panel_read_the_kept_results():
+    toasts = _read("stores/jobToasts.svelte.js")
+    assert "recordFinished(" in toasts and "runJobs(" in toasts
+    panel = _read("components/panels/ConvertPanel.svelte")
+    assert "runJobs(" in panel and "jobToasts.records" in panel
+    assert "found.length === ids.length" not in panel
