@@ -1742,13 +1742,22 @@ The Web UI ships with light and dark themes and is fully responsive from desktop
 
 #### Files
 
-Drives on the left, the games of the open folder in the middle, and the Convert
-panel on the right. A game made of several files is one row; its chevron shows
-the files (here a playlist's discs).
+The Drives, the games of the open folder, and the Convert panel: side by side on
+a wide screen, stacked on a narrower one, where Convert sticks to the bottom of
+the screen while games are selected. A game made of several files is one row;
+its chevron shows the files (here a playlist's discs).
 
 | Light | Dark |
 |-------|------|
 | ![Files on a PlayStation drive, light](docs/screenshots/files-light.png) | ![Files on a PlayStation drive, dark](docs/screenshots/files-dark.png) |
+
+**On a laptop.** At 1440px with the sidebar open, the Drives run across the top
+and Convert sits beside the list. Selected games can be converted straight from
+the selection bar with **Convert N games**.
+
+| Light | Dark |
+|-------|------|
+| ![Files on a 1440px laptop, light](docs/screenshots/files-laptop-light.png) | ![Files on a 1440px laptop, dark](docs/screenshots/files-laptop-dark.png) |
 
 **First run.** With no Library and no RomM yet, Files offers to set one up.
 
