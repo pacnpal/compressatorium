@@ -39,10 +39,17 @@ def _table_min_width() -> int:
 
 
 def _container_breakpoint(rel: str) -> int:
+    """The widest layout's breakpoint: where every side panel sits beside the list."""
     css = _read(rel)
-    found = re.findall(r"@container[^{]*\(min-width:\s*(\d+)px\)", css)
-    assert len(found) == 1, f"{rel} has one container breakpoint for its side panels"
-    return int(found[0])
+    found = re.findall(r"@container\s*\(min-width:\s*(\d+)px\)", css)
+    assert found, f"{rel} has a container breakpoint for its side panels"
+    return max(int(n) for n in found)
+
+
+def _right_min() -> int:
+    return int(re.search(
+        r"right:\s*\{\s*min:\s*(\d+)", _read("stores/layout.svelte.js"),
+    ).group(1))
 
 
 def test_the_size_column_holds_the_longest_size():
@@ -56,8 +63,9 @@ def test_files_goes_three_panel_only_when_the_whole_table_fits():
     assert not re.search(r"@media \(min-width: 1280px\)", view)
     panels = _frozen("DEFAULT_PANELS")
     # The list's padding (16px a side), its border and the table frame's, two
-    # 9px splitters and four 8px gaps between the five grid tracks.
-    needed = panels["left"] + panels["right"] + _table_min_width() + 36 + 18 + 32
+    # 9px splitters and four 8px gaps between the five grid tracks. Convert
+    # shrinks to its narrowest before the table gives way (#589).
+    needed = panels["left"] + _right_min() + _table_min_width() + 36 + 18 + 32
     assert _container_breakpoint("components/views/FilesView.svelte") >= needed
 
 
