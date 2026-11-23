@@ -573,6 +573,9 @@ export const registry = {
   /** Mode metadata (ModeEntry) for a wire-mode value. */
   specFor: (mode) => byMode.get(mode)?.spec,
 
+  /** Whether *mode* may delete its original once the new file checks out. */
+  canDeleteSource: (mode) => !!byMode.get(mode)?.spec?.supportsDeleteOnVerify,
+
   /** The owning tool for a wire-mode value. */
   toolForMode: (mode) => byMode.get(mode)?.tool,
 

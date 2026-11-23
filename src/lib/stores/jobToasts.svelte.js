@@ -12,6 +12,9 @@
 import { toast } from 'svelte-sonner';
 import { registry } from '$lib/tools/registry.js';
 import { completionToast } from '$lib/util/jobToast.js';
+import {
+  recordFinished, runJobs, runNeedsAttention, runResult,
+} from '$lib/util/runResult.js';
 import { jobName } from '$lib/api/format.js';
 import { EXTERNAL_MODE_LABELS, EXTERNAL_SCAN_MODES, TERMINAL_STATUSES } from './jobConstants.js';
 
@@ -55,6 +58,52 @@ class JobToastTracker {
   // the same non-reactive escape jobs.svelte.js uses for its transient
   // id→state lookups, correct here and lint-clean.
   _active = Object.create(null);
+
+  // Convert runs not yet summed up (#595): `[{ ids, toast }]`. Plain, for the
+  // same reason as _active.
+  _runs = [];
+  // Each tracked job as it finished (#596), so pruning the live job list (a
+  // batch bigger than its history) can't lose a run's result. Kept for the
+  // latest run, which the Convert panel shows, and dropped for older ones once
+  // they are summed up.
+  records = Object.create(null);
+  _latest = null;
+
+  /**
+   * Follow a Convert run until all its jobs have finished. A run of two or
+   * more games is summed up in one toast; a run of one says it all in its own.
+   * @param {string[]} ids
+   */
+  trackRun(ids) {
+    if (!Array.isArray(ids) || !ids.length) return;
+    const run = { ids: [...ids], toast: ids.length >= 2 };
+    if (this._latest && !this._runs.includes(this._latest)) this._forget(this._latest);
+    this._latest = run;
+    this._runs.push(run);
+  }
+
+  _forget(run) {
+    for (const id of run.ids) delete this.records[id];
+  }
+
+  _settleRuns(jobList) {
+    if (!this._runs.length) return;
+    const options = { canDeleteSource: registry.canDeleteSource };
+    this._runs = this._runs.filter((run) => {
+      recordFinished(run.ids, jobList, this.records);
+      const found = runJobs(run.ids, jobList, this.records);
+      const line = runResult(found, options);
+      if (!line) return true;
+      if (run.toast) {
+        // A failed, cancelled or warned job makes the summary a warning, as
+        // its own toast is.
+        if (runNeedsAttention(found)) toast.warning(line, { duration: 8000 });
+        else toast.success(line, { duration: 6000 });
+      }
+      if (run !== this._latest) this._forget(run);
+      return false;
+    });
+  }
 
   /**
    * Reconcile the live toast set against the current jobs list.
@@ -103,6 +152,8 @@ class JobToastTracker {
       // (rec === undefined) are skipped so a page reload doesn't replay
       // "completed" toasts for old history.
     }
+
+    this._settleRuns(jobList);
 
     // A running job can vanish from the list without a terminal frame,
     // another tab clears it, or the backend prunes it. Dismiss its stale
