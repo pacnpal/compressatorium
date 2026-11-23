@@ -23,6 +23,7 @@
   import SafetyOptions from '$lib/components/panels/SafetyOptions.svelte';
   import CompressionPicker from '$lib/components/panels/CompressionPicker.svelte';
   import Button from '$lib/components/ui/Button.svelte';
+  import Checkbox from '$lib/components/ui/Checkbox.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
 
   // ─── When converting ────────────────────────────────────────────────────
@@ -41,6 +42,20 @@
     } catch (e) {
       toast.error(e?.message ?? "Couldn't save the defaults");
     }
+  }
+
+  // ─── Opt-outs (#593) ────────────────────────────────────────────────────
+  // Off by default. Turning the quick check off also drops a saved quick
+  // check, so it can't come back on its own.
+  async function saveOptOut(patch) {
+    try {
+      await defaults.save(patch);
+    } catch (e) {
+      toast.error(e?.message ?? "Couldn't save the defaults");
+    }
+  }
+  function setQuickAllowed(on) {
+    saveOptOut(on ? { allow_quick_check: true } : { allow_quick_check: false, container_only: false });
   }
 
   // ─── Compression ────────────────────────────────────────────────────────
@@ -98,9 +113,34 @@
         checkAfter={defaults.values.verify_after}
         deleteOriginal={defaults.values.delete_on_verify}
         quickCheck={defaults.values.container_only}
+        allowQuick={defaults.values.allow_quick_check}
         onchange={saveSafety}
         idPrefix="defaults-safety-options"
       />
+    {/if}
+  </section>
+
+  <section class="part" aria-labelledby="defaults-opt-outs">
+    <h3 id="defaults-opt-outs">Weaker checks</h3>
+    <p class="hint">
+      Off, an original is deleted only after its new copy reads back the same, and a delete
+      refuses when it can't be sure. Turn these on only to trade that for speed.
+    </p>
+    {#if defaults.loaded}
+      <div class="opt-outs">
+        <Checkbox
+          checked={defaults.values.allow_quick_check}
+          label="Offer a quick check before deleting"
+          description="Adds Quick check only to Convert's options. It checks the new file's structure instead of comparing it with the original."
+          onchange={setQuickAllowed}
+        />
+        <Checkbox
+          checked={defaults.values.allow_unchecked_delete}
+          label="Allow deleting originals whose new copy isn't checked"
+          description="Delete then asks you to confirm instead of refusing until the copy passes a check."
+          onchange={(v) => saveOptOut({ allow_unchecked_delete: v })}
+        />
+      </div>
     {/if}
   </section>
 
@@ -145,6 +185,7 @@
   }
   .hint { margin: var(--space-1) 0 var(--space-3); color: var(--text-2); font-size: var(--text-sm); }
   .part h3 + :not(.hint) { margin-top: var(--space-3); }
+  .opt-outs { display: flex; flex-direction: column; gap: var(--space-3); }
   .pickers {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));

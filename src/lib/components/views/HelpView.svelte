@@ -57,8 +57,9 @@
     <p>
       Originals are only deleted when you ask, and only after the new file passes its check.
       Most formats must read back as an exact copy. A few instead need a known good dump
-      match, and Quick check only checks the file's structure. If a check fails, the
-      original stays.
+      match. If a check fails, or a delete can't be sure the new copy is good, the original
+      stays. Settings → Defaults has two opt-outs, both off: a quick check that only checks
+      the file's structure, and deleting an original whose new copy isn't checked.
     </p>
   </article>
 

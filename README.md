@@ -599,8 +599,9 @@ AVI cannot be compared with a LaserDisc CHD. A CD CHD is extracted to a temp
 folder for this, and both its track data and its track table (tracks, types,
 lengths, index offsets, gaps) must match the source cue or gdi; the folder is removed
 afterwards. Without about a disc's worth of free scratch space the job keeps the
-source and fails. **Container check only (faster, weaker)** in the convert panel
-drops back to the Intact check for that job. A few conversions can't be
+source and fails. **Quick check only** in the Convert panel's options drops back
+to the Intact check for that job. It is offered only once **Offer a quick check
+before deleting** is turned on in Settings → Defaults (off by default). A few conversions can't be
 Round-tripped at all (PSP PBP to ISO, 3DS CIA to CCI and back), so their proof is
 **Recognized** instead: the output's SHA-1 must be in one of your DATs or in
 Hasheous before the source goes. Otherwise the source is kept and the job says
@@ -1793,8 +1794,8 @@ will point at the new file first.
 | ![Create .m3u preview, light](docs/screenshots/playlist-light.png) | ![Create .m3u preview, dark](docs/screenshots/playlist-dark.png) |
 
 **GameCube / Wii.** Discs go to RVZ. With **Delete the original** on, each new disc
-is compared with its original before anything is deleted; **Quick check only**
-under More skips that comparison.
+is compared with its original before anything is deleted. **Quick check only**
+under More skips that comparison, once it is allowed in Settings → Defaults.
 
 | Light | Dark |
 |-------|------|

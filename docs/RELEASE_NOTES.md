@@ -4,6 +4,13 @@
 
 ### Added
 
+- **Delete dialogs say what is safe** (#593).
+  - Bulk delete lists each file by name, with its folder underneath, cut from
+    the start so the end of the path shows. It also says how much space the
+    delete frees.
+  - Deleting a file whose new copy passed its check says so: "Its DOSZ copy
+    checked out (400 B), so the game stays in your library."
+
 - **RomM connects itself** (#532).
   - On first run, RomM's Settings looks for RomM at `http://romm:8080` and its
     other usual addresses and offers **Found RomM at …: Use it**.
@@ -96,6 +103,17 @@
   import of that path would get.
 
 ### Changed
+
+- **The weaker checks are opt-outs in Settings → Defaults** (#593), both off by
+  default.
+  - **Offer a quick check before deleting** puts **Quick check only** back in
+    Convert's options. While it is off, a delete always uses the full check,
+    and a quick check saved before this release is no longer used.
+  - **Allow deleting originals whose new copy isn't checked** brings back "I
+    understand and want to delete anyway". While it is off, both delete dialogs
+    refuse such an original and offer **Check the copies** instead.
+  - Verify-before-delete, never-overwrite, the drive limits and the ownership
+    refusals are unchanged.
 
 - **Backend cleanup** (#543). The 3DS verify (`zstd -t`) now runs through the
   shared process runner like every other tool's check, so it gets the same

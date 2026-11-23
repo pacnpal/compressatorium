@@ -274,7 +274,8 @@
     const options = {
       verifyAfter: choice.checkAfter || choice.deleteOriginal,
       deleteOnVerify: choice.deleteOriginal,
-      containerOnly: choice.deleteOriginal && choice.quickCheck,
+      containerOnly: choice.deleteOriginal && choice.quickCheck
+        && defaults.values.allow_quick_check,
       split: choice.split,
       ...planned,
     };
@@ -409,6 +410,7 @@
       checkAfter={safety.checkAfter}
       deleteOriginal={safety.deleteOriginal}
       quickCheck={safety.quickCheck}
+      allowQuick={defaults.values.allow_quick_check}
       onchange={(next) => conversion.setSafety(next)}
       idPrefix="convert-safety"
     />

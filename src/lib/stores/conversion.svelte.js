@@ -214,7 +214,8 @@ class ConversionStore {
     this.safety = {
       checkAfter: values?.verify_after ?? true,
       deleteOriginal: !!values?.delete_on_verify,
-      quickCheck: !!values?.container_only,
+      // The quick check only while its opt-out is on (#593).
+      quickCheck: !!values?.container_only && !!values?.allow_quick_check,
     };
   }
 
