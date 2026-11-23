@@ -170,6 +170,9 @@
     margin: 0 auto;
     width: 100%;
     min-width: 0;
+    /* The panel layout follows the width this view has, not the window's:
+       the sidebar takes its share first (#562). */
+    container-type: inline-size;
   }
   .header {
     display: flex;
@@ -225,7 +228,7 @@
     min-width: 0;
   }
   /* The panel splitters only make sense in the 3-column desktop layout.
-     Hidden (and so removed from grid flow) below 1280px, where the right
+     Hidden (and so removed from grid flow) below it, where the right
      panel stacks and the left rail is a fixed width. Direct-child only:
      the file table's column handles are also .splitter elements but live
      deep inside .main, and must stay usable at every width. */
@@ -238,7 +241,12 @@
        a narrow strip beside a huge empty cell. */
     .right { grid-column: 1 / -1; }
   }
-  @media (min-width: 1280px) {
+  /* Three panels only when the file list beside them still holds the whole
+     table at its default widths (#562): the Volumes rail (220) and Convert
+     panel (360), two 9px splitters and four 8px gaps, and the 36px of padding
+     and borders (the list and its table frame) around a 676px table. Narrower,
+     Convert stacks below. */
+  @container (min-width: 1344px) {
     .grid {
       grid-template-columns:
         var(--ws-left, 220px) auto minmax(0, 1fr) auto var(--ws-right, 360px);

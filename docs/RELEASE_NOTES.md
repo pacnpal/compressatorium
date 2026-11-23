@@ -382,6 +382,11 @@
 
 ### Fixed
 
+- **Inbox intake, checks, renames, patches and duplicate runs no longer hang
+  while finishing** (#579). Their wait for running work could spin forever at
+  full CPU when a task ended just as the wait woke up. That stopped
+  `run-rules` or a shutdown from finishing, as #450 did for the job queue.
+  Every one of these waits now uses one shared helper that can't spin.
 - **Delete keeps a file a sheet, playlist or set reaches through a link**
   (#555). A `.cue` in one folder can name a track in another through a folder
   link inside the Volume (`other/A.cue` naming `link/Shared.bin`). Deleting or
@@ -389,6 +394,12 @@
   and names the sheet, as it already did for a sheet beside the track. A link
   to a folder outside the Volume leaves ownership unknown, so the file is
   kept.
+- **Files shows the whole file table on a laptop** (#562). The Volumes | list
+  | Convert layout came in at a 1280px window, of which the sidebar takes 240,
+  so the list was left about 350px and showed only the game's name. It now
+  comes in when the page itself has room for all three panels and the whole
+  table; narrower, Convert sits under the list. RomM's Browse tab does the
+  same. The Size column's default fits `1023.99 MB` on one line.
 - **Settings → Game identification** says when it couldn't check which
   consoles Redump covers, with **Try again**, instead of claiming none of
   your Libraries has one (#545 follow-up).
