@@ -2471,7 +2471,7 @@
       const dialog = document.querySelector('[role="dialog"]');
       if (!dialog || !dialog.textContent.includes(game)) throw new Error('rename preview not shown');
       if (!confirmIt) return;
-      [...dialog.querySelectorAll('button')].find(b => b.textContent.includes('Rename 1 Image'))?.click();
+      [...dialog.querySelectorAll('button')].find(b => b.textContent.includes('Rename 1 game'))?.click();
       for (let i = 0; i < 30 && !dialog.textContent.includes('Renamed 1'); i++) await sleep(300);
       if (!dialog.textContent.includes('Renamed 1')) throw new Error('rename job did not finish');
       await sleep(400);
