@@ -135,6 +135,11 @@ class UIStore {
   // SSE connection-state tracking. Internal, only reportConnection() touches.
   _connectionToastId = null;
   _disconnectTimer = null;
+  // How many times the jobs feed came back after its first opening (#569).
+  // A restart behind it can bring another version, other converters and other
+  // Volumes, so App reads them again on each.
+  reconnects = $state(0);
+  _opened = false;
 
   toggleSidebar() {
     this.sidebarCollapsed = !this.sidebarCollapsed;
@@ -202,6 +207,8 @@ class UIStore {
    */
   reportConnection(state) {
     if (state === 'open') {
+      if (this._opened) this.reconnects += 1;
+      this._opened = true;
       if (this._disconnectTimer) {
         clearTimeout(this._disconnectTimer);
         this._disconnectTimer = null;

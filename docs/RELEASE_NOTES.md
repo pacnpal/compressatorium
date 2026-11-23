@@ -397,6 +397,17 @@
 
 ### Fixed
 
+- **An open tab catches up after the container restarts** (#569). Restarted
+  with other Volumes (an upgrade, a compose edit), an open tab kept the old
+  Volume list until reloaded, and a Volume that was gone answered *Access
+  denied: path outside configured volumes*. When the connection comes back
+  the tab now reads the Volumes, the version and which converters are ready
+  again; a Volume that's gone gives way to the first one left (with none
+  left, its search and selection go too). Back as another version (an
+  upgrade), the tab reloads, since the page itself is new.
+- **The browser tab names the page** (#578): *Activity · Compressatorium*,
+  not *Compressatorium* everywhere, so tabs, Back and history tell pages
+  apart.
 - **Inbox intake, checks, renames, patches and duplicate runs no longer hang
   while finishing** (#579). Their wait for running work could spin forever at
   full CPU when a task ended just as the wait woke up. That stopped
@@ -418,6 +429,11 @@
 - **Settings → Game identification** says when it couldn't check which
   consoles Redump covers, with **Try again**, instead of claiming none of
   your Libraries has one (#545 follow-up).
+- **A refused delete says why** (#563). Deleting a disc a playlist still
+  names, or a track its sheet still needs, keeps the file, and the toast now
+  carries the reason (*Final Quest.m3u still needs Final Quest (Disc 1).cue
+  …*) instead of only "Deleted 0; 2 failed". It reads **Kept 2 files**, or
+  **Deleted 1; kept 1**.
 - **Turning Hasheous on, then off quickly** no longer lets the first click
   finish after the second: it can't switch the screen back to on or test
   Hasheous once you've turned it off (#545 follow-up).
@@ -430,6 +446,11 @@
   the server, so a change saved meanwhile from another tab is kept
   (#545 follow-up).
 
+- **A watch folder's toast names the game** (#565). The live toast for a
+  watch folder's copy, a check run, find duplicates or a rename to DAT names
+  was titled with the job's id (`5d7c1691`), since those jobs have no file of
+  their own. It now names them the way their row in Activity does
+  (`shadow-colossus.iso`, *Find duplicates in Main Library*).
 - **Quick wins, contrast and plain details** (#521).
   - The RomM page's hints point to its own Settings tab, with a **Connect
     RomM** button, instead of a "Settings → Metadata" page that doesn't exist.
@@ -458,6 +479,13 @@
     row shows a tick on its output's badge instead.
   - Job toasts and job rows name the new file, not its full path.
 
+- **A watch folder's copy shows its console in History** (#572). A game a
+  watch folder took in as it is (no Rule to convert it) was filed under no
+  console, and its row still read *Copying into …* after it was done. It's
+  now filed under the console its folder, or **Place it**, gave it, and says
+  *Copied into …*. A watch folder's other jobs say what they did too
+  (*Unpacked 2 games*, *Checked against the game lists*), not *Unpacking it*
+  or *Recognizing it*.
 - muOS is no longer listed as reading `gamelist.xml`. It keeps its artwork in
   its own catalogue (`MUOS/info/catalogue`), by game name.
 
@@ -493,6 +521,14 @@
   through a link. A job already queued before the change still runs as it
   was queued.
 
+- **Dialog fields come before their buttons** (#568). Add a Library put its
+  **Name** field under **Make this a Library**, and a folder dialog's refusal
+  (*This folder is already a Library*) showed under the buttons too; both are
+  above them now. A long Drive path no longer squeezes the Drive's name to two
+  letters a line. **Rename** opens with the name selected (up to its
+  extension), so typing replaces it and Enter saves. The delete-original
+  confirmation reads as one sentence (#573); its count sat alone on a line
+  above it.
 - **RomM: every Platform gets a folder for new Images, even when RomM keeps
   two records for it** (#512). RomM often keeps an empty record beside the
   real one (`famicom` beside `nes`, `gg` beside `gamegear`), and **Where new
@@ -511,6 +547,17 @@
   folder outside every Volume, and a folder detection would read as another
   Platform are still refused. Synology's `@eaDir` folder, which RomM scans as
   a platform, is no longer listed, placed or swept.
+- **Files opens on your first Volume, wherever you started** (#571). Opened
+  after Libraries, a Library, Needs attention or a watch folder, Files showed
+  *This folder is empty.* with no Volume picked, because those pages load the
+  Volume list for their own use and Files only picked one when it loaded the
+  list itself. A `#/files/<folder>` link, or a folder already open, still
+  wins.
+- **Search Everywhere filters as you type** (#574). Everywhere lists every
+  game under the folder; typing then did nothing until Enter, and after an
+  Enter the list kept the old words while the box showed new ones. The words
+  now filter the listed games as you type, with no new scan. Enter still
+  lists them again.
 
 ## 4.6.0 (2026-11-20)
 
