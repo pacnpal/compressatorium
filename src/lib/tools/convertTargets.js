@@ -164,6 +164,12 @@ export function convertTargets({
   return groups.filter((g) => g.options.length > 0);
 }
 
+/** The picker's `manual` options for one entry. */
+function manualOptions(entry, ready) {
+  return convertTargets({ entries: [entry], ready })
+    .flatMap((g) => g.options).filter((o) => o.manual);
+}
+
 /**
  * Modes Auto leaves alone that could still take every one of *entries*
  * (#597): `[{ value, label }]`, for a skipped line's one-click "Convert to".
@@ -175,9 +181,9 @@ export function convertTargets({
 export function offeredInstead(entries, ready = null) {
   const list = (entries ?? []).filter(Boolean);
   if (!list.length) return [];
-  const manualFor = (entry) => convertTargets({ entries: [entry], ready })
-    .flatMap((g) => g.options).filter((o) => o.manual);
-  const [first, ...rest] = list.map(manualFor);
+  const perEntry = [];
+  for (const entry of list) perEntry.push(manualOptions(entry, ready));
+  const [first, ...rest] = perEntry;
   return first
     .filter((o) => rest.every((opts) => opts.some((x) => x.value === o.value)))
     .map(({ value, label }) => ({ value, label }));
