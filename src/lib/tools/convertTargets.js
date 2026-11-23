@@ -205,6 +205,30 @@ export function formatOfPath(path) {
 export function likelyFormat(entry, ready = null) {
   const smaller = convertTargets({ entries: [entry], ready })
     .find((g) => g.group === 'Make smaller');
+  const best = smaller?.options[0]?.label ?? null;
+  // Already in it: Auto skips this as "Already RVZ", though the tool could
+  // recompress it, so there is nothing to become.
+  return best && best === formatOfPath(entry?.path ?? entry?.name) ? null : best;
+}
+
+/**
+ * What a converter that can't run here would have made of *paths* (#591):
+ * the format of the Convert-to `target` the user picked, when that converter
+ * makes it; its first Make-smaller format for them under Best (''); null when
+ * the tool isn't known or the picked target is another tool's, so the line
+ * never names a format the user didn't ask for.
+ */
+export function missingFormat({ tool: label, paths = [], target = '' }) {
+  const tool = registry.all().find((t) => t.label === label);
+  if (!tool) return null;
+  if (target) {
+    const spec = specsForTarget(target).find((s) => tool.modes.includes(s));
+    if (!spec) return null;
+    return spec.outputExt ? formatLabel(spec.outputExt) : (PLAIN_MODE_LABELS[spec.mode] ?? null);
+  }
+  const entries = paths.map((path) => ({ path, type: 'file' }));
+  const smaller = convertTargets({ entries, toolIds: [tool.id] })
+    .find((g) => g.group === 'Make smaller');
   return smaller?.options[0]?.label ?? null;
 }
 

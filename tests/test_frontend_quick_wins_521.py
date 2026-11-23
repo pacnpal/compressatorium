@@ -223,8 +223,9 @@ process.stdout.write(JSON.stringify(out));
     ], data
     assert [row["label"] for row in data["details"]] == ["Raw data", "Tracks"], data
     modal = _read("lib", "components", "modals", "FileInfoModal.svelte")
-    assert "infoRows(info, target?.path)" in modal
-    assert "<summary>Details</summary>" in modal
+    assert "infoRows(info, target?.path" in modal
+    # The card's fold (#591).
+    assert "<summary>More details</summary>" in modal
     assert "text-transform: uppercase" not in modal
 
 
