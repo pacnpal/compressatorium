@@ -518,6 +518,8 @@
     flex-direction: column;
     gap: var(--space-4);
     min-width: 0;
+    /* The panel layout follows this view's width, not the window's (#562). */
+    container-type: inline-size;
   }
   .convert-to { display: inline-flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
   .convert-to .label {
@@ -594,7 +596,11 @@
        list; without the span it auto-places into a narrow column. */
     .right { grid-column: 1 / -1; }
   }
-  @media (min-width: 1280px) {
+  /* Convert beside the list only when the list still holds the whole table
+     at its default widths (#562): the Convert panel (360), a 9px splitter and
+     two 8px gaps, and the 36px of padding and borders (the list and its table
+     frame) around a 676px table. Narrower, it stacks below. */
+  @container (min-width: 1100px) {
     .grid {
       grid-template-columns: minmax(0, 1fr) auto var(--ws-right, 360px);
       gap: var(--space-2);

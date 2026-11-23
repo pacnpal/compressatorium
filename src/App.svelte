@@ -272,6 +272,10 @@
   .sidebar-host { display: none; }
   @media (min-width: 900px) { .sidebar-host { display: block; } }
   .main-col {
+    /* Always the 1fr track: under 900px the sidebar is hidden, and in the
+       first (auto) track the column would size to its content, which a
+       size container (Files, RomM's Browse, #562) gives none of. */
+    grid-column: 2;
     display: flex;
     flex-direction: column;
     min-width: 0;
