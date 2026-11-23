@@ -110,9 +110,19 @@ class FileBrowserStore {
   volumes = $state([]);
   volumesLoading = $state(false);
   volumesError = $state(null);
+  // Whether the Volume list was ever read: an empty list after a reconnect
+  // (every Volume gone) is not a tab that never listed them (#569).
+  volumesLoaded = false;
   selectedVolume = $state(null);
   // Bumped by every Open folder (`openFolder`): only the latest navigates.
   #openFolderRequest = 0;
+  // The Volume list fetch on its way, if any: `ensureFilesSelection` waits.
+  #volumesFetch = null;
+  // `openFolder` calls under way: Files' folder is theirs to open.
+  #foldersOpening = 0;
+  // Whether Files is showing (VolumeList mounted): only then is a Volume
+  // opened for it (#569).
+  filesMounted = false;
 
   // Navigation
   currentPath = $state(null);
@@ -370,42 +380,64 @@ class FileBrowserStore {
 
   // ─── Volumes ──────────────────────────────────────────────────────────
   /**
-   * The Workspace start: load the Volume list, then select and list the first
-   * Volume when none is selected yet.
+   * Files mounted (VolumeList): read the Volume list unless it is read or
+   * on its way, then hold the invariant (`ensureFilesSelection`). Other
+   * views read the list for their own use without picking a Volume (#571),
+   * so "is the list empty" can't stand for "is this the start".
    */
-  async loadVolumes() {
-    if (!(await this.fetchVolumes())) return;
-    if (!this.selectedVolume && this.volumes.length > 0) {
-      await this.selectVolume(this.volumes[0]);
-    }
+  async startFiles() {
+    this.filesMounted = true;
+    if (!this.volumesLoaded && !this.#volumesFetch) await this.fetchVolumes();
+    await this.ensureFilesSelection();
+  }
+
+  /** Files unmounted: nothing is opened for a page that isn't showing. */
+  stopFiles() {
+    this.filesMounted = false;
   }
 
   /**
-   * Files opening (#571): pick the first Volume when nothing is open yet,
-   * however the Volume list got loaded. Other views fetch the list for their
-   * own use without picking one, so "is the list empty" can't stand for "is
-   * this the start". A folder already open, or one a `#/files/<path>` link is
-   * opening, is left as it is.
+   * The one rule for what Files has open (#569): while Files is mounted,
+   * with the Volumes listed, no list fetch on its way, no folder being opened
+   * and nothing open, open the folder a `#/files/<path>` link names when its
+   * Volume is listed, else the first Volume. Whatever loaded the list (Files'
+   * mount, a reconnect, Libraries' own read) and in whatever order, every
+   * path ends here; a fetch still out ends here when it lands.
    */
-  async startFiles() {
-    if (this.volumes.length === 0) {
-      await this.loadVolumes();
-      return;
-    }
-    if (this.selectedVolume || this.currentPath || ui.filesPath) return;
-    await this.selectVolume(this.volumes[0]);
+  async ensureFilesSelection() {
+    if (this.#volumesFetch) await this.#volumesFetch;
+    if (!this.filesMounted || this.#foldersOpening > 0) return;
+    if (this.selectedVolume || this.currentPath || this.volumes.length === 0) return;
+    const link = ui.filesPath;
+    const linked = link && this.volumes.some(
+      (v) => link === v.path || link.startsWith(`${v.path.replace(/\/+$/, '')}/`),
+    );
+    if (linked) await this.openFolder(link);
+    else await this.selectVolume(this.volumes[0]);
   }
 
   /**
    * Load the Volume list only: no Volume is selected and nothing is listed.
-   * True when it loaded.
+   * True when it loaded. A fetch on its way is `#volumesFetch`, which
+   * `ensureFilesSelection` waits for.
    */
   async fetchVolumes() {
+    const request = this.#fetchVolumesOnce();
+    this.#volumesFetch = request;
+    try {
+      return await request;
+    } finally {
+      if (this.#volumesFetch === request) this.#volumesFetch = null;
+    }
+  }
+
+  async #fetchVolumesOnce() {
     this.volumesLoading = true;
     this.volumesError = null;
     try {
       const data = await api.getVolumes();
       this.volumes = Array.isArray(data) ? data : [];
+      this.volumesLoaded = true;
       return true;
     } catch (e) {
       this.volumesError = e?.message ?? 'Failed to load volumes';
@@ -413,6 +445,29 @@ class FileBrowserStore {
     } finally {
       this.volumesLoading = false;
     }
+  }
+
+  /**
+   * The Volume list again, after the backend came back (#569): a restart can
+   * mount other Volumes. A Volume still there stays as it is, folder and all.
+   * One that's gone is closed with everything from it (its search results,
+   * selection and archive), so nothing from it can still be converted; what
+   * opens instead is `ensureFilesSelection`'s to decide. A tab that never
+   * listed the Volumes is left alone: Files reads them when it mounts.
+   */
+  async refreshVolumes() {
+    if (!this.volumesLoaded) return;
+    if (!(await this.fetchVolumes())) return;
+    const open = this.selectedVolume?.path;
+    if (open && !this.volumes.some((v) => v.path === open)) {
+      this.exitSearch();
+      this.clearSelection();
+      this.currentArchivePath = null;
+      this.selectedVolume = null;
+      this.currentPath = null;
+      this.entries = [];
+    }
+    await this.ensureFilesSelection();
   }
 
   /**
@@ -427,17 +482,23 @@ class FileBrowserStore {
   async openFolder(path) {
     if (!path) return;
     const request = ++this.#openFolderRequest;
-    if (this.volumes.length === 0) await this.fetchVolumes();
-    if (request !== this.#openFolderRequest) return;
-    const holder = this.volumes
-      .filter((v) => v?.path && (path === v.path || path.startsWith(`${v.path.replace(/\/+$/, '')}/`)))
-      .sort((a, b) => b.path.length - a.path.length)[0];
-    if (holder) this.selectedVolume = holder;
-    // From another view, go to Files. Already there (Files opening a
-    // `#/files/<path>` link), push nothing: a second entry would make Back
-    // bounce between the link and `#/files`.
-    if (ui.activeView !== 'files') ui.navigate('files');
-    await this.navigate(path);
+    // While it opens, `ensureFilesSelection` leaves Files to it.
+    this.#foldersOpening += 1;
+    try {
+      if (this.volumes.length === 0) await this.fetchVolumes();
+      if (request !== this.#openFolderRequest) return;
+      const holder = this.volumes
+        .filter((v) => v?.path && (path === v.path || path.startsWith(`${v.path.replace(/\/+$/, '')}/`)))
+        .sort((a, b) => b.path.length - a.path.length)[0];
+      if (holder) this.selectedVolume = holder;
+      // From another view, go to Files. Already there (Files opening a
+      // `#/files/<path>` link), push nothing: a second entry would make Back
+      // bounce between the link and `#/files`.
+      if (ui.activeView !== 'files') ui.navigate('files');
+      await this.navigate(path);
+    } finally {
+      this.#foldersOpening -= 1;
+    }
   }
 
   async selectVolume(volume) {
