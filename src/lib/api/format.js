@@ -20,3 +20,8 @@ export function formatSize(bytes) {
   );
   return `${Number.parseFloat((bytes / k ** i).toFixed(2))} ${SIZE_UNITS.at(i)}`;
 }
+
+/** "1 game", "2 games": a count with the word that fits it (#575). */
+export function plural(n, one, many) {
+  return `${n} ${n === 1 ? one : many}`;
+}

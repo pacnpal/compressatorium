@@ -18,6 +18,7 @@
   import Badge from '$lib/components/ui/Badge.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import Plus from '@lucide/svelte/icons/plus';
+  import { plural } from '$lib/api/format.js';
 
   const id = $derived(ui.libraryTarget);
   const folders = $derived(libraries.folders);
@@ -40,7 +41,6 @@
     (row) => row?.library_id === libraryId && !row.dismissed,
   ).length;
 
-  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
   // Each card's facts, read once it shows.
   $effect(() => {
