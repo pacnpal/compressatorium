@@ -226,7 +226,8 @@ def test_app_retries_the_tools_until_they_load_and_stops_when_unmounted():
     growing delay, a reply after unmount is ignored, and no retry is left
     scheduled after unmount."""
     app = (Path(__file__).resolve().parents[1] / "src" / "App.svelte").read_text("utf-8")
-    start = app.index("const loadTools")
+    # onMount assigns the loader (a reconnect calls it again, #569).
+    start = app.index("loadTools = (delay = 1000) =>")
     body = app[start:app.index("loadTools();", start)]
     assert "if (disposed) return;" in body
     assert "if (!registry.load(t))" in body
