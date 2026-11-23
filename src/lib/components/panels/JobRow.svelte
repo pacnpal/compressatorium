@@ -2,7 +2,7 @@
   import { jobs } from '$lib/stores/jobs.svelte.js';
   import { EXTERNAL_MODE_LABELS } from '$lib/stores/jobConstants.js';
   import { registry } from '$lib/tools/registry.js';
-  import { formatSize } from '$lib/api/format.js';
+  import { formatSize, jobName } from '$lib/api/format.js';
   import { jobDetailLines } from '$lib/util/jobDetail.js';
   import Badge from '$lib/components/ui/Badge.svelte';
   import ProgressBar from '$lib/components/ui/ProgressBar.svelte';
@@ -36,11 +36,7 @@
 
   // An external job (a check Rule's run) has no file of its own: its name
   // says what it does.
-  const filename = $derived(
-    !spec && job?.filename
-      ? job.filename
-      : job?.file_path?.split(/[/\\]/).pop() ?? job?.file_path ?? '(unknown)',
-  );
+  const filename = $derived(jobName(job, { external: !spec }) || '(unknown)');
 
   function statusIcon(s) {
     switch (s) {
